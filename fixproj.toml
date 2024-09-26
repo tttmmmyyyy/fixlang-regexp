@@ -3,7 +3,17 @@ name = "regexp"
 version = "0.1.0"
 
 [build]
-files = ["regex.fix", "regexp_nfa.fix", "regexp_pattern.fix", "simple_parser.fix", "stringex.fix"]
+files = ["regexp.fix", "regexp_nfa.fix", "regexp_pattern.fix", "simple_parser.fix", "stringex.fix"]
 
 [build.test]
 files = ["test.fix"]
+
+[[dependencies]]
+name = "hashmap"
+version = "0.1.0"
+git = { url = "https://github.com/tttmmmyyyy/fixlang-hashmap.git" }
+
+[[dependencies]]
+name = "character"
+version = "0.1.0"
+git = { url = "https://github.com/tttmmmyyyy/fixlang-character.git" }
