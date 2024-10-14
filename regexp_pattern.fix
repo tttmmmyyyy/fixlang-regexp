@@ -143,8 +143,7 @@ impl PAssertion: ToString {
     to_string = |pa| (
         if pa.is_pa_begin { "^" };
         if pa.is_pa_end { "$" };
-        eval assert(|_|"err", false);
-        ""
+        undefined("err")
     );
 }
 
@@ -191,8 +190,7 @@ impl Pattern: ToString {
             let (n, pat_inner) = pat.as_pgroup;
             "(" + n.to_string + ":" + pat_inner.to_string + ")"
         };
-        eval assert(|_|"err", false);
-        ""
+        undefined("err")
     );
 }
 
@@ -447,7 +445,6 @@ namespace Pattern {
             let pat = pgroup $ (gn, pat_inner);
             (n, pat)
         };
-        eval assert(|_|"err", false);
-        (n, pat)
+        undefined("err")
     );
 }

@@ -275,8 +275,7 @@ namespace NFAFrag {
             if (min <= max) {
                 nfa._compile_special_quant(frag1, min, max)
             };
-            eval assert (|_|"invalid quantifier: (min,max)=" + (min,max).to_string, false);
-            (nfa, frag1)
+            undefined("invalid quantifier: (min,max)=" + (min,max).to_string)
         };
         if pat.is_pgroup {
             let (n, pat1) = pat.as_pgroup;
@@ -290,8 +289,7 @@ namespace NFAFrag {
         if pat.is_passert {
             nfa._compile_action(sa_assert(pat.as_passert))
         };
-        eval assert (|_|"invalid pattern:" + pat.to_string, false);
-        nfa._compile_action(sa_none())
+        undefined("invalid pattern:" + pat.to_string)
     );
 
     // Compiles an action to a fragment.
@@ -805,7 +803,7 @@ namespace Replacement {
     compile: String -> Array ReplaceFrag;
     compile = |replacement| (
         let res = _parse_replacement_seq.run_parser_str(replacement);
-        eval assert(|_|"_parse_replacement_seq failed", res.is_ok);
+        if res.is_err { undefined("_parse_replacement_seq failed") };
         let (reps, _) = res.as_ok;
         reps
     );
@@ -825,8 +823,7 @@ namespace Replacement {
                 let str = target.substring(begin, end);
                 output.append(str.get_bytes.pop_back)
             };
-            eval assert(|_|"err", false);
-            output
+            undefined("err")
         );
         output._unsafe_to_string
     );
