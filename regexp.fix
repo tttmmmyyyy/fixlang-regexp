@@ -53,7 +53,7 @@ namespace RegExp {
     // Example:
     // ```
     // let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
-    // let groups = regexp.match("abc012 def345").as_ok;
+    // let groups = regexp.match_one("abc012 def345").as_ok;
     // // groups == ["abc012", "012"]
     // ```
     //
@@ -62,7 +62,7 @@ namespace RegExp {
     // Example:
     // ```
     // let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
-    // let groups = regexp.match("abc012 def345").as_ok;
+    // let groups = regexp.match_one("abc012 def345").as_ok;
     // // groups == ["abc012", "def345"]
     // ```
     //
@@ -70,8 +70,8 @@ namespace RegExp {
     //
     // This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
     // function of JavaScript.
-    match: String -> RegExp -> Result ErrMsg (Array String);
-    match = |target, regexp| (
+    match_one: String -> RegExp -> Result ErrMsg (Array String);
+    match_one = |target, regexp| (
         let executor = regexp.@nfa.execute(target);
         let states: Array NFAState = executor.@accepted_states.to_iter.to_array;
         if regexp.@flags.find_byte('g').is_some {
