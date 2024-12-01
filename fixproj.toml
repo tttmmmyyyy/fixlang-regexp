@@ -1,6 +1,6 @@
 [general]
 name = "regexp"
-version = "0.1.2"
+version = "1.0.0"
 
 [build]
 files = [
@@ -16,10 +16,10 @@ files = ["test.fix"]
 
 [[dependencies]]
 name = "hashmap"
-version = "0.1.0"
+version = "1.0.0"
 git = { url = "https://github.com/tttmmmyyyy/fixlang-hashmap.git" }
 
 [[dependencies]]
 name = "character"
-version = "0.1.0"
+version = "1.0.0"
 git = { url = "https://github.com/tttmmmyyyy/fixlang-character.git" }
