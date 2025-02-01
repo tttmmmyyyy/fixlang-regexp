@@ -1,6 +1,7 @@
 [general]
 name = "regexp"
 version = "1.0.0"
+description = "Provides regular expression matching."
 
 [build]
 files = [

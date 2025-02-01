@@ -38,58 +38,13 @@ Type of a compiled regular expression.
 
 ## `namespace RegExp::RegExp`
 
-### `@flags : RegExp::RegExp -> Std::String`
+### `_convert_groups_to_string : Std::Array RegExp.RegExpNFA::Group -> Std::String -> Std::Array Std::String`
 
-Retrieves the field `flags` from a value of `RegExp`.
-
-### `@nfa : RegExp::RegExp -> RegExp.RegExpNFA::NFA`
-
-Retrieves the field `nfa` from a value of `RegExp`.
-
-### `_convert_groups_to_string : Std::Array (Std::I64, Std::I64) -> Std::String -> Std::Array Std::String`
-
-### `act_flags : [f : Std::Functor] (Std::String -> f Std::String) -> RegExp::RegExp -> f RegExp::RegExp`
-
-Updates a value of `RegExp` by applying a functorial action to field `flags`.
-
-### `act_nfa : [f : Std::Functor] (RegExp.RegExpNFA::NFA -> f RegExp.RegExpNFA::NFA) -> RegExp::RegExp -> f RegExp::RegExp`
-
-Updates a value of `RegExp` by applying a functorial action to field `nfa`.
-
-### `compile : Std::String -> Std::String -> Std::Result Std::String RegExp::RegExp`
+### `compile : Std::String -> Std::String -> Std::Result Std::ErrMsg RegExp::RegExp`
 
 `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
 `flags` change behavior of regular expression matching.
 Currently only global flag (`"g"`) is supported.
-
-### `match : Std::String -> RegExp::RegExp -> Std::Result Std::String (Std::Array Std::String)`
-
-`regexp.match(target)` matches `target` against `regexp`.
-
-If the global flag (`"g"`) is not set, it returns an array of the groups of the first match.
-Group 0 is a substring that matches the entire regular expression.
-Group 1 and beyond are the captured substrings in each group. If not captured, the group will be an empty string.
-
-Example:
-```
-let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
-let groups = regexp.match("abc012 def345").as_ok;
-// groups == ["abc012", "012"]
-```
-
-If the global flag (`"g"`) is set, all matching results will be returned, but captured groups will not be included.
-
-Example:
-```
-let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
-let groups = regexp.match("abc012 def345").as_ok;
-// groups == ["abc012", "def345"]
-```
-
-If the match against the regular expression fails, an error `"NotMatch"` is reported.
-
-This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
-function of JavaScript.
 
 ### `match_all : Std::String -> RegExp::RegExp -> Std::Array (Std::Array Std::String)`
 
@@ -101,13 +56,34 @@ If the match against the regular expression fails, an empty array is returned.
 This function is similar to [String.matchAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
 function of JavaScript.
 
-### `mod_flags : (Std::String -> Std::String) -> RegExp::RegExp -> RegExp::RegExp`
+### `match_one : Std::String -> RegExp::RegExp -> Std::Result Std::ErrMsg (Std::Array Std::String)`
 
-Updates a value of `RegExp` by applying a function to field `flags`.
+`regexp.match(target)` matches `target` against `regexp`.
 
-### `mod_nfa : (RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA) -> RegExp::RegExp -> RegExp::RegExp`
+If the global flag (`"g"`) is not set, it returns an array of the groups of the first match.
+Group 0 is a substring that matches the entire regular expression.
+Group 1 and beyond are the captured substrings in each group. If not captured, the group will be an empty string.
 
-Updates a value of `RegExp` by applying a function to field `nfa`.
+Example:
+```
+let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
+let groups = regexp.match_one("abc012 def345").as_ok;
+// groups == ["abc012", "012"]
+```
+
+If the global flag (`"g"`) is set, all matching results will be returned, but captured groups will not be included.
+
+Example:
+```
+let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
+let groups = regexp.match_one("abc012 def345").as_ok;
+// groups == ["abc012", "def345"]
+```
+
+If the match against the regular expression fails, an error `"NotMatch"` is reported.
+
+This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
+function of JavaScript.
 
 ### `replace_all : Std::String -> Std::String -> RegExp::RegExp -> Std::String`
 
@@ -128,11 +104,3 @@ let result = regexp.replace_all("abc def ijk", "$2$1");
 This function is similar to [String.replaceAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
 function of JavaScript.
 Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
-
-### `set_flags : Std::String -> RegExp::RegExp -> RegExp::RegExp`
-
-Updates a value of `RegExp` by setting field `flags` to a specified one.
-
-### `set_nfa : RegExp.RegExpNFA::NFA -> RegExp::RegExp -> RegExp::RegExp`
-
-Updates a value of `RegExp` by setting field `nfa` to a specified one.
