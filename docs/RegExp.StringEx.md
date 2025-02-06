@@ -9,6 +9,10 @@ String extensions, such as:
 
 # Types and aliases
 
+## `namespace RegExp.StringEx`
+
+### `type SplitByIterator = Std::Iterator::ArrayIterator Std::String`
+
 # Traits and aliases
 
 # Trait implementations
@@ -87,12 +91,12 @@ Example:
 "test.jpg".replace_suffix(".txt", ".tmp")  ==> err("suffix does not match: test.jpg")
 ```
 
-### `split_by : (Std::U8 -> Std::Bool) -> Std::String -> Std::Iterator Std::String`
+### `split_by : (Std::U8 -> Std::Bool) -> Std::String -> RegExp.StringEx::SplitByIterator`
 
 Splits a string by a function that checks whether a character is a delimiter or not.
 The result will not contain any empty string.
 
-### `split_ex : Std::String -> Std::String -> Std::Iterator Std::String`
+### `split_ex : Std::String -> Std::String -> Std::Iterator::DynIterator Std::String`
 
 Same as Std::String::split, except that `"foo".split_ex(",")` returns a singleton iterator of "foo".
 

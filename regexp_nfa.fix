@@ -538,7 +538,7 @@ namespace NFAState {
         let states = states._sort_by_group0_begin_and_length;
         let output = Array::empty(states.get_size);
         states.to_iter.fold(
-            output, |output, a|
+            output, |a, output|
             if output.is_empty {
                 output.push_back(a)
             };
@@ -607,9 +607,9 @@ namespace NFAStateSet {
     );
 
     // Returns an iterator of the states.
-    to_iter: NFAStateSet -> Iterator NFAState;
+    to_iter: NFAStateSet -> DynIterator NFAState;
     to_iter = |state_set| (
-        state_set.@array.to_iter
+        state_set.@array.to_iter.to_dyn
     );
 }
 
@@ -619,7 +619,7 @@ type NFAExecutor = unbox struct {
     nfa: NFA,                           // NFA
     empty_state_set: NFAStateSet,       // an empty state set
     state_set: NFAStateSet,             // current state set
-    stack: Iterator NFAState,           // temporary stack for transition
+    stack: DynIterator NFAState,           // temporary stack for transition
     accepted_states: NFAStateSet        // accepted states
 };
 
@@ -636,7 +636,7 @@ namespace NFAExecutor {
             nfa: nfa,
             empty_state_set: empty_state_set,
             state_set: state_set,
-            stack: Iterator::empty,
+            stack: Iterator::empty.to_dyn,
             accepted_states: empty_state_set
         }
     );
@@ -666,7 +666,7 @@ namespace NFAExecutor {
         let accepting_node = executor.@nfa.@accepting_node;
         let accepting_states = executor.@state_set.to_iter
             .filter(|state| state.@id == accepting_node);
-        let add_all = accepting_states.fold(|x|x, |f, state|
+        let add_all = accepting_states.fold(|x|x, |state, f|
             f >> NFAStateSet::add(state)
         );
         executor.mod_accepted_states(add_all)        
@@ -694,7 +694,7 @@ namespace NFAExecutor {
 
     _pop_stack: NFAExecutor -> Option (NFAState, NFAExecutor);
     _pop_stack = |executor| (
-        executor.@stack.advance.map(|(state, next)|
+        executor.@stack.advance.map(|(next, state)|
             (state, executor.set_stack(next))
         )
     );
@@ -711,7 +711,7 @@ namespace NFAExecutor {
         eval executor.@nfa.debug("transition " + state.to_string);
         executor
             .mod_state_set(add(state))
-            .mod_stack(push_front(state))
+            .mod_stack(push_front(state) >> to_dyn)
     );
 
     // Applies transitions on an action with empty string.
@@ -772,7 +772,7 @@ namespace NFAExecutor {
         let executor = old_state_set.to_iter.fold(
             // Clear new state set
             executor.set_state_set(executor.@empty_state_set),
-            |executor, state|
+            |state, executor|
             // For each old state:
             let node = executor.@nfa.get_node(state.@id);
             let action = node.@action;
@@ -786,7 +786,7 @@ namespace NFAExecutor {
             // note: stack is not used
             executor._add_to_state_set_and_stack(state.transition(node.@output_on_action))
         );
-        let executor = executor.set_stack(Iterator::empty);
+        let executor = executor.set_stack(Iterator::empty.to_dyn);
         executor
     );
 }
@@ -813,7 +813,7 @@ namespace Replacement {
     calc_replacement = |target, rep_frags, state| (
         let output: Array U8 = Array::empty(target.get_size + rep_frags.get_size);
         let output = rep_frags.to_iter.fold(
-            output, |output, rep|
+            output, |rep, output|
             if rep.is_rep_literal {
                 output.push_back(rep.as_rep_literal)
             };

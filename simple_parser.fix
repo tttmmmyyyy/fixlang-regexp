@@ -19,7 +19,7 @@ namespace Stream {
         line: I64,              // Line number
         column: I64,            // Column number
         position: I64,          // Stream position from the beginning of the file
-        iter: Iterator Char     // The character iterator
+        iter: DynIterator Char     // The character iterator
     };
 
     // An empty Stream.
@@ -29,19 +29,19 @@ namespace Stream {
         line: 0,
         column: 0,
         position: 0,
-        iter: Iterator::empty
+        iter: Iterator::empty.to_dyn
     };
 
     // Creates a stream from specified string.
     make: String -> Stream;
     make = |str| (
-        Stream::empty.set_iter(str.get_bytes.pop_back.to_iter)
+        Stream::empty.set_iter(str.get_bytes.pop_back.to_iter.to_dyn)
     );
 
     // `stream.advance` gets next character and increment the stream position.
     advance: Stream -> Option (Char, Stream);
     advance = |s| (
-        let (c, next) = *(s.@iter.advance);
+        let (next, c) = *(s.@iter.advance);
         // eval debug_eprintln("advance: c="+c.to_string + " pos=" + s.@position.to_string);
         let s = s.set_iter(next);
         let s = if c == '\n' {
@@ -354,7 +354,7 @@ namespace Parser {
         };
         str.get_bytes.pop_back.to_iter.fold(
             unit,
-            |p, c| do {
+            |c, p| do {
                 let _ = *p;
                 let _ = *match_char(c);
                 pure $ ()

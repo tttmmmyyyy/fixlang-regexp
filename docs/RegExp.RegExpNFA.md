@@ -48,7 +48,7 @@ The NFA executor
 
 #### field `state_set : RegExp.RegExpNFA::NFAStateSet`
 
-#### field `stack : Std::Iterator RegExp.RegExpNFA::NFAState`
+#### field `stack : Std::Iterator::DynIterator RegExp.RegExpNFA::NFAState`
 
 #### field `accepted_states : RegExp.RegExpNFA::NFAStateSet`
 
@@ -350,7 +350,7 @@ Checks whether the state set contains a state.
 
 Checks whether the state set is empty.
 
-### `to_iter : RegExp.RegExpNFA::NFAStateSet -> Std::Iterator RegExp.RegExpNFA::NFAState`
+### `to_iter : RegExp.RegExpNFA::NFAStateSet -> Std::Iterator::DynIterator RegExp.RegExpNFA::NFAState`
 
 Returns an iterator of the states.
 

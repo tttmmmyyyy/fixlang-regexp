@@ -82,7 +82,7 @@ namespace CharClass {
     to_table: CharClass -> CharClass;
     to_table = |cls| (
         let table = Iterator::count_up(0).take(256).fold(
-            Array::fill(256, false), |arr, i|
+            Array::fill(256, false), |i, arr|
             arr.set(i, cls.contains(i.to_U8))
         );
         CharClass {
@@ -417,7 +417,7 @@ namespace Pattern {
             let input: Array Pattern = pat.as_psequence;
             let output: Array Pattern = Array::empty(input.get_size);
             let (n, output) = input.to_iter.fold(
-                (n, output), |(n, output), pat_inner|
+                (n, output), |pat_inner, (n, output)|
                 let (n, pat_inner) = pat_inner._assign_group_number(n);
                 let output = output.push_back(pat_inner);
                 (n, output)

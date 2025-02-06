@@ -1,6 +1,6 @@
 [general]
 name = "regexp"
-version = "1.0.0"
+version = "1.1.0"
 description = "Provides regular expression matching."
 
 [build]
@@ -17,7 +17,7 @@ files = ["test.fix"]
 
 [[dependencies]]
 name = "hashmap"
-version = "1.0.0"
+version = "1.1.0"
 git = { url = "https://github.com/tttmmmyyyy/fixlang-hashmap.git" }
 
 [[dependencies]]

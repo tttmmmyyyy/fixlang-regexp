@@ -39,7 +39,7 @@ and offset from the beginning of the file.
 
 #### field `position : Std::I64`
 
-#### field `iter : Std::Iterator RegExp.SimpleParser::Char`
+#### field `iter : Std::Iterator::DynIterator RegExp.SimpleParser::Char`
 
 # Traits and aliases
 

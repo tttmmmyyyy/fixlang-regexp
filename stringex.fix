@@ -128,21 +128,21 @@ split_first = |delim, str| (
 );
 
 // Same as Std::String::split, except that `"foo".split_ex(",")` returns a singleton iterator of "foo".
-split_ex: String -> String -> Iterator String;
+split_ex: String -> String -> DynIterator String;
 split_ex = |delim, str| (
     if delim == "" {
-        Iterator::empty.push_front(str)
+        Iterator::empty.push_front(str).to_dyn
     };
     let pos = str.find(delim, 0);
     if pos.is_none {
-        Iterator::empty.push_front(str)
+        Iterator::empty.push_front(str).to_dyn
     };
-    str.split(delim)
+    str.split(delim).to_dyn
 );
 
 // Splits a string by a function that checks whether a character is a delimiter or not.
 // The result will not contain any empty string.
-split_by: (U8 -> Bool) -> String -> Iterator String;
+split_by: (U8 -> Bool) -> String -> SplitByIterator;
 split_by = |is_delim, str| (
     let output = Array::empty(str.get_size);
     let output = loop(
@@ -160,6 +160,8 @@ split_by = |is_delim, str| (
     );
     output.to_iter
 );
+
+type SplitByIterator = ArrayIterator String;
 
 // Returns a substring extracted from a specified range from a string.
 // If the specified range exceeds the string, it will be truncated to fit within the string.
@@ -231,7 +233,7 @@ formatv = |str, args| (
     let from = "{}";
     let output = Array::empty(args.get_size * 2);
     let (output, tail) = args.to_iter.loop_iter(
-        (output, 0), |(output, find_start), to|
+        (output, 0), |to, (output, find_start)|
         let pos = str.find(from, find_start);
         if pos.is_none {
             break $ (output, find_start)
@@ -300,7 +302,7 @@ decode_hex_char = |c| (
 // Converts a 64bit number to a hex string.
 to_string_hex: U64 -> String;
 to_string_hex = |input| (
-    let output: Iterator U8 = Iterator::empty;
+    let output: DynIterator U8 = DynIterator::empty;
     let output = loop(
         (output, 0, input), |(output, i, input)|
         if i >= 16 || input == 0_U64 {
@@ -309,9 +311,9 @@ to_string_hex = |input| (
         let h = input.bit_and(15_U64).to_U8;
         let input = input.shift_right(4_U64);
         let output = output.push_front(encode_hex_char(h));
-        continue $ (output, i + 1, input)
+        continue $ (output.to_dyn, i + 1, input)
     );
-    let output = if output.is_empty { output.push_front ('0') } else { output };
+    let output = if output.is_empty { output.push_front ('0').to_dyn } else { output.to_dyn };
     output.to_array._unsafe_to_string
 );
 
@@ -323,7 +325,7 @@ from_string_hex = |input| (
     };
     let input = input.get_bytes.pop_back;
     input.to_iter.fold_m(
-        0_U64, |output, c|
+        0_U64, |c, output|
         let c = *decode_hex_char(c);
         pure $ output.shift_left(4_U64).bit_or(c.to_U64)
     )
@@ -341,7 +343,7 @@ is_path_sep = |c| c == '/';
 join_paths: Array String -> String;
 join_paths = |path_segments| (
     path_segments.to_iter.fold(
-        "", |result, segment|
+        "", |segment, result|
         if result == "" {
             segment
         };
