@@ -1,6 +1,7 @@
 module Test;
 
-import RegExp;
+import RegExp::RegExp::{compile, match_one, replace_all};
+import Std::{IO, Debug::assert_eq, Monad::pure, Result::as_ok};
 
 test : IO ();
 test = (

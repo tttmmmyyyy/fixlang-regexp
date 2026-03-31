@@ -6,12 +6,35 @@
 //
 module RegExp.RegExpNFA;
 
-import Hash;
-import HashMap;
-
-import RegExp.SimpleParser;
-import RegExp.StringEx;
-import RegExp.RegExpPattern;
+import Hash::{Hash, Hash::hash};
+import HashMap::{contains_key, empty, insert, HashMap};
+import RegExp.RegExpPattern::{
+    CharClass, PAssertion, Pattern, CharClass::contains, PAssertion::{is_pa_begin, is_pa_end}, 
+    Pattern::{
+        as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, is_passert, is_pclass, 
+        is_peither, is_pgroup, is_pquant, is_psequence, psequence, _assign_group_number
+    }
+};
+import RegExp.SimpleParser::{
+    Parser, 
+    Parser::{
+        match_any_char, match_char, match_char_if_exists, match_integer, not_match, or_else, repeat, 
+        run_parser_str
+    }, 
+    Stream::{advance, make, Stream, Stream::{@iter, @position}}
+};
+import RegExp.StringEx::{byte_to_string, substring, _unsafe_to_string};
+import Std::{
+    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U8, 
+    Array::{
+        append, empty, fill, get_first, get_last, get_size, is_empty, mod, pop_back, push_back, set, sort_by, 
+        to_iter, @
+    }, 
+    Debug::debug_eprintln, Functor::map, I64::maximum, 
+    Iterator::{advance, empty, filter, fold, is_empty, map, push_front, to_dyn, DynIterator}, 
+    LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, is_some, none, some}, 
+    Result::{as_ok, is_err}, String::{concat_iter, get_bytes, get_size}, ToString::to_string
+};
 
 // Type of a matched group.
 // The group is represented as two stream positions: `(begin, end)`. 

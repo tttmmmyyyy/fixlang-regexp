@@ -1,10 +1,23 @@
 // Character class and Pattern parser. This is internal module of `RegExp`.
 module RegExp.RegExpPattern;
 
-import Character;
-
-import RegExp.SimpleParser;
-import RegExp.StringEx;
+import Character::{is_alnum, is_digit, is_space};
+import RegExp.SimpleParser::{
+    Parser, 
+    Parser::{
+        error_parser, filter, get_stream, match_any_char, match_char, match_char_if_exists, 
+        match_end_of_stream, match_integer, not_match, or_else, or_error, repeat, run_parser_str, 
+        zero_or_more
+    }, 
+    Stream::{read_string, Stream::@position}
+};
+import RegExp.StringEx::{byte_to_string, find_byte};
+import Std::{
+    undefined, Array, Bool, ErrMsg, I64, Result, String, ToString, U8, 
+    Array::{empty, fill, get_size, push_back, set, to_iter, @}, Functor::map, I64::{maximum, to_U8}, 
+    Iterator::{count_up, fold, map, take}, Monad::pure, Option::{as_some, is_none, is_some, none, some}, 
+    String::{get_size, join}, ToString::to_string, U8::to_I64
+};
 
 // Type of a character class.
 type CharClass = unbox struct {

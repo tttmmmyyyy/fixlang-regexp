@@ -6,8 +6,22 @@
 // - File Path handling
 module RegExp.StringEx;
 
-import HashMap;
-import Character;
+import Character::{to_lower, to_upper};
+import Std::{
+    loop, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
+    Array::{empty, get_size, pop_back, push_back, to_iter, @}, Functor::map, 
+    Iterator::{
+        empty, fold, fold_m, is_empty, loop_iter, push_front, to_array, to_dyn, ArrayIterator, DynIterator, 
+        DynIterator::empty
+    }, 
+    LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, none, some}, Result::{err, ok}, 
+    String::{
+        concat_iter, find, get_bytes, get_size, get_sub, split, strip_first_bytes, strip_last_bytes, 
+        _unsafe_from_c_str
+    }, 
+    ToString::to_string, U64::{bit_and, bit_or, shift_left, shift_right, to_U8}, 
+    U8::{bit_and, to_I64, to_U64}
+};
 
 //---------------------------------
 // String utility functions
@@ -106,7 +120,7 @@ replace_all = |from, to, str| (
 // ```
 replace_suffix: String -> String -> String -> Result ErrMsg String;
 replace_suffix = |from, to, str| (
-    if !str.ends_with(from) {
+    if !str.StringEx::ends_with(from) {
         err $ "suffix does not match: " + str
     };
     let str = str.substring(0, str.get_size - from.get_size);

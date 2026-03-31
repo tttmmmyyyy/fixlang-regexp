@@ -1,0 +1,28 @@
+proj_file_hash = "12d2ea718767d113697203eaaa19497e"
+
+[[dependencies]]
+name = "character"
+version = "1.0.1"
+path = ".fixlang/deps/character_1.0.1"
+
+[dependencies.git]
+repo = "https://github.com/tttmmmyyyy/fixlang-character.git"
+rev = "fd75a6634ec0c919f2d1703112d25da9a3c2346e"
+
+[[dependencies]]
+name = "hash"
+version = "1.1.1"
+path = ".fixlang/deps/hash_1.1.1"
+
+[dependencies.git]
+repo = "https://github.com/tttmmmyyyy/fixlang-hash.git"
+rev = "145a20913eb9c280edd616d5b9977d33303343c1"
+
+[[dependencies]]
+name = "hashmap"
+version = "1.2.0"
+path = ".fixlang/deps/hashmap_1.2.0"
+
+[dependencies.git]
+repo = "https://github.com/tttmmmyyyy/fixlang-hashmap.git"
+rev = "a7cb58fef24d0cf11ba305faf4f764dca72ecc45"

@@ -18,10 +18,19 @@
 //
 module RegExp;
 
+import RegExp.RegExpNFA::{
+    Group, NFA, NFAState, NFA::{compile, execute}, NFAExecutor::@accepted_states, 
+    NFAState::{collect_all_non_overlapping, collect_first_match, @groups}, NFAStateSet::to_iter, 
+    Replacement::{calc_replacement, compile}
+};
+import RegExp.RegExpPattern::Pattern::{parse, pgroup, psequence};
+import RegExp.StringEx::{find_byte, substring};
+import Std::{
+    Array, ErrMsg, Result, String, Array::{empty, is_empty, push_back, to_iter, @}, 
+    Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, Result::{err, ok}, 
+    String::{concat_iter, get_size}
+};
 
-import RegExp.StringEx;
-import RegExp.RegExpPattern;
-import RegExp.RegExpNFA;
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
