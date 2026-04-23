@@ -8,10 +8,10 @@ module RegExp.StringEx;
 
 import Character::{to_lower, to_upper};
 import Std::{
-    loop, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
+    loop, Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, ToString, U64, U8,
     Array::{empty, get_size, pop_back, push_back, to_iter, @}, Functor::map, 
     Iterator::{
-        empty, fold, fold_m, is_empty, loop_iter, push_front, to_array, to_dyn, ArrayIterator, DynIterator, 
+        empty, fold, fold_m, is_empty, loop_iter, push_front, to_array, to_dyn, DynIterator, Item,
         DynIterator::empty
     }, 
     LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, none, some}, Result::{err, ok}, 
@@ -156,7 +156,7 @@ split_ex = |delim, str| (
 
 // Splits a string by a function that checks whether a character is a delimiter or not.
 // The result will not contain any empty string.
-split_by: (U8 -> Bool) -> String -> SplitByIterator;
+split_by: [?it: Iterator, Item ?it = String] (U8 -> Bool) -> String -> ?it;
 split_by = |is_delim, str| (
     let output = Array::empty(str.get_size);
     let output = loop(
@@ -174,8 +174,6 @@ split_by = |is_delim, str| (
     );
     output.to_iter
 );
-
-type SplitByIterator = ArrayIterator String;
 
 // Returns a substring extracted from a specified range from a string.
 // If the specified range exceeds the string, it will be truncated to fit within the string.

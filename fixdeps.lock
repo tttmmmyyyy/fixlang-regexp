@@ -1,28 +1,28 @@
-proj_file_hash = "12d2ea718767d113697203eaaa19497e"
-
-[[dependencies]]
-name = "hashmap"
-version = "1.1.0"
-path = ".fixlang/deps/hashmap_1.1.0"
-
-[dependencies.git]
-repo = "https://github.com/tttmmmyyyy/fixlang-hashmap.git"
-rev = "81232c21ce00faa3061575ee8fb5adede8a26d4d"
-
-[[dependencies]]
-name = "hash"
-version = "1.0.0"
-path = ".fixlang/deps/hash_1.0.0"
-
-[dependencies.git]
-repo = "https://github.com/tttmmmyyyy/fixlang-hash.git"
-rev = "4b2f01c2d7309447fe7cd68a8d105ae86e2bde97"
+proj_file_hash = "00be307ff2d5961d8bbd5a26c575a499"
 
 [[dependencies]]
 name = "character"
-version = "1.0.0"
-path = ".fixlang/deps/character_1.0.0"
+version = "1.0.1"
+path = ".fixlang/deps/character_1.0.1"
 
 [dependencies.git]
 repo = "https://github.com/tttmmmyyyy/fixlang-character.git"
-rev = "13e128d2b87a729c4e73d986994a5cedcf3e8f49"
+rev = "fd75a6634ec0c919f2d1703112d25da9a3c2346e"
+
+[[dependencies]]
+name = "hash"
+version = "1.1.1"
+path = ".fixlang/deps/hash_1.1.1"
+
+[dependencies.git]
+repo = "https://github.com/tttmmmyyyy/fixlang-hash.git"
+rev = "145a20913eb9c280edd616d5b9977d33303343c1"
+
+[[dependencies]]
+name = "hashmap"
+version = "2.0.0"
+path = ".fixlang/deps/hashmap_2.0.0"
+
+[dependencies.git]
+repo = "https://github.com/tttmmmyyyy/fixlang-hashmap.git"
+rev = "26bcb6c7cb66cc39b4f2604e1c94aa7730e03a9e"
