@@ -6,8 +6,6 @@
 //
 module RegExp.RegExpNFA;
 
-import Hash::{Hash, Hash::hash};
-import HashMap::{contains_key, empty, insert, HashMap};
 import RegExp.RegExpPattern::{
     CharClass, PAssertion, Pattern, CharClass::contains, PAssertion::{is_pa_begin, is_pa_end}, 
     Pattern::{
@@ -20,20 +18,17 @@ import RegExp.SimpleParser::{
     Parser::{
         match_any_char, match_char, match_char_if_exists, match_integer, not_match, or_else, repeat, 
         run_parser_str
-    }, 
-    Stream::{advance, make, Stream, Stream::{@iter, @position}}
+    }
 };
-import RegExp.StringEx::{byte_to_string, substring, _unsafe_to_string};
+import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
-    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U8, 
-    Array::{
-        append, empty, fill, get_first, get_last, get_size, is_empty, mod, pop_back, push_back, set, sort_by, 
-        to_iter, @
-    }, 
-    Debug::debug_eprintln, Functor::map, I64::maximum, 
-    Iterator::{advance, empty, filter, fold, is_empty, map, push_front, to_dyn, DynIterator}, 
-    LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, is_some, none, some}, 
-    Result::{as_ok, is_err}, String::{concat_iter, get_bytes, get_size}, ToString::to_string
+    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
+    Array::{append, empty, fill, get_last, get_size, mod, pop_back, push_back, set, to_iter, truncate, @}, 
+    Debug::debug_eprintln, Functor::map, I64::{maximum, to_U64, to_U8}, 
+    Iterator::{check_any, fold, map, range}, LessThan::{max, min}, LoopState::{break, continue}, 
+    Monad::pure, Option::{as_some, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
+    String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
+    U64::{bit_and, bit_or, shift_left, shift_right}, U8::to_I64
 };
 
 // Type of a matched group.
@@ -57,7 +52,12 @@ type NFA = unbox struct {
     initial_node: NodeID,     // initial node
     accepting_node: NodeID,   // accepting node
     group_count: I64,         // group count
-    quant_count: I64,         // special quant count
+    quant_bounds: Array (I64, I64), // fewest and most rounds each special quant admits
+    // The character classes the nodes are guarded by, as one bit per byte value, four words to a
+    // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
+    // so that walking the nodes costs no reference counting at all.
+    classes: Array U64,
+    labels: Array String,     // a label per node, to display
     debug: Bool               // true if debug
 };
 
@@ -69,7 +69,9 @@ namespace NFA {
         initial_node: _INVALID_NODE_ID,
         accepting_node: _INVALID_NODE_ID,
         group_count: 0,
-        quant_count: 0,
+        quant_bounds: Array::empty(0),
+        classes: Array::empty(0),
+        labels: Array::empty(0),
         debug: false
     };
 
@@ -79,8 +81,50 @@ namespace NFA {
         let id = NodeID { val: nfa.@nodes.get_size };
         let node = NFANode::empty;
         let node = node.set_id(id);
-        let nfa = nfa.mod_nodes(push_back(node));
+        let nfa = nfa.mod_nodes(push_back(node)).mod_labels(push_back(""));
         (nfa, id)
+    );
+
+    // `nfa.set_node_label(id, label)` gives the node whose @id is `id` a label to display.
+    //
+    // # Parameters
+    // * `id` - The node to label.
+    // * `label` - The label to give it.
+    // * `nfa` - The automaton the node belongs to.
+    set_node_label: NodeID -> String -> NFA -> NFA;
+    set_node_label = |id, label, nfa| (
+        nfa.mod_labels(set(id.@val, label))
+    );
+
+    // Stores a character class and returns where its four words begin.
+    //
+    // # Parameters
+    // * `cls` - The class to store.
+    // * `nfa` - The automaton to store it in.
+    new_class: CharClass -> NFA -> (NFA, I64);
+    new_class = |cls, nfa| (
+        let base = nfa.@classes.get_size;
+        let nfa = nfa.mod_classes(|words|
+            Iterator::range(0, 4).fold(words, |w, words|
+                words.push_back(Iterator::range(0, 64).fold(0_U64, |b, mask|
+                    if !cls.contains((w * 64 + b).to_U8) { mask };
+                    mask.bit_or(1_U64.shift_left(b.to_U64))
+                ))
+            )
+        );
+        (nfa, base)
+    );
+
+    // Whether a byte belongs to the class whose words begin at a position.
+    //
+    // # Parameters
+    // * `base` - Where the class's words begin.
+    // * `byte` - The byte to test.
+    // * `nfa` - The automaton holding the classes.
+    class_holds: I64 -> U8 -> NFA -> Bool;
+    class_holds = |base, byte, nfa| (
+        let index = byte.to_I64;
+        nfa.@classes.@(base + index / 64).shift_right((index % 64).to_U64).bit_and(1_U64) == 1_U64
     );
 
     // `nfa.get_node(id)` gets the node whose @id is `id`.
@@ -102,10 +146,15 @@ namespace NFA {
     );
 
     // Creates new quant. Returns the new quant id.
-    new_quant: NFA -> (NFA, QuantID);
-    new_quant = |nfa| (
-        let nfa = nfa.mod_quant_count(|n| n + 1);
-        (nfa, nfa.@quant_count - 1)
+    //
+    // # Parameters
+    // * `least` - The fewest rounds the quantifier admits.
+    // * `most` - The most rounds it admits.
+    // * `nfa` - The automaton to add the quantifier to.
+    new_quant: I64 -> I64 -> NFA -> (NFA, QuantID);
+    new_quant = |least, most, nfa| (
+        let id = nfa.@quant_bounds.get_size;
+        (nfa.mod_quant_bounds(push_back((least, most))), id)
     );
 
     // `NFA::compile(pattern)` compiles a pattern to NFA.
@@ -129,15 +178,6 @@ namespace NFA {
         nfa
     );
 
-    // `nfa.execute(target)` executes matching.
-    execute: String -> NFA -> NFAExecutor;
-    execute = |target, nfa| (
-        let stream: Stream = Stream::make(target);
-        let executor = NFAExecutor::make(stream, nfa);
-        let executor = executor.execute;
-        executor
-    );
-
     debug: String -> NFA -> ();
     debug = |msg, nfa| (
         if nfa.@debug { debug_eprintln(msg) } else { () }
@@ -147,7 +187,9 @@ namespace NFA {
 impl NFA: ToString {
     to_string = |nfa| (
         "NFA { nodes=\n"
-        + nfa.@nodes.to_iter.map(|s| "  " + s.to_string + "\n").concat_iter
+        + Iterator::range(0, nfa.@nodes.get_size).map(|i|
+            "  " + nfa.@nodes.@(i).to_string + ":" + nfa.@labels.@(i) + "\n"
+        ).concat_iter
         + "  initial_node=" + nfa.@initial_node.to_string + "\n"
         + "  accepting_node=" + nfa.@accepting_node.to_string + "\n"
         +"}"
@@ -157,7 +199,7 @@ impl NFA: ToString {
 // Actions that has to be performed before the state makes a transition to `node.@out_on_action`.
 type NFANodeAction = unbox union {
     sa_none: (),
-    sa_char_match: CharClass,               // The input character must match to the character class
+    sa_char_match: I64,                     // Where the class the input character must belong to begins
     sa_assert: PAssertion,                  // The assertion to be checked
     sa_group_begin: I64,                    // The beginning of a group
     sa_group_end: I64,                      // The end of a group
@@ -169,7 +211,7 @@ type NFANodeAction = unbox union {
 impl NFANodeAction: ToString {
     to_string = |a| (
         if a.is_sa_none { "none" };
-        if a.is_sa_char_match { a.as_sa_char_match.to_string };
+        if a.is_sa_char_match { "class@" + a.as_sa_char_match.to_string };
         if a.is_sa_assert { a.as_sa_assert.to_string };
         if a.is_sa_group_begin { "<g" + a.as_sa_group_begin.to_string + ">" };
         if a.is_sa_group_end { "</g" + a.as_sa_group_end.to_string + ">" };
@@ -189,8 +231,7 @@ type NFANode = unbox struct {
     action: NFANodeAction,     // action
     output_on_action: NodeID,  // next node when the action succeeded
     output: NodeID,            // next node with empty string
-    output2: NodeID,           // next node with empty string part 2
-    label: String              // a label to display
+    output2: NodeID            // next node with empty string part 2
 };
 
 // ID of NFA node. -1 is invalid value.
@@ -206,10 +247,6 @@ impl NodeID: Eq {
     eq = |a, b| a.@val == b.@val;
 }
 
-impl NodeID: Hash {
-    hash = |a| a.@val.hash;
-}
-
 namespace NFANode {
     // An invalid node ID.
     _INVALID_NODE_ID: NodeID;
@@ -222,8 +259,7 @@ namespace NFANode {
         action: sa_none(),
         output_on_action: _INVALID_NODE_ID,
         output: _INVALID_NODE_ID,
-        output2: _INVALID_NODE_ID,
-        label: ""
+        output2: _INVALID_NODE_ID
     };
 }
 
@@ -234,8 +270,7 @@ impl NFANode: ToString {
         + node.@action.to_string + ":"
         + node.@output_on_action.to_string + ","
         + node.@output.to_string + ","
-        + node.@output2.to_string + ":"
-        + node.@label
+        + node.@output2.to_string
         + ")"
     );
 }
@@ -260,8 +295,11 @@ namespace NFAFrag {
     compile_pattern: Pattern -> NFA -> (NFA, NFAFrag);
     compile_pattern = |pat, nfa| (
         if pat.is_pclass {
-            let action = sa_char_match (pat.as_pclass);
-            nfa._compile_action(action)
+            let cls = pat.as_pclass;
+            let (nfa, base) = nfa.new_class(cls);
+            let (nfa, frag) = nfa._compile_action(sa_char_match(base));
+            let nfa = nfa.set_node_label(frag.@input, cls.to_string);
+            (nfa, frag.set_label(cls.to_string))
         };
         if pat.is_psequence {
             let patterns = pat.as_psequence;
@@ -327,7 +365,7 @@ namespace NFAFrag {
             ),
             label: action.to_string
         };
-        let nfa = nfa.mod_node(id, set_label(frag.@label));
+        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -342,7 +380,7 @@ namespace NFAFrag {
             ),
             label: "``"
         };
-        let nfa = nfa.mod_node(id, set_label(frag.@label));
+        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -374,7 +412,7 @@ namespace NFAFrag {
             ),
             label: frag1.@label + "|" + frag2.@label
         };
-        let nfa = nfa.mod_node(id, set_label(frag.@label));
+        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
 
     );
@@ -392,7 +430,7 @@ namespace NFAFrag {
             ),
             label: frag1.@label + "?"
         };
-        let nfa = nfa.mod_node(id, set_label(frag.@label));
+        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -409,7 +447,7 @@ namespace NFAFrag {
             ),
             label: frag1.@label + "*"
         };
-        let nfa = nfa.mod_node(id, set_label(frag.@label));
+        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -426,16 +464,16 @@ namespace NFAFrag {
             ),
             label: frag1.@label + "+"
         };
-        let nfa = nfa.mod_node(id, set_label(frag.@label));
+        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
     // Compiles special quant (`e{min,max}`) to a fragment.
     _compile_special_quant: NFAFrag -> I64 -> I64 -> NFA -> (NFA, NFAFrag);
     _compile_special_quant = |frag1, min, max, nfa| (
-        let (nfa, qid) = nfa.new_quant;
+        let (nfa, qid) = nfa.new_quant(min, max);
         let (nfa, branch_id) = nfa.new_node;
-        let nfa = nfa.mod_node(branch_id, set_label("branch(q" + qid.to_string + ")"));
+        let nfa = nfa.set_node_label(branch_id, "branch(q" + qid.to_string + ")");
         let (nfa, frag_begin) = nfa._compile_action(sa_quant_begin $ qid);
         let (nfa, frag_loop) = nfa._compile_action(sa_quant_loop $ qid);
         let (nfa, frag_end) = nfa._compile_action(sa_quant_end $ (qid, min, max));
@@ -456,27 +494,22 @@ namespace NFAFrag {
 }
 
 // NFA state
+//
+// The bounds of the whole match are held as numbers rather than as the first entry of `groups`,
+// because every thread writes its beginning as soon as it starts: were they in the array, starting
+// a thread would copy the array once per position read.
 type NFAState = unbox struct {
     id: NodeID,         // NodeID where this state currently stays
-    groups: Groups,     // Captured groups
+    begin: I64,         // where the match this thread follows began, or -1
+    end: I64,           // where it ended, or -1
+    groups: Groups,     // the groups captured inside it, group 1 upward
     quants: Array I64   // Special quantifier counters
 };
-
-impl NFAState: Eq {
-    eq = |a, b| a.@id == b.@id && a.@groups == b.@groups && a.@quants == b.@quants;
-}
-
-impl NFAState: Hash {
-    hash = |s| (
-        s.@id.hash * 103231_U64 +
-        s.@groups.hash * 103577_U64 +
-        s.@quants.hash * 103769_U64
-    );
-}
 
 impl NFAState: ToString {
     to_string = |s| (
         "{id:" + s.@id.to_string + 
+        ", match=" + (s.@begin, s.@end).to_string +
         ", groups=" + s.@groups.to_string + 
         ", quants=" + s.@quants.to_string +
         "}"
@@ -484,31 +517,53 @@ impl NFAState: ToString {
 }
 
 namespace NFAState {
-    // Creates a NFA state.
-    make: NodeID -> Groups -> NFAState;
-    make = |id, groups| NFAState {
+    // Creates a NFA state that has captured nothing yet.
+    //
+    // # Parameters
+    // * `id` - The node the state stands at.
+    // * `group_count` - How many groups the pattern has, the whole match counted as one.
+    make: NodeID -> I64 -> NFAState;
+    make = |id, group_count| NFAState {
         id: id,
-        groups: groups,
+        begin: -1,
+        end: -1,
+        groups: Array::fill(max(0, group_count - 1), (-1, -1)),
         quants: Array::empty(0)
     };
+
+    // The groups a state captured, the whole match first.
+    //
+    // # Parameters
+    // * `state` - The state to read.
+    captured: NFAState -> Groups;
+    captured = |state| [(state.@begin, state.@end)].append(state.@groups);
 
     // Makes transition to next node.
     transition: NodeID -> NFAState -> NFAState;
     transition = set_id;
 
-    // Gets specified group. If group index is out of range, returns (-1, -1).
-    get_group: I64 ->  NFAState -> Group;
-    get_group = |group_idx, state| (
-        if group_idx < 0 || state.@groups.get_size <= group_idx {
-            (-1, -1)
-        };
-        state.@groups.@(group_idx)
+    // Records where a group began.
+    //
+    // # Parameters
+    // * `group_idx` - The group, the whole match counted as group zero.
+    // * `at` - Where it began.
+    // * `state` - The state to record it in.
+    open_group: I64 -> I64 -> NFAState -> NFAState;
+    open_group = |group_idx, at, state| (
+        if group_idx == 0 { state.set_begin(at) };
+        state.mod_groups(mod(group_idx - 1, |_| (at, -1)))
     );
 
-    // Modify specified group.
-    mod_group: I64 -> (Group -> Group) -> NFAState -> NFAState;
-    mod_group = |group_idx, f, state| (
-        state.mod_groups(mod(group_idx, f))
+    // Records where a group ended.
+    //
+    // # Parameters
+    // * `group_idx` - The group, the whole match counted as group zero.
+    // * `at` - Where it ended.
+    // * `state` - The state to record it in.
+    close_group: I64 -> I64 -> NFAState -> NFAState;
+    close_group = |group_idx, at, state| (
+        if group_idx == 0 { state.set_end(at) };
+        state.mod_groups(mod(group_idx - 1, |(begin, _)| (begin, at)))
     );
 
     // get quant loop count
@@ -528,289 +583,277 @@ namespace NFAState {
         };
         state.mod_quants(set(qid, val))
     );
-
-    overlaps: NFAState -> NFAState -> Bool;
-    overlaps = |a, b| (
-        let (a_begin, a_end) = a.@groups.@(0);
-        let (b_begin, b_end) = b.@groups.@(0);
-        if a_end <= b_begin || b_end <= a_begin { false };
-        true
-    );
-
-    // Gets the length of specified group.
-    group_length: I64 -> NFAState -> I64;
-    group_length = |i, state| (
-        let groups = state.@groups;
-        if i < 0 || groups.get_size <= i { 0 };
-        let group = groups.@(i);
-        let (begin, end) = group;
-        if begin < 0 || end < 0 || begin >= end { 0 };
-        end - begin
-    );
-
-    // Collects first match.
-    collect_first_match: Array NFAState -> Option NFAState;
-    collect_first_match = |states| (
-        let states = states._sort_by_group0_begin_and_length;
-        states.get_first
-    );
-
-    // Collects all non overlapping matches.
-    collect_all_non_overlapping: Array NFAState -> Array NFAState;
-    collect_all_non_overlapping = |states| (
-        let states = states._sort_by_group0_begin_and_length;
-        let output = Array::empty(states.get_size);
-        states.to_iter.fold(
-            output, |a, output|
-            if output.is_empty {
-                output.push_back(a)
-            };
-            if !output.get_last.as_some.overlaps(a) {
-                output.push_back(a)
-            };
-            output
-        )
-    );
-
-    // Sorts states by beginning of group 0 (ascending order)
-    // and length of group 0 (descending order).
-    _sort_by_group0_begin_and_length: Array NFAState -> Array NFAState;
-    _sort_by_group0_begin_and_length = |states| (
-        let state_less_than: (NFAState, NFAState) -> Bool = |(a, b)| (
-            let (a_begin, a_end) = a.get_group(0);
-            let (b_begin, b_end) = b.get_group(0);
-            if a_begin == -1 || a_end == -1 { true };
-            if b_begin == -1 || b_end == -1 { false };
-            // compare begin (asc)
-            if a_begin < b_begin { true };
-            if a_begin > b_begin { false };
-            // compare length (desc)
-            a_end - a_begin > b_end - b_begin
-        );
-        states.sort_by(state_less_than)
-    );
 }
 
-// NFA state set, used for NFA state transition
-type NFAStateSet = unbox struct {
-    array: Array NFAState,              // array of states
-    map: HashMap NFAState Bool          // a hashmap to check whether the state is contained or not
+// Gets specified group. If the group index is out of range, returns `(-1, -1)`.
+//
+// # Parameters
+// * `group_idx` - The index of the group.
+// * `groups` - The captured groups.
+group_at: I64 -> Groups -> Group;
+group_at = |group_idx, groups| (
+    if group_idx < 0 || groups.get_size <= group_idx {
+        (-1, -1)
+    };
+    groups.@(group_idx)
+);
+
+// The nodes already reached at the position being read.
+//
+// A node is given to the first thread that reaches it and to no other. Threads are handed over in
+// the order of the positions they started at, so the thread that keeps a node is the one that
+// started earliest, which is what makes the match reported the leftmost one. Two threads standing
+// at the same node have the same future, so dropping the later one loses no match.
+//
+// `at_step` holds, for each node, the step at which it was last reached, so that nothing has to be
+// cleared between positions. `counters` holds, for each node, the counters of the special
+// quantifiers already reached at that step: two threads at one node whose counters differ do *not*
+// have the same future, so they have to be told apart. A pattern without special quantifiers
+// carries no such state, and then `counters` stays empty and is never read.
+type Seen = unbox struct {
+    at_step: Array I64,
+    counters: Array (Array (Array I64)),
+    step: I64
 };
 
-namespace NFAStateSet {
-
-    // `NFAStateSet::empty(node_count)` creates an empty state set.
-    // `node_count` is number of NFA nodes.
-    empty: I64 -> NFAStateSet;
-    empty = |node_count| NFAStateSet {
-        array: Array::empty(node_count),
-        map:  HashMap::empty(node_count)
+namespace Seen {
+    // A record in which no node has been reached.
+    //
+    // # Parameters
+    // * `node_count` - How many nodes the automaton has.
+    // * `counted` - Whether the pattern has special quantifiers.
+    make: I64 -> Bool -> Seen;
+    make = |node_count, counted| Seen {
+        at_step: Array::fill(node_count, -1),
+        counters: if counted { Array::fill(node_count, Array::empty(0)) } else { Array::empty(0) },
+        step: 0
     };
 
-    // Checks whether the state set is empty.
-    is_empty: NFAStateSet -> Bool;
-    is_empty = |state_set| (
-        state_set.@array.is_empty
-    );
-
-    // Checks whether the state set contains a state.
-    contains: NFAState -> NFAStateSet -> Bool;
-    contains = |state, state_set| (
-        state_set.@map.contains_key(state)
-    );
-
-    // Adds a state to the state set.
-    add: NFAState -> NFAStateSet -> NFAStateSet;
-    add = |state, state_set| (
-        if state_set.contains(state) {
-            state_set
+    // Records a state as reached, and reports whether it had not been reached before.
+    //
+    // # Parameters
+    // * `counted` - Whether the pattern has special quantifiers.
+    // * `state` - The state to record.
+    // * `seen` - The record to add it to.
+    take: Bool -> NFAState -> Seen -> (Bool, Seen);
+    take = |counted, state, seen| (
+        let node = state.@id.@val;
+        let step = seen.@step;
+        if seen.@at_step.@(node) != step {
+            let seen = seen.mod_at_step(set(node, step));
+            if !counted { (true, seen) };
+            (true, seen.mod_counters(set(node, [state.@quants])))
         };
-        state_set.mod_array(push_back(state))
-                 .mod_map(insert(state, true))
-    );
-
-    // Returns an iterator of the states.
-    to_iter: NFAStateSet -> DynIterator NFAState;
-    to_iter = |state_set| (
-        state_set.@array.to_iter.to_dyn
+        if !counted { (false, seen) };
+        if seen.@counters.@(node).to_iter.check_any(|counts| counts == state.@quants) {
+            (false, seen)
+        };
+        (true, seen.mod_counters(mod(node, push_back(state.@quants))))
     );
 }
 
-// The NFA executor
-type NFAExecutor = unbox struct {
-    stream: Stream,                     // stream of characters
-    nfa: NFA,                           // NFA
-    empty_state_set: NFAStateSet,       // an empty state set
-    state_set: NFAStateSet,             // current state set
-    stack: DynIterator NFAState,           // temporary stack for transition
-    accepted_states: NFAStateSet        // accepted states
+// What one search carries throughout: the automaton, the bytes it is reading, and whether the
+// pattern has special quantifiers.
+type Search = unbox struct {
+    nfa: NFA,
+    bytes: Array U8,
+    counted: Bool
 };
 
-namespace NFAExecutor {
-    // Creates an executor.
-    make: Stream -> NFA -> NFAExecutor;
-    make = |stream, nfa| (
-        let empty_state_set = NFAStateSet::empty(nfa.@nodes.get_size);
-        let groups: Groups = Array::fill(nfa.@group_count, (-1, -1));
-        let initial_state = NFAState::make(nfa.@initial_node, groups);
-        let state_set = empty_state_set.add(initial_state);
-        NFAExecutor {
-            stream: stream,
-            nfa: nfa,
-            empty_state_set: empty_state_set,
-            state_set: state_set,
-            stack: Iterator::empty.to_dyn,
-            accepted_states: empty_state_set
-        }
+// The threads gathered at a position: those to read the next byte with, the record of the nodes
+// they hold, and the ones whose outgoing empty-string transitions are still to be followed.
+type Gathered = (Array NFAState, Seen, Array NFAState);
+
+namespace Search {
+
+    // Adds a state unless the node it stands at is already held by a thread that started earlier.
+    //
+    // # Parameters
+    // * `state` - The state to add.
+    // * `gathered` - The threads gathered so far.
+    // * `search` - The automaton and the bytes it is reading.
+    _offer: NFAState -> Gathered -> Search -> Gathered;
+    _offer = |state, (threads, seen, pending), search| (
+        if state.@id == _INVALID_NODE_ID { (threads, seen, pending) };
+        let (fresh, seen) = seen.take(search.@counted, state);
+        if !fresh { (threads, seen, pending) };
+        (threads.push_back(state), seen, pending.push_back(state))
     );
 
-    // Make transitions until end of stream is reached, or the state set becomes empty.
-    execute: NFAExecutor -> NFAExecutor;
-    execute = |executor| (
-        if executor.@state_set.is_empty {
-            executor
-        };
-        let executor = executor._transition_with_empty_string;
-        let executor = executor._check_for_accepting_state;
-        let opt = executor.@stream.advance;
-        if opt.is_none {
-            executor
-        };
-        let (char, stream) = opt.as_some;
-        eval executor.@nfa.debug("stream position="+stream.@position.to_string + " char='" + byte_to_string(char) + "'");
-        let executor = executor._transition_with_char(char);
-        let executor = executor.set_stream(stream);
-        executor.execute    // tail recursion
-    );
-
-    // Checks for accepting state
-    _check_for_accepting_state: NFAExecutor -> NFAExecutor;
-    _check_for_accepting_state = |executor| (
-        let accepting_node = executor.@nfa.@accepting_node;
-        let accepting_states = executor.@state_set.to_iter
-            .filter(|state| state.@id == accepting_node);
-        let add_all = accepting_states.fold(|x|x, |state, f|
-            f >> NFAStateSet::add(state)
-        );
-        executor.mod_accepted_states(add_all)        
-    );
-
-    // Applies transitions with an empty string.
-    _transition_with_empty_string: NFAExecutor -> NFAExecutor;
-    _transition_with_empty_string = |executor| (
-        eval executor.@nfa.debug("_transition_with_empty_string");
-        let executor = executor.set_stack(executor.@state_set.to_iter);
-        loop(
-            executor, |executor|
-            let opt = executor._pop_stack;
-            if opt.is_none {
-                break $ executor
-            };
-            let (state, executor) = opt.as_some;
-            let node = executor.@nfa.get_node(state.@id);
-            let executor = executor._add_to_state_set_and_stack(state.transition(node.@output));
-            let executor = executor._add_to_state_set_and_stack(state.transition(node.@output2));
-            let executor = executor._transition_on_action(node, state.transition(node.@output_on_action));
-            continue $ executor
-        )
-    );
-
-    _pop_stack: NFAExecutor -> Option (NFAState, NFAExecutor);
-    _pop_stack = |executor| (
-        executor.@stack.advance.map(|(next, state)|
-            (state, executor.set_stack(next))
-        )
-    );
-
-    // Adds a state to the state set if not added yet, then pushes the state to the stack.
-    _add_to_state_set_and_stack: NFAState -> NFAExecutor -> NFAExecutor;
-    _add_to_state_set_and_stack = |state, executor| (
-        if state.@id == _INVALID_NODE_ID {
-            executor
-        };
-        if executor.@state_set.contains(state) {
-            executor
-        };
-        eval executor.@nfa.debug("transition " + state.to_string);
-        executor
-            .mod_state_set(add(state))
-            .mod_stack(push_front(state) >> to_dyn)
-    );
-
-    // Applies transitions on an action with empty string.
-    _transition_on_action: NFANode -> NFAState -> NFAExecutor -> NFAExecutor;
-    _transition_on_action = |old_node, state, executor| (
-        eval executor.@nfa.debug("_transition_on_action");
-        let action = old_node.@action;
+    // Applies the action a node guards, adding the state it leads to when the action lets it
+    // through. A node guarded by a character class leads nowhere until a byte is read.
+    //
+    // # Parameters
+    // * `at` - The position the threads stand at.
+    // * `node` - The node whose action to apply.
+    // * `state` - The state standing at that node.
+    // * `gathered` - The threads gathered so far.
+    // * `search` - The automaton and the bytes it is reading.
+    _act: I64 -> NFANode -> NFAState -> Gathered -> Search -> Gathered;
+    _act = |at, node, state, gathered, search| (
+        let action = node.@action;
+        if action.is_sa_char_match || action.is_sa_none { gathered };
+        let next = state.transition(node.@output_on_action);
         if action.is_sa_assert {
-            let pa = action.as_sa_assert;
-            if pa.is_pa_begin && executor.@stream.@position == 0 {
-                executor._add_to_state_set_and_stack(state)
-            };
-            if pa.is_pa_end && executor.@stream.@iter.is_empty {
-                executor._add_to_state_set_and_stack(state)
-            };
-            executor
+            let assertion = action.as_sa_assert;
+            if assertion.is_pa_begin && at == 0 { search._offer(next, gathered) };
+            if assertion.is_pa_end && at == search.@bytes.get_size { search._offer(next, gathered) };
+            gathered
         };
         if action.is_sa_group_begin {
-            let group_idx = action.as_sa_group_begin;
-            let begin = executor.@stream.@position;
-            let state = state.mod_group(group_idx, |_| (begin, -1));
-            executor._add_to_state_set_and_stack(state)
+            search._offer(next.open_group(action.as_sa_group_begin, at), gathered)
         };
         if action.is_sa_group_end {
-            let group_idx = action.as_sa_group_end;
-            let end = executor.@stream.@position;
-            let state = state.mod_group(group_idx, |(begin, _)| (begin, end));
-            executor._add_to_state_set_and_stack(state)
+            search._offer(next.close_group(action.as_sa_group_end, at), gathered)
         };
         if action.is_sa_quant_begin {
-            let qid = action.as_sa_quant_begin;
-            let state = state.set_quant(qid, 0);
-            executor._add_to_state_set_and_stack(state)
+            search._offer(next.set_quant(action.as_sa_quant_begin, 0), gathered)
         };
         if action.is_sa_quant_loop {
             let qid = action.as_sa_quant_loop;
-            let count = state.get_quant(qid);
-            let state = state.set_quant(qid, count + 1);
-            executor._add_to_state_set_and_stack(state)
+            let (least, most) = search.@nfa.@quant_bounds.@(qid);
+            // Counting past what the quantifier can still tell apart would give every round a state
+            // of its own; holding the counter there keeps their number finite and admits the same
+            // paths, since `most` being unbounded makes every count at or above `least` alike.
+            let ceiling = if most == I64::maximum { least } else { most + 1 };
+            let count = next.get_quant(qid);
+            search._offer(next.set_quant(qid, min(count + 1, ceiling)), gathered)
         };
-        if action.is_sa_quant_end {
-            let (qid, min_count, max_count) = action.as_sa_quant_end;
-            let count = state.get_quant(qid);
-            if count < min_count || max_count < count {
-                executor
-            };
-            let state = state.set_quant(qid, count);
-            executor._add_to_state_set_and_stack(state)
-        };
-        executor
+        let (qid, least, most) = action.as_sa_quant_end;
+        let count = state.get_quant(qid);
+        if count < least || most < count { gathered };
+        search._offer(next, gathered)
     );
 
-    // Applies transitions with a string of one character.
-    _transition_with_char: U8 -> NFAExecutor -> NFAExecutor;
-    _transition_with_char = |char, executor| (
-        eval executor.@nfa.debug("_transition_with_char");
-        let old_state_set = executor.@state_set;
-        let executor = old_state_set.to_iter.fold(
-            // Clear new state set
-            executor.set_state_set(executor.@empty_state_set),
-            |state, executor|
-            // For each old state:
-            let node = executor.@nfa.get_node(state.@id);
-            let action = node.@action;
-            if !action.is_sa_char_match {
-                executor
-            };
-            if !action.as_sa_char_match.contains(char) {
-                executor
-            };
+    // Adds a thread and every state it reaches without reading a byte.
+    //
+    // # Parameters
+    // * `at` - The position the thread stands at.
+    // * `state` - The thread to add.
+    // * `frontier` - The threads gathered so far and the record of the nodes they hold.
+    // * `search` - The automaton and the bytes it is reading.
+    _close: I64 -> NFAState -> Gathered -> Search -> Gathered;
+    _close = |at, state, gathered, search| (
+        loop(search._offer(state, gathered), |(threads, seen, pending)|
+            if pending.get_size == 0 { break $ (threads, seen, pending) };
+            let state = pending.@(pending.get_size - 1);
+            let pending = pending.pop_back;
+            let node = search.@nfa.get_node(state.@id);
+            // The action goes on the stack first so that the two plain outputs come off it before
+            // the action does, and `output` before `output2`, which is the order the automaton
+            // prefers its alternatives in.
+            let gathered = search._act(at, node, state, (threads, seen, pending));
+            let gathered = search._offer(state.transition(node.@output2), gathered);
+            continue $ search._offer(state.transition(node.@output), gathered)
+        )
+    );
 
-            // note: stack is not used
-            executor._add_to_state_set_and_stack(state.transition(node.@output_on_action))
+    // Reads one byte and moves every thread whose node is guarded by a class the byte belongs to.
+    //
+    // # Parameters
+    // * `at` - The position of the byte to read.
+    // * `threads` - The threads standing at that position, earliest-started first.
+    // * `frontier` - The empty buffer the threads move into, and the record for the next position.
+    // * `search` - The automaton and the bytes it is reading.
+    _step: I64 -> Array NFAState -> Gathered -> Search -> Gathered;
+    _step = |at, threads, frontier, search| (
+        let byte = search.@bytes.@(at);
+        Iterator::range(0, threads.get_size).fold(frontier, |i, frontier|
+            let state = threads.@(i);
+            let node = search.@nfa.get_node(state.@id);
+            let action = node.@action;
+            if !action.is_sa_char_match { frontier };
+            if !search.@nfa.class_holds(action.as_sa_char_match, byte) { frontier };
+            search._close(at + 1, state.transition(node.@output_on_action), frontier)
+        )
+    );
+
+    // The better of the match found so far and any match the threads have just reached: the one
+    // beginning earlier, or the longer one where they begin together.
+    //
+    // # Parameters
+    // * `accepting` - The node a thread reaches when it has matched.
+    // * `threads` - The threads standing at this position.
+    // * `seen` - The record of the nodes they hold.
+    // * `best` - The match found so far.
+    _better: NodeID -> Array NFAState -> Seen -> Option Groups -> Option Groups;
+    _better = |accepting, threads, seen, best| (
+        if seen.@at_step.@(accepting.@val) != seen.@step { best };
+        Iterator::range(0, threads.get_size).fold(best, |i, best|
+            let state = threads.@(i);
+            if state.@id != accepting { best };
+            if best.is_none { some(state.captured) };
+            let (begin, end) = (state.@begin, state.@end);
+            let (best_begin, best_end) = best.as_some.@(0);
+            if begin < best_begin || (begin == best_begin && end > best_end) { some(state.captured) };
+            best
+        )
+    );
+}
+
+namespace NFA {
+    // Runs the automaton over the bytes and reports the leftmost match beginning at or after a
+    // position, taking the longest of those that begin at the same place.
+    //
+    // A thread is started at every position until a match is found; after that a later start could
+    // not be the leftmost one, so none is added and the threads still running are followed only to
+    // see how far the match reaches.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `from` - The position at or after which the match has to begin.
+    // * `nfa` - The automaton to run.
+    search: Array U8 -> I64 -> NFA -> Option Groups;
+    search = |bytes, from, nfa| (
+        let length = bytes.get_size;
+        if from > length { none() };
+        let counted = nfa.@quant_bounds.get_size > 0;
+        let node_count = nfa.@nodes.get_size;
+        let accepting = nfa.@accepting_node;
+        let start = NFAState::make(nfa.@initial_node, nfa.@group_count);
+        let search = Search { nfa: nfa, bytes: bytes, counted: counted };
+        let (best, _, _, _) = loop(
+            (
+                none(),
+                (
+                    Array::empty(node_count), Seen::make(node_count, counted),
+                    Array::empty(node_count)
+                ),
+                Array::empty(node_count), from
+            ),
+            |(best, gathered, spare, at)|
+            let gathered = if best.is_some { gathered } else { search._close(at, start, gathered) };
+            let (threads, seen, pending) = gathered;
+            let best = Search::_better(accepting, threads, seen, best);
+            if at >= length { break $ (best, (threads, seen, pending), spare, at) };
+            if threads.get_size == 0 && best.is_some {
+                break $ (best, (threads, seen, pending), spare, at)
+            };
+            let seen = seen.mod_step(|step| step + 1);
+            let (spare, seen, pending) = search._step(at, threads, (spare.truncate(0), seen, pending));
+            continue $ (best, (spare, seen, pending), threads, at + 1)
         );
-        let executor = executor.set_stack(Iterator::empty.to_dyn);
-        executor
+        best
+    );
+
+    // Every match the automaton finds, taken left to right, none of them overlapping another.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `nfa` - The automaton to run.
+    search_all: Array U8 -> NFA -> Array Groups;
+    search_all = |bytes, nfa| (
+        let length = bytes.get_size;
+        let (matches, _) = loop((Array::empty(8), 0), |(matches, from)|
+            if from > length { break $ (matches, from) };
+            let opt = nfa.search(bytes, from);
+            if opt.is_none { break $ (matches, from) };
+            let groups = opt.as_some;
+            let (begin, end) = groups.@(0);
+            // A match that read nothing would be found again where it was found.
+            continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 })
+        );
+        matches
     );
 }
 
@@ -832,8 +875,8 @@ namespace Replacement {
     );
 
     // Calculates actual replacement string.
-    calc_replacement: String -> Array ReplaceFrag -> NFAState -> String;
-    calc_replacement = |target, rep_frags, state| (
+    calc_replacement: String -> Array ReplaceFrag -> Groups -> String;
+    calc_replacement = |target, rep_frags, groups| (
         let output: Array U8 = Array::empty(target.get_size + rep_frags.get_size);
         let output = rep_frags.to_iter.fold(
             output, |rep, output|
@@ -842,7 +885,7 @@ namespace Replacement {
             };
             if rep.is_rep_group {
                 let group_idx = rep.as_rep_group;
-                let (begin, end) = state.get_group(group_idx);
+                let (begin, end) = groups.group_at(group_idx);
                 let str = target.substring(begin, end);
                 output.append(str.get_bytes.pop_back)
             };
