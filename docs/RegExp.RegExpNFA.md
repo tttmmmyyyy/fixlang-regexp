@@ -1,6 +1,6 @@
 # RegExp.RegExpNFA
 
-Defined in regexp@1.1.3
+Defined in regexp@1.1.4
 
 NFA (Nondeterministic Finite Automaton). This is internal module of `RegExp`.
 
@@ -10,7 +10,32 @@ For details, see web pages below.
 
 ## Values
 
+### namespace RegExp.RegExpNFA
+
+#### group_at
+
+Type: `Std::I64 -> RegExp.RegExpNFA::Groups -> RegExp.RegExpNFA::Group`
+
+Gets specified group. If the group index is out of range, returns `(-1, -1)`.
+
+##### Parameters
+
+* `group_idx` - The index of the group.
+* `groups` - The captured groups.
+
 ### namespace RegExp.RegExpNFA::NFA
+
+#### class_holds
+
+Type: `Std::I64 -> Std::U8 -> RegExp.RegExpNFA::NFA -> Std::Bool`
+
+Whether a byte belongs to the class whose words begin at a position.
+
+##### Parameters
+
+* `base` - Where the class's words begin.
+* `byte` - The byte to test.
+* `nfa` - The automaton holding the classes.
 
 #### compile
 
@@ -28,12 +53,6 @@ Type: `RegExp.RegExpNFA::NFA`
 
 An empty NFA.
 
-#### execute
-
-Type: `Std::String -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFAExecutor`
-
-`nfa.execute(target)` executes matching.
-
 #### get_node
 
 Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFANode`
@@ -46,6 +65,17 @@ Type: `RegExp.RegExpNFA::NodeID -> (RegExp.RegExpNFA::NFANode -> RegExp.RegExpNF
 
 `nfa.mod_node(id, f)` modifies the node whose @id is `id`.
 
+#### new_class
+
+Type: `RegExp.RegExpPattern::CharClass -> RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, Std::I64)`
+
+Stores a character class and returns where its four words begin.
+
+##### Parameters
+
+* `cls` - The class to store.
+* `nfa` - The automaton to store it in.
+
 #### new_node
 
 Type: `RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, RegExp.RegExpNFA::NodeID)`
@@ -54,9 +84,43 @@ Creates new node. Returns the new node id.
 
 #### new_quant
 
-Type: `RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, RegExp.RegExpNFA::QuantID)`
+Type: `Std::I64 -> Std::I64 -> RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, RegExp.RegExpNFA::QuantID)`
 
 Creates new quant. Returns the new quant id.
+
+##### Parameters
+
+* `least` - The fewest rounds the quantifier admits.
+* `most` - The most rounds it admits.
+* `nfa` - The automaton to add the quantifier to.
+
+#### search
+
+Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::NFA -> Std::Option RegExp.RegExpNFA::Groups`
+
+Runs the automaton over the bytes and reports the leftmost match beginning at or after a
+position, taking the longest of those that begin at the same place.
+
+A thread is started at every position until a match is found; after that a later start could
+not be the leftmost one, so none is added and the threads still running are followed only to
+see how far the match reaches.
+
+##### Parameters
+
+* `bytes` - The bytes to read.
+* `from` - The position at or after which the match has to begin.
+* `nfa` - The automaton to run.
+
+#### search_all
+
+Type: `Std::Array Std::U8 -> RegExp.RegExpNFA::NFA -> Std::Array RegExp.RegExpNFA::Groups`
+
+Every match the automaton finds, taken left to right, none of them overlapping another.
+
+##### Parameters
+
+* `bytes` - The bytes to read.
+* `nfa` - The automaton to run.
 
 #### set_frag_output
 
@@ -64,19 +128,17 @@ Type: `RegExp.RegExpNFA::NFAFrag -> RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA
 
 `nfa.set_frag_output(frag, out)` sets the output of the fragment to `out`.
 
-### namespace RegExp.RegExpNFA::NFAExecutor
+#### set_node_label
 
-#### execute
+Type: `RegExp.RegExpNFA::NodeID -> Std::String -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
 
-Type: `RegExp.RegExpNFA::NFAExecutor -> RegExp.RegExpNFA::NFAExecutor`
+`nfa.set_node_label(id, label)` gives the node whose @id is `id` a label to display.
 
-Make transitions until end of stream is reached, or the state set becomes empty.
+##### Parameters
 
-#### make
-
-Type: `RegExp.SimpleParser::Stream::Stream -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFAExecutor`
-
-Creates an executor.
+* `id` - The node to label.
+* `label` - The label to give it.
+* `nfa` - The automaton the node belongs to.
 
 ### namespace RegExp.RegExpNFA::NFAFrag
 
@@ -96,23 +158,27 @@ An empty node
 
 ### namespace RegExp.RegExpNFA::NFAState
 
-#### collect_all_non_overlapping
+#### captured
 
-Type: `Std::Array RegExp.RegExpNFA::NFAState -> Std::Array RegExp.RegExpNFA::NFAState`
+Type: `RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::Groups`
 
-Collects all non overlapping matches.
+The groups a state captured, the whole match first.
 
-#### collect_first_match
+##### Parameters
 
-Type: `Std::Array RegExp.RegExpNFA::NFAState -> Std::Option RegExp.RegExpNFA::NFAState`
+* `state` - The state to read.
 
-Collects first match.
+#### close_group
 
-#### get_group
+Type: `Std::I64 -> Std::I64 -> RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::NFAState`
 
-Type: `Std::I64 -> RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::Group`
+Records where a group ended.
 
-Gets specified group. If group index is out of range, returns (-1, -1).
+##### Parameters
+
+* `group_idx` - The group, the whole match counted as group zero.
+* `at` - Where it ended.
+* `state` - The state to record it in.
 
 #### get_quant
 
@@ -120,27 +186,28 @@ Type: `RegExp.RegExpNFA::QuantID -> RegExp.RegExpNFA::NFAState -> Std::I64`
 
 get quant loop count
 
-#### group_length
-
-Type: `Std::I64 -> RegExp.RegExpNFA::NFAState -> Std::I64`
-
-Gets the length of specified group.
-
 #### make
 
-Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::Groups -> RegExp.RegExpNFA::NFAState`
+Type: `RegExp.RegExpNFA::NodeID -> Std::I64 -> RegExp.RegExpNFA::NFAState`
 
-Creates a NFA state.
+Creates a NFA state that has captured nothing yet.
 
-#### mod_group
+##### Parameters
 
-Type: `Std::I64 -> (RegExp.RegExpNFA::Group -> RegExp.RegExpNFA::Group) -> RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::NFAState`
+* `id` - The node the state stands at.
+* `group_count` - How many groups the pattern has, the whole match counted as one.
 
-Modify specified group.
+#### open_group
 
-#### overlaps
+Type: `Std::I64 -> Std::I64 -> RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::NFAState`
 
-Type: `RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::NFAState -> Std::Bool`
+Records where a group began.
+
+##### Parameters
+
+* `group_idx` - The group, the whole match counted as group zero.
+* `at` - Where it began.
+* `state` - The state to record it in.
 
 #### set_quant
 
@@ -154,44 +221,11 @@ Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFAState -> RegExp.RegExpNF
 
 Makes transition to next node.
 
-### namespace RegExp.RegExpNFA::NFAStateSet
-
-#### add
-
-Type: `RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::NFAStateSet -> RegExp.RegExpNFA::NFAStateSet`
-
-Adds a state to the state set.
-
-#### contains
-
-Type: `RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::NFAStateSet -> Std::Bool`
-
-Checks whether the state set contains a state.
-
-#### empty
-
-Type: `Std::I64 -> RegExp.RegExpNFA::NFAStateSet`
-
-`NFAStateSet::empty(node_count)` creates an empty state set.
-`node_count` is number of NFA nodes.
-
-#### is_empty
-
-Type: `RegExp.RegExpNFA::NFAStateSet -> Std::Bool`
-
-Checks whether the state set is empty.
-
-#### to_iter
-
-Type: `RegExp.RegExpNFA::NFAStateSet -> Std::Iterator::DynIterator RegExp.RegExpNFA::NFAState`
-
-Returns an iterator of the states.
-
 ### namespace RegExp.RegExpNFA::Replacement
 
 #### calc_replacement
 
-Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag -> RegExp.RegExpNFA::NFAState -> Std::String`
+Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag -> RegExp.RegExpNFA::Groups -> Std::String`
 
 Calculates actual replacement string.
 
@@ -201,9 +235,41 @@ Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag`
 
 Compiles a replacement string to fragments.
 
+### namespace RegExp.RegExpNFA::Seen
+
+#### make
+
+Type: `Std::I64 -> Std::Bool -> RegExp.RegExpNFA::Seen`
+
+A record in which no node has been reached.
+
+##### Parameters
+
+* `node_count` - How many nodes the automaton has.
+* `counted` - Whether the pattern has special quantifiers.
+
+#### take
+
+Type: `Std::Bool -> RegExp.RegExpNFA::NFAState -> RegExp.RegExpNFA::Seen -> (Std::Bool, RegExp.RegExpNFA::Seen)`
+
+Records a state as reached, and reports whether it had not been reached before.
+
+##### Parameters
+
+* `counted` - Whether the pattern has special quantifiers.
+* `state` - The state to record.
+* `seen` - The record to add it to.
+
 ## Types and aliases
 
 ### namespace RegExp.RegExpNFA
+
+#### Gathered
+
+Defined as: `type Gathered = (Std::Array RegExp.RegExpNFA::NFAState, RegExp.RegExpNFA::Seen, Std::Array RegExp.RegExpNFA::NFAState)`
+
+The threads gathered at a position: those to read the next byte with, the record of the nodes
+they hold, and the ones whose outgoing empty-string transitions are still to be followed.
 
 #### Group
 
@@ -241,43 +307,25 @@ Type: `RegExp.RegExpNFA::NodeID`
 
 Type: `Std::I64`
 
-##### field `quant_count`
+##### field `quant_bounds`
 
-Type: `Std::I64`
+Type: `Std::Array (Std::I64, Std::I64)`
+
+##### field `classes`
+
+Type: `Std::Array Std::U64`
+
+The character classes the nodes are guarded by, as one bit per byte value, four words to a
+class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
+so that walking the nodes costs no reference counting at all.
+
+##### field `labels`
+
+Type: `Std::Array Std::String`
 
 ##### field `debug`
 
 Type: `Std::Bool`
-
-#### NFAExecutor
-
-Defined as: `type NFAExecutor = unbox struct { ...fields... }`
-
-The NFA executor
-
-##### field `stream`
-
-Type: `RegExp.SimpleParser::Stream::Stream`
-
-##### field `nfa`
-
-Type: `RegExp.RegExpNFA::NFA`
-
-##### field `empty_state_set`
-
-Type: `RegExp.RegExpNFA::NFAStateSet`
-
-##### field `state_set`
-
-Type: `RegExp.RegExpNFA::NFAStateSet`
-
-##### field `stack`
-
-Type: `Std::Iterator::DynIterator RegExp.RegExpNFA::NFAState`
-
-##### field `accepted_states`
-
-Type: `RegExp.RegExpNFA::NFAStateSet`
 
 #### NFAFrag
 
@@ -333,10 +381,6 @@ Type: `RegExp.RegExpNFA::NodeID`
 
 Type: `RegExp.RegExpNFA::NodeID`
 
-##### field `label`
-
-Type: `Std::String`
-
 #### NFANodeAction
 
 Defined as: `type NFANodeAction = unbox union { ...variants... }`
@@ -349,7 +393,7 @@ Type: `()`
 
 ##### variant `sa_char_match`
 
-Type: `RegExp.RegExpPattern::CharClass`
+Type: `Std::I64`
 
 ##### variant `sa_assert`
 
@@ -381,9 +425,21 @@ Defined as: `type NFAState = unbox struct { ...fields... }`
 
 NFA state
 
+The bounds of the whole match are held as numbers rather than as the first entry of `groups`,
+because every thread writes its beginning as soon as it starts: were they in the array, starting
+a thread would copy the array once per position read.
+
 ##### field `id`
 
 Type: `RegExp.RegExpNFA::NodeID`
+
+##### field `begin`
+
+Type: `Std::I64`
+
+##### field `end`
+
+Type: `Std::I64`
 
 ##### field `groups`
 
@@ -392,20 +448,6 @@ Type: `RegExp.RegExpNFA::Groups`
 ##### field `quants`
 
 Type: `Std::Array Std::I64`
-
-#### NFAStateSet
-
-Defined as: `type NFAStateSet = unbox struct { ...fields... }`
-
-NFA state set, used for NFA state transition
-
-##### field `array`
-
-Type: `Std::Array RegExp.RegExpNFA::NFAState`
-
-##### field `map`
-
-Type: `HashMap::HashMap RegExp.RegExpNFA::NFAState Std::Bool`
 
 #### NodeID
 
@@ -441,6 +483,54 @@ Type: `Std::U8`
 
 Type: `Std::I64`
 
+#### Search
+
+Defined as: `type Search = unbox struct { ...fields... }`
+
+What one search carries throughout: the automaton, the bytes it is reading, and whether the
+pattern has special quantifiers.
+
+##### field `nfa`
+
+Type: `RegExp.RegExpNFA::NFA`
+
+##### field `bytes`
+
+Type: `Std::Array Std::U8`
+
+##### field `counted`
+
+Type: `Std::Bool`
+
+#### Seen
+
+Defined as: `type Seen = unbox struct { ...fields... }`
+
+The nodes already reached at the position being read.
+
+A node is given to the first thread that reaches it and to no other. Threads are handed over in
+the order of the positions they started at, so the thread that keeps a node is the one that
+started earliest, which is what makes the match reported the leftmost one. Two threads standing
+at the same node have the same future, so dropping the later one loses no match.
+
+`at_step` holds, for each node, the step at which it was last reached, so that nothing has to be
+cleared between positions. `counters` holds, for each node, the counters of the special
+quantifiers already reached at that step: two threads at one node whose counters differ do *not*
+have the same future, so they have to be told apart. A pattern without special quantifiers
+carries no such state, and then `counters` stays empty and is never read.
+
+##### field `at_step`
+
+Type: `Std::Array Std::I64`
+
+##### field `counters`
+
+Type: `Std::Array (Std::Array (Std::Array Std::I64))`
+
+##### field `step`
+
+Type: `Std::I64`
+
 ## Traits and aliases
 
 ## Trait implementations
@@ -451,13 +541,7 @@ Type: `Std::I64`
 
 ### impl `RegExp.RegExpNFA::NFANodeAction : Std::ToString`
 
-### impl `RegExp.RegExpNFA::NFAState : Hash::Hash`
-
-### impl `RegExp.RegExpNFA::NFAState : Std::Eq`
-
 ### impl `RegExp.RegExpNFA::NFAState : Std::ToString`
-
-### impl `RegExp.RegExpNFA::NodeID : Hash::Hash`
 
 ### impl `RegExp.RegExpNFA::NodeID : Std::Eq`
 

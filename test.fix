@@ -1,21 +1,149 @@
 module Test;
 
-import RegExp::RegExp::{compile, match_one, replace_all};
-import Std::{IO, Debug::assert_eq, Monad::pure, Result::as_ok};
+import RegExp::RegExp::{compile, match_all, match_one, replace_all};
+import Std::{
+    Array, IO, String, Array::to_iter, Debug::assert_eq, Iterator::fold_m, Monad::pure, 
+    Result::{as_ok, is_err}, ToString::to_string
+};
 
-test : IO ();
+// A case for `match_one` and `match_all`: the pattern, its flags, the string to match against, what
+// `match_one` gives (an empty array standing for `NotMatch`), and what `match_all` gives.
+type MatchCase = unbox struct {
+    pattern: String,
+    flags: String,
+    target: String,
+    one: Array String,
+    all: Array (Array String)
+};
+
+// A case for `replace_all`: the pattern, its flags, the string to work over, the replacement, and
+// what comes back.
+type ReplaceCase = unbox struct {
+    pattern: String,
+    flags: String,
+    target: String,
+    replacement: String,
+    result: String
+};
+
+_match_cases: Array MatchCase;
+_match_cases = [
+    // Characters and classes.
+    MatchCase { pattern: "a", flags: "", target: "banana",
+                one: ["a"], all: [["a"], ["a"], ["a"]] },
+    MatchCase { pattern: "a", flags: "g", target: "banana",
+                one: ["a", "a", "a"], all: [["a"], ["a"], ["a"]] },
+    MatchCase { pattern: "[a-c]+", flags: "g", target: "abcxabz",
+                one: ["abc", "ab"], all: [["abc"], ["ab"]] },
+    MatchCase { pattern: "[^a-c]+", flags: "g", target: "abcxabz",
+                one: ["x", "z"], all: [["x"], ["z"]] },
+    MatchCase { pattern: "\\d+", flags: "g", target: "a12b345",
+                one: ["12", "345"], all: [["12"], ["345"]] },
+    MatchCase { pattern: "\\w+", flags: "g", target: "a_1 b-2",
+                one: ["a_1", "b", "2"], all: [["a_1"], ["b"], ["2"]] },
+    MatchCase { pattern: "\\s+", flags: "g", target: "a  b\tc",
+                one: ["  ", "\t"], all: [["  "], ["\t"]] },
+
+    // A match may begin anywhere, on either side of a line break included.
+    MatchCase { pattern: "a", flags: "g", target: "a\na\na",
+                one: ["a", "a", "a"], all: [["a"], ["a"], ["a"]] },
+    MatchCase { pattern: "a", flags: "g", target: "b\na", one: ["a"], all: [["a"]] },
+    MatchCase { pattern: "a", flags: "", target: "b\na", one: ["a"], all: [["a"]] },
+    MatchCase { pattern: "[0-9]+", flags: "g", target: "x1\nx22\nx333",
+                one: ["1", "22", "333"], all: [["1"], ["22"], ["333"]] },
+    // `.` stands for every character but a line break, so it matches on either side of one without
+    // matching the break itself.
+    MatchCase { pattern: ".", flags: "g", target: "ab", one: ["a", "b"], all: [["a"], ["b"]] },
+    MatchCase { pattern: ".", flags: "g", target: "a\nb", one: ["a", "b"], all: [["a"], ["b"]] },
+
+    // Where several matches begin at one place the longest is taken, so an alternative is chosen by
+    // how far it reaches rather than by the order it is written in.
+    MatchCase { pattern: "a|ab", flags: "", target: "ab", one: ["ab"], all: [["ab"]] },
+    MatchCase { pattern: "ab|a", flags: "", target: "ab", one: ["ab"], all: [["ab"]] },
+    MatchCase { pattern: "a|ab", flags: "g", target: "ab ab",
+                one: ["ab", "ab"], all: [["ab"], ["ab"]] },
+    MatchCase { pattern: "(a|b)+", flags: "", target: "abab",
+                one: ["abab", "b"], all: [["abab", "b"]] },
+
+    // Quantifiers. A match that reads nothing is taken once at each place it can be taken, and the
+    // walk then moves on by one so that it is not taken there again.
+    MatchCase { pattern: "a*", flags: "", target: "b", one: [""], all: [[""], [""]] },
+    MatchCase { pattern: "a*", flags: "g", target: "aab",
+                one: ["aa", "", ""], all: [["aa"], [""], [""]] },
+    MatchCase { pattern: "a+", flags: "g", target: "aab", one: ["aa"], all: [["aa"]] },
+    MatchCase { pattern: "a?", flags: "g", target: "ab",
+                one: ["a", "", ""], all: [["a"], [""], [""]] },
+    MatchCase { pattern: "a{2}", flags: "g", target: "aaa", one: ["aa"], all: [["aa"]] },
+    MatchCase { pattern: "a{2,}", flags: "g", target: "aaaa", one: ["aaaa"], all: [["aaaa"]] },
+    MatchCase { pattern: "a{2,3}", flags: "g", target: "aaaaa",
+                one: ["aaa", "aa"], all: [["aaa"], ["aa"]] },
+    MatchCase { pattern: "(ab){2}", flags: "", target: "ababab",
+                one: ["abab", "ab"], all: [["abab", "ab"]] },
+
+    // Groups.
+    MatchCase { pattern: "([a-z]+)([0-9]+)", flags: "", target: "abc012 def345",
+                one: ["abc012", "abc", "012"],
+                all: [["abc012", "abc", "012"], ["def345", "def", "345"]] },
+    MatchCase { pattern: "([a-z]+)([0-9]+)", flags: "g", target: "abc012 def345",
+                one: ["abc012", "def345"],
+                all: [["abc012", "abc", "012"], ["def345", "def", "345"]] },
+    MatchCase { pattern: "(a)(b)?", flags: "", target: "a",
+                one: ["a", "a", ""], all: [["a", "a", ""]] },
+    MatchCase { pattern: "((a)(b))", flags: "", target: "ab",
+                one: ["ab", "ab", "a", "b"], all: [["ab", "ab", "a", "b"]] },
+
+    // Assertions. `^` holds at the start of the string, not after a line break.
+    MatchCase { pattern: "^a", flags: "", target: "ab", one: ["a"], all: [["a"]] },
+    MatchCase { pattern: "^a", flags: "", target: "ba", one: [], all: [] },
+    MatchCase { pattern: "^a", flags: "", target: "\na", one: [], all: [] },
+    MatchCase { pattern: "b$", flags: "", target: "ab", one: ["b"], all: [["b"]] },
+    MatchCase { pattern: "b$", flags: "", target: "ba", one: [], all: [] },
+
+    // Nothing to match.
+    MatchCase { pattern: "z", flags: "", target: "abc", one: [], all: [] },
+    MatchCase { pattern: "z", flags: "g", target: "abc", one: [], all: [] }
+];
+
+_replace_cases: Array ReplaceCase;
+_replace_cases = [
+    ReplaceCase { pattern: "(\\w\\w)(\\w)", flags: "", target: "abc def ijk",
+                  replacement: "$2$1", result: "cab fde kij" },
+    ReplaceCase { pattern: "a", flags: "g", target: "banana",
+                  replacement: "-", result: "b-n-n-" },
+    ReplaceCase { pattern: "a", flags: "g", target: "b\na\na",
+                  replacement: "-", result: "b\n-\n-" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "$2$1", result: "baba" },
+    ReplaceCase { pattern: "x", flags: "g", target: "abc", replacement: "-", result: "abc" }
+];
+
+// Names a case, so that a failure says which one failed.
+//
+// # Parameters
+// * `pattern` - The pattern of the case.
+// * `flags` - Its flags.
+// * `target` - The string it works over.
+_named: String -> String -> String -> String;
+_named = |pattern, flags, target| "/" + pattern + "/" + flags + " over " + target.to_string;
+
+test: IO ();
 test = (
-    let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
-    let groups = regexp.match_one("abc012 def345").as_ok;
-    assert_eq(|_|"", groups, ["abc012", "012"]);;
-
-    let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
-    let groups = regexp.match_one("abc012 def345").as_ok;
-    assert_eq(|_|"", groups, ["abc012", "def345"]);;
-
-    let regexp = RegExp::compile("(\\w\\w)(\\w)", "").as_ok;
-    let result = regexp.replace_all("abc def ijk", "$2$1");
-    assert_eq(|_|"", result, "cab fde kij");;
-
+    _match_cases.to_iter.fold_m((), |case, _|
+        let name = _named(case.@pattern, case.@flags, case.@target);
+        let regexp = RegExp::compile(case.@pattern, case.@flags).as_ok;
+        let one = regexp.match_one(case.@target);
+        let one = if one.is_err { [] } else { one.as_ok };
+        assert_eq(|_| name + " match_one", one, case.@one);;
+        assert_eq(|_| name + " match_all", regexp.match_all(case.@target), case.@all)
+    );;
+    _replace_cases.to_iter.fold_m((), |case, _|
+        let name = _named(case.@pattern, case.@flags, case.@target);
+        let regexp = RegExp::compile(case.@pattern, case.@flags).as_ok;
+        assert_eq(
+            |_| name + " replace_all",
+            regexp.replace_all(case.@target, case.@replacement),
+            case.@result
+        )
+    );;
     pure()
 );

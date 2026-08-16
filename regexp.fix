@@ -18,19 +18,14 @@
 //
 module RegExp;
 
-import RegExp.RegExpNFA::{
-    Group, NFA, NFAState, NFA::{compile, execute}, NFAExecutor::@accepted_states, 
-    NFAState::{collect_all_non_overlapping, collect_first_match, @groups}, NFAStateSet::to_iter, 
-    Replacement::{calc_replacement, compile}
-};
-import RegExp.RegExpPattern::Pattern::{parse, pgroup, psequence};
+import RegExp.RegExpNFA::{Group, NFA, NFA::{compile, search, search_all}, Replacement::{calc_replacement, compile}};
+import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, ErrMsg, Result, String, Array::{empty, is_empty, push_back, to_iter, @}, 
-    Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, Result::{err, ok}, 
-    String::{concat_iter, get_size}
+    Array, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
+    Functor::map, Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, 
+    Result::{err, ok}, String::{concat_iter, get_bytes, get_size}
 };
-
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
@@ -47,8 +42,6 @@ namespace RegExp {
     compile = |pattern_str, flags| (
         let pattern = *Pattern::parse(pattern_str);
         let pattern = pgroup $ (0, pattern); // since whole pattern is group 0
-        // add ".*" in front of pattern
-        let pattern = psequence $ [*Pattern::parse(".*"), pattern];
         let nfa = NFA::compile(pattern);
         ok $ RegExp { flags: flags, nfa:nfa }
     );
@@ -81,23 +74,19 @@ namespace RegExp {
     // function of JavaScript.
     match_one: String -> RegExp -> Result ErrMsg (Array String);
     match_one = |target, regexp| (
-        let executor = regexp.@nfa.execute(target);
-        let states: Array NFAState = executor.@accepted_states.to_iter.to_array;
+        let bytes = target.get_bytes.pop_back;
         if regexp.@flags.find_byte('g').is_some {
-            let states = collect_all_non_overlapping(states);
-            let groups0 = states.to_iter.map(|state| state.@groups.@(0)).to_array;
-            if groups0.is_empty {
+            let matches = regexp.@nfa.search_all(bytes);
+            if matches.is_empty {
                 err $ "NotMatch"
             };
-            ok $ target._convert_groups_to_string(groups0)
+            ok $ target._convert_groups_to_string(matches.map(|groups| groups.@(0)))
         } else {
-            let opt = collect_first_match(states);
+            let opt = regexp.@nfa.search(bytes, 0);
             if opt.is_none {
                 err $ "NotMatch"
             };
-            let state = opt.as_some;
-            let groups = state.@groups;
-            ok $ target._convert_groups_to_string(groups)
+            ok $ target._convert_groups_to_string(opt.as_some)
         }
     );
 
@@ -118,13 +107,8 @@ namespace RegExp {
     // function of JavaScript.
     match_all: String -> RegExp -> Array (Array String);
     match_all = |target, regexp| (
-        let executor = regexp.@nfa.execute(target);
-        let states: Array NFAState = executor.@accepted_states.to_iter.to_array;
-        let states = collect_all_non_overlapping(states);
-        let groups_array = states.to_iter.map(|state| 
-            target._convert_groups_to_string(state.@groups)
-        ).to_array;
-        groups_array
+        let bytes = target.get_bytes.pop_back;
+        regexp.@nfa.search_all(bytes).map(|groups| target._convert_groups_to_string(groups))
     );
 
     // `regexp.replace_all(target, replacement)` matches `target` against `regexp`,
@@ -146,16 +130,15 @@ namespace RegExp {
     // Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
     replace_all: String -> String -> RegExp -> String;
     replace_all = |target, replacement, regexp| (
-        let executor = regexp.@nfa.execute(target);
-        let states: Array NFAState = executor.@accepted_states.to_iter.to_array;
-        let states = collect_all_non_overlapping(states);
+        let bytes = target.get_bytes.pop_back;
+        let matches = regexp.@nfa.search_all(bytes);
         let rep_frags = Replacement::compile(replacement);
-        let output: Array String = Array::empty(0);
-        let (output, last) = states.to_iter.fold(
-            (output, 0), |state, (output, last)|
-            let (begin, end) = state.@groups.@(0);
+        let output: Array String = Array::empty(matches.get_size * 2 + 1);
+        let (output, last) = matches.to_iter.fold(
+            (output, 0), |groups, (output, last)|
+            let (begin, end) = groups.@(0);
             let output = output.push_back(target.substring(last, begin));
-            let output = output.push_back(calc_replacement(target, rep_frags, state));
+            let output = output.push_back(calc_replacement(target, rep_frags, groups));
             (output, end)
         );
         let output = output.push_back(target.substring(last, target.get_size));

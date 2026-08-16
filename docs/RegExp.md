@@ -1,6 +1,6 @@
 # RegExp
 
-Defined in regexp@1.1.3
+Defined in regexp@1.1.4
 
 Simple regular expression.
 
