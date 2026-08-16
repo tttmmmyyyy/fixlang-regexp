@@ -1,6 +1,6 @@
 # RegExp.RegExpNFA
 
-Defined in regexp@1.1.3
+Defined in regexp@1.1.4
 
 NFA (Nondeterministic Finite Automaton). This is internal module of `RegExp`.
 
