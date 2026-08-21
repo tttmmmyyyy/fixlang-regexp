@@ -31,12 +31,11 @@ import Std::{
     U64::{bit_and, bit_or, maximum, shift_left, shift_right}, U8::to_I64
 };
 
-// Type of a matched group.
-// The group is represented as two stream positions: `(begin, end)`. 
-// `-1` means that the stream position is undefined.
+// Where a group was matched: the two stream positions `(begin, end)`. `-1` stands for a position
+// that was never written.
 type Group = (I64, I64);
 
-// Type of the array of matched groups.
+// The groups a match captured, the whole match first. Group `n` of the pattern stands at index `n`.
 type Groups = Array Group;
 
 // Which special quantifier a node belongs to. `X{n}`, `X{n,}` and `X{n,m}` are the special
@@ -45,23 +44,27 @@ type Groups = Array Group;
 // actions are where the counting happens.
 type QuantID = I64;
 
-// NFA
+// The automaton a pattern compiles to.
+//
+// A node is a place a thread may stand at, and the transitions out of it say where the thread may
+// go next. A node may offer a thread more than one way on, so a search follows several threads at
+// once.
 type NFA = unbox struct {
-    nodes: Array NFANode,     // array of nodes
-    initial_node: NodeID,     // initial node
-    accepting_node: NodeID,   // accepting node
-    group_count: I64,         // group count
+    nodes: Array NFANode,     // every node, each named by its place here
+    initial_node: NodeID,     // the node a thread starts at
+    accepting_node: NodeID,   // the node a thread has matched at
+    group_count: I64,         // how many groups the pattern captures, the whole match counted as one
     quant_bounds: Array (I64, I64), // fewest and most rounds each special quant admits
     // The character classes the nodes are guarded by, as one bit per byte value, four words to a
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
     classes: Array U64,
     labels: Array String,     // a label per node, to display
-    debug: Bool               // true if debug
+    debug: Bool               // whether the automaton is written out as it is compiled
 };
 
 namespace NFA {
-    // An empty NFA.
+    // An automaton with no node and no group.
     empty: NFA;
     empty = NFA {
         nodes: Array::empty(0),
@@ -74,7 +77,7 @@ namespace NFA {
         debug: false
     };
 
-    // Creates new node. Returns the new node id.
+    // Adds a node that guards nothing and leads nowhere, and reports its id.
     new_node: NFA -> (NFA, NodeID);
     new_node = |nfa| (
         let id = NodeID { val: nfa.@nodes.get_size };
@@ -125,25 +128,30 @@ namespace NFA {
         nfa.@classes._holds_byte(base, byte)
     );
 
-    // `nfa.get_node(id)` gets the node whose @id is `id`.
+    // The node an id names.
     get_node: NodeID -> NFA -> NFANode;
     get_node = |id, nfa| (
         nfa.@nodes.@(id.@val)
     );
 
-    // `nfa.mod_node(id, f)` modifies the node whose @id is `id`.
+    // Replaces the node an id names by what a function makes of it.
     mod_node: NodeID -> (NFANode -> NFANode) -> NFA -> NFA;
     mod_node = |id, f, nfa| (
         nfa.mod_nodes(|nodes| nodes.set(id.@val, f(nodes.@(id.@val))))
     );
 
-    // `nfa.set_frag_output(frag, out)` sets the output of the fragment to `out`.
+    // Points every node a fragment leads out of at one node.
+    //
+    // # Parameters
+    // * `frag` - The fragment to point onward.
+    // * `out` - The node it is to lead to.
+    // * `nfa` - The automaton the fragment was built in.
     set_frag_output: NFAFrag -> NodeID -> NFA -> NFA;
     set_frag_output = |frag, out, nfa| (
         (frag.@set_output)(out, nfa)
     );
 
-    // Creates new quant. Returns the new quant id.
+    // Adds a special quantifier and reports its id.
     //
     // # Parameters
     // * `least` - The fewest rounds the quantifier admits.
@@ -178,7 +186,9 @@ namespace NFA {
         min(round, if most == I64::maximum { least } else { most })
     );
 
-    // `NFA::compile(pattern)` compiles a pattern to NFA.
+    // Compiles a pattern to an automaton. The groups of the pattern are numbered first, so that a
+    // thread can write down what it captures by number, and an accepting node is put after the
+    // fragment the pattern compiles to.
     compile: Pattern -> NFA;
     compile = |pattern| (
         // Creates an empty NFA
@@ -194,11 +204,11 @@ namespace NFA {
         let (nfa, accept_id) = nfa.new_node;
         let nfa = nfa.set_accepting_node(accept_id);
         let nfa = nfa.set_frag_output(frag, accept_id);
-        // Returns the NFA
         eval nfa.debug(nfa.to_string);
         nfa
     );
 
+    // Writes a message to the error stream, when the automaton is one being debugged.
     debug: String -> NFA -> ();
     debug = |msg, nfa| (
         if nfa.@debug { debug_eprintln(msg) } else { () }
@@ -219,49 +229,47 @@ impl NFA: ToString {
 
 // What a thread has to do, or what has to hold, before it may take a node's `output_on_action`.
 type NFANodeAction = unbox union {
-    sa_none: (),
-    sa_char_match: I64,                     // Where the class the input character must belong to begins
-    sa_assert: PAssertion,                  // The assertion to be checked
-    sa_group_begin: I64,                    // The beginning of a group
-    sa_group_end: I64,                      // The end of a group
-    sa_quant_begin: QuantID,                // The beginning of a special quantifier
-    sa_quant_loop: QuantID,                 // The loop of a special quantifier
-    sa_quant_end: (QuantID, I64, I64)       // The end of a special quantifier
+    sa_none: (),                            // nothing, so the action output is never taken
+    sa_char_match: I64,                     // read a byte of a class: where the class's words begin
+    sa_assert: PAssertion,                  // let a thread through where an assertion holds
+    sa_group_begin: I64,                    // write down where a group begins: which group
+    sa_group_end: I64,                      // write down where a group ends: which group
+    sa_quant_begin: QuantID,                // begin counting a special quantifier's rounds
+    sa_quant_loop: QuantID,                 // count one more round of a special quantifier
+    sa_quant_end: (QuantID, I64, I64)       // leave a special quantifier: its id, then its bounds
 };
 
 impl NFANodeAction: ToString {
-    to_string = |a| (
-        if a.is_sa_none { "none" };
-        if a.is_sa_char_match { "class@" + a.as_sa_char_match.to_string };
-        if a.is_sa_assert { a.as_sa_assert.to_string };
-        if a.is_sa_group_begin { "<g" + a.as_sa_group_begin.to_string + ">" };
-        if a.is_sa_group_end { "</g" + a.as_sa_group_end.to_string + ">" };
-        if a.is_sa_quant_begin { "<q" + a.as_sa_quant_begin.to_string + ">" };
-        if a.is_sa_quant_loop { "<ql" + a.as_sa_quant_loop.to_string + ">" };
-        if a.is_sa_quant_end { "</q" + a.as_sa_quant_end.to_string + ">" };
+    to_string = |action| (
+        if action.is_sa_none { "none" };
+        if action.is_sa_char_match { "class@" + action.as_sa_char_match.to_string };
+        if action.is_sa_assert { action.as_sa_assert.to_string };
+        if action.is_sa_group_begin { "<g" + action.as_sa_group_begin.to_string + ">" };
+        if action.is_sa_group_end { "</g" + action.as_sa_group_end.to_string + ">" };
+        if action.is_sa_quant_begin { "<q" + action.as_sa_quant_begin.to_string + ">" };
+        if action.is_sa_quant_loop { "<ql" + action.as_sa_quant_loop.to_string + ">" };
+        if action.is_sa_quant_end { "</q" + action.as_sa_quant_end.to_string + ">" };
         ""
     );
 }
 
-// NFA node
-//
-// NFA node has one input (ID of this node) and three outputs
-// (one output guarded by the action, and two outputs with no guard).
+// A node of the automaton. It has one input, which is its own id, and three outputs: one a thread
+// takes when the node's action lets it through, and two it takes without reading anything.
 type NFANode = unbox struct {
-    id: NodeID,                // ID of this node
-    action: NFANodeAction,     // action
-    output_on_action: NodeID,  // next node when the action succeeded
-    output: NodeID,            // next node with empty string
-    output2: NodeID            // next node with empty string part 2
+    id: NodeID,                // this node's own id
+    action: NFANodeAction,     // what a thread has to do to take `output_on_action`
+    output_on_action: NodeID,  // where a thread goes when the action lets it through
+    output: NodeID,            // where a thread goes without reading anything
+    output2: NodeID            // a second such node, where the node offers two ways on
 };
 
-// ID of NFA node. -1 is invalid value.
+// A node's name: its place in the automaton's `nodes`.
 type NodeID = unbox struct {
-    val: I64
+    val: I64   // the place in `nodes`, or `-1` for no node
 };
 
 impl NodeID: ToString {
-    to_string = |a| a.@val.to_string;
+    to_string = |id| id.@val.to_string;
 }
 
 impl NodeID: Eq {
@@ -269,11 +277,11 @@ impl NodeID: Eq {
 }
 
 namespace NFANode {
-    // An invalid node ID.
+    // The id standing for no node.
     _INVALID_NODE_ID: NodeID;
     _INVALID_NODE_ID = NodeID { val: -1 };
 
-    // An empty node
+    // A node that has no id, guards nothing and leads nowhere.
     empty: NFANode;
     empty = NFANode {
         id: _INVALID_NODE_ID,
@@ -297,22 +305,18 @@ impl NFANode: ToString {
 }
 
 
-// NFA Fragment
-//
-// NFA Fragment is a collection of nodes. It exports one input,
-// And a function to set the output.
-// Internally, the output of a fragment is a collection of outputs of one or more nodes.
-// Calling `set_output()` will change them all.
+// A stretch of the automaton, compiled from a stretch of the pattern. A thread enters it at one
+// node and may leave it from several, so where it leads onward is held as a function that points
+// every one of those nodes at the same place.
 type NFAFrag = unbox struct {
-    input: NodeID,                     // NodeID of input of this fragment
-    set_output: NodeID -> NFA -> NFA,  // A function to set NodeID of output
-                                       // of this fragment
-    label: String                      // A label to display (for debugging only)
+    input: NodeID,                     // the node a thread enters the fragment at
+    set_output: NodeID -> NFA -> NFA,  // points every node the fragment leads out of at one node
+    label: String                      // the stretch of the pattern, to display
 };
 
 namespace NFAFrag {
 
-    // `nfa.compile_pattern(pattern)` compiles a pattern to a fragment.
+    // Compiles a pattern to a fragment.
     compile_pattern: Pattern -> NFA -> (NFA, NFAFrag);
     compile_pattern = |pat, nfa| (
         if pat.is_pclass {
@@ -343,27 +347,27 @@ namespace NFAFrag {
             nfa._compile_either(frag1, frag2)
         };
         if pat.is_pquant {
-            let (pat1, min, max) = pat.as_pquant;
+            let (pat1, least, most) = pat.as_pquant;
             let (nfa, frag1) = nfa.compile_pattern(pat1);
-            if (min == 0 && max == 1) {
+            if (least == 0 && most == 1) {
                 nfa._compile_zero_or_once(frag1)
             };
-            if (min == 0 && max == I64::maximum) {
+            if (least == 0 && most == I64::maximum) {
                 nfa._compile_zero_or_more(frag1)
             };
-            if (min == 1 && max == I64::maximum) {
+            if (least == 1 && most == I64::maximum) {
                 nfa._compile_one_or_more(frag1)
             };
-            if (min <= max) {
-                nfa._compile_special_quant(frag1, min, max)
+            if (least <= most) {
+                nfa._compile_special_quant(frag1, least, most)
             };
-            undefined("invalid quantifier: (min,max)=" + (min,max).to_string)
+            undefined("invalid quantifier: (least,most)=" + (least, most).to_string)
         };
         if pat.is_pgroup {
-            let (n, pat1) = pat.as_pgroup;
-            let (nfa, frag0) = nfa._compile_action(sa_group_begin(n));
+            let (group, pat1) = pat.as_pgroup;
+            let (nfa, frag0) = nfa._compile_action(sa_group_begin(group));
             let (nfa, frag1) = nfa.compile_pattern(pat1);
-            let (nfa, frag2) = nfa._compile_action(sa_group_end(n));
+            let (nfa, frag2) = nfa._compile_action(sa_group_end(group));
             let (nfa, frag) = nfa._compile_seq(frag0, frag1);
             let (nfa, frag) = nfa._compile_seq(frag, frag2);
             (nfa, frag)
@@ -374,7 +378,7 @@ namespace NFAFrag {
         undefined("invalid pattern:" + pat.to_string)
     );
 
-    // Compiles an action to a fragment.
+    // Compiles an action to a fragment of one node, which a thread leaves by the action's output.
     _compile_action: NFANodeAction -> NFA -> (NFA, NFAFrag);
     _compile_action = |action, nfa| (
         let (nfa, id) = nfa.new_node;
@@ -390,7 +394,8 @@ namespace NFAFrag {
         (nfa, frag)
     );
 
-    // Compiles null sequence (``) to a fragment.
+    // Compiles the empty sequence to a fragment of one node, which a thread passes straight
+    // through.
     _compile_null_sequence: NFA -> (NFA, NFAFrag);
     _compile_null_sequence = |nfa| (
         let (nfa, id) = nfa.new_node;
@@ -438,7 +443,7 @@ namespace NFAFrag {
 
     );
 
-    // Compiles zero or once occurrence (`e?`) to a fragment.
+    // Compiles `e?` to a fragment: a thread may take the fragment once, or pass it by.
     _compile_zero_or_once: NFAFrag -> NFA -> (NFA, NFAFrag);
     _compile_zero_or_once = |frag1, nfa| (
         let (nfa, id) = nfa.new_node;
@@ -470,7 +475,8 @@ namespace NFAFrag {
         (nfa, id)
     );
 
-    // Compiles zero or more occurrence (`e*`) to a fragment.
+    // Compiles `e*` to a fragment: a thread may take the fragment any number of times, none
+    // included.
     _compile_zero_or_more: NFAFrag -> NFA -> (NFA, NFAFrag);
     _compile_zero_or_more = |frag1, nfa| (
         // A thread enters at the loop node, so it may leave without taking the fragment at all.
@@ -486,7 +492,8 @@ namespace NFAFrag {
         (nfa, frag)
     );
 
-    // Compiles one or more occurrence (`e+`) to a fragment.
+    // Compiles `e+` to a fragment: a thread takes the fragment once, then as many more times as it
+    // will.
     _compile_one_or_more: NFAFrag -> NFA -> (NFA, NFAFrag);
     _compile_one_or_more = |frag1, nfa| (
         // A thread enters at the fragment, so it takes the fragment once before reaching the loop
@@ -503,15 +510,16 @@ namespace NFAFrag {
         (nfa, frag)
     );
 
-    // Compiles special quant (`e{min,max}`) to a fragment.
+    // Compiles `e{least,most}` to a fragment: a thread counts its rounds through the fragment, and
+    // leaves only where the count stands between the two bounds.
     _compile_special_quant: NFAFrag -> I64 -> I64 -> NFA -> (NFA, NFAFrag);
-    _compile_special_quant = |frag1, min, max, nfa| (
-        let (nfa, qid) = nfa.new_quant(min, max);
+    _compile_special_quant = |frag1, least, most, nfa| (
+        let (nfa, qid) = nfa.new_quant(least, most);
         let (nfa, branch_id) = nfa.new_node;
         let nfa = nfa.set_node_label(branch_id, "branch(q" + qid.to_string + ")");
         let (nfa, frag_begin) = nfa._compile_action(sa_quant_begin $ qid);
         let (nfa, frag_loop) = nfa._compile_action(sa_quant_loop $ qid);
-        let (nfa, frag_end) = nfa._compile_action(sa_quant_end $ (qid, min, max));
+        let (nfa, frag_end) = nfa._compile_action(sa_quant_end $ (qid, least, most));
         let nfa = nfa.set_frag_output(frag_begin, branch_id);
         let nfa = nfa.mod_node(branch_id, set_output(frag1.@input));
         let nfa = nfa.mod_node(branch_id, set_output2(frag_end.@input));
@@ -522,7 +530,7 @@ namespace NFAFrag {
             set_output: |out, nfa| (
                 nfa.set_frag_output(frag_end, out)
             ),
-            label: frag1.@label + "{" + min.to_string + "," + max.to_string + "}"
+            label: frag1.@label + "{" + least.to_string + "," + most.to_string + "}"
         };
         (nfa, frag)
     );
@@ -1799,24 +1807,32 @@ namespace NFA {
     );
 }
 
-// A replacement fragment
+// A piece of a replacement string: a byte to write out as it stands, or a group whose captured
+// text to write out.
 type ReplaceFrag = unbox union {
-    rep_literal: U8,
-    rep_group: I64
+    rep_literal: U8,   // the byte to write out
+    rep_group: I64     // which group to write the captured text of
 };
 
 namespace Replacement {
 
-    // Compiles a replacement string to fragments.
+    // Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
+    // `$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
     compile: String -> Array ReplaceFrag;
     compile = |replacement| (
-        let res = _parse_replacement_seq.run_parser_str(replacement);
-        if res.is_err { undefined("_parse_replacement_seq failed") };
-        let (reps, _) = res.as_ok;
-        reps
+        let parsed = _parse_replacement_seq.run_parser_str(replacement);
+        if parsed.is_err { undefined("_parse_replacement_seq failed") };
+        let (frags, _) = parsed.as_ok;
+        frags
     );
 
-    // Calculates actual replacement string.
+    // The text a match is replaced by: the fragments written out one after another, each group
+    // standing for the text it captured.
+    //
+    // # Parameters
+    // * `target` - The string the match was found in.
+    // * `rep_frags` - The fragments the replacement string compiled to.
+    // * `groups` - The groups the match captured.
     calc_replacement: String -> Array ReplaceFrag -> Groups -> String;
     calc_replacement = |target, rep_frags, groups| (
         let output: Array U8 = Array::empty(target.get_size + rep_frags.get_size);
@@ -1828,14 +1844,15 @@ namespace Replacement {
             if rep.is_rep_group {
                 let group_idx = rep.as_rep_group;
                 let (begin, end) = groups.group_at(group_idx);
-                let str = target.substring(begin, end);
-                output.append(str.get_bytes.pop_back)
+                let captured = target.substring(begin, end);
+                output.append(captured.get_bytes.pop_back)
             };
             undefined("err")
         );
         output._unsafe_to_string
     );
 
+    // Parses a whole replacement string: every fragment it holds, in the order they stand in.
     _parse_replacement_seq: Parser (Array ReplaceFrag);
     _parse_replacement_seq = do {
         repeat(
@@ -1844,6 +1861,7 @@ namespace Replacement {
         )
     };
 
+    // Parses a `$` escape: `$$` for a `$`, `$&` for the whole match, and `$n` for group `n`.
     _parse_dollar: Parser ReplaceFrag;
     _parse_dollar = do {
         let _ = *match_char('$');
@@ -1853,8 +1871,8 @@ namespace Replacement {
             pure $ rep_literal('$')
         };
 
-        let ampasand = *match_char_if_exists('&');    // $&
-        if ampasand.is_some {
+        let ampersand = *match_char_if_exists('&');    // $&
+        if ampersand.is_some {
             pure $ rep_group(0)
         };
 
@@ -1868,6 +1886,7 @@ namespace Replacement {
         not_match
     };
 
+    // Parses one byte, which stands for itself.
     _parse_literal: Parser ReplaceFrag;
     _parse_literal = do {
         match_any_char.map(rep_literal)

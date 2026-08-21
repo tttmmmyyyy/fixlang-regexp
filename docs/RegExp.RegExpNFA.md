@@ -70,29 +70,33 @@ Whether a byte belongs to the class whose words begin at a position.
 
 Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpNFA::NFA`
 
-`NFA::compile(pattern)` compiles a pattern to NFA.
+Compiles a pattern to an automaton. The groups of the pattern are numbered first, so that a
+thread can write down what it captures by number, and an accepting node is put after the
+fragment the pattern compiles to.
 
 #### debug
 
 Type: `Std::String -> RegExp.RegExpNFA::NFA -> ()`
 
+Writes a message to the error stream, when the automaton is one being debugged.
+
 #### empty
 
 Type: `RegExp.RegExpNFA::NFA`
 
-An empty NFA.
+An automaton with no node and no group.
 
 #### get_node
 
 Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFANode`
 
-`nfa.get_node(id)` gets the node whose @id is `id`.
+The node an id names.
 
 #### mod_node
 
 Type: `RegExp.RegExpNFA::NodeID -> (RegExp.RegExpNFA::NFANode -> RegExp.RegExpNFA::NFANode) -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
 
-`nfa.mod_node(id, f)` modifies the node whose @id is `id`.
+Replaces the node an id names by what a function makes of it.
 
 #### new_class
 
@@ -109,13 +113,13 @@ Stores a character class and returns where its four words begin.
 
 Type: `RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, RegExp.RegExpNFA::NodeID)`
 
-Creates new node. Returns the new node id.
+Adds a node that guards nothing and leads nowhere, and reports its id.
 
 #### new_quant
 
 Type: `Std::I64 -> Std::I64 -> RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, RegExp.RegExpNFA::QuantID)`
 
-Creates new quant. Returns the new quant id.
+Adds a special quantifier and reports its id.
 
 ##### Parameters
 
@@ -172,7 +176,13 @@ Every match the automaton finds, taken left to right, none of them overlapping a
 
 Type: `RegExp.RegExpNFA::NFAFrag -> RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
 
-`nfa.set_frag_output(frag, out)` sets the output of the fragment to `out`.
+Points every node a fragment leads out of at one node.
+
+##### Parameters
+
+* `frag` - The fragment to point onward.
+* `out` - The node it is to lead to.
+* `nfa` - The automaton the fragment was built in.
 
 #### set_node_label
 
@@ -192,7 +202,7 @@ Type: `RegExp.RegExpNFA::NodeID -> Std::String -> RegExp.RegExpNFA::NFA -> RegEx
 
 Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpNFA::NFA -> (RegExp.RegExpNFA::NFA, RegExp.RegExpNFA::NFAFrag)`
 
-`nfa.compile_pattern(pattern)` compiles a pattern to a fragment.
+Compiles a pattern to a fragment.
 
 ### namespace RegExp.RegExpNFA::NFANode
 
@@ -200,7 +210,7 @@ Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpNFA::NFA -> (RegExp.RegExpN
 
 Type: `RegExp.RegExpNFA::NFANode`
 
-An empty node
+A node that has no id, guards nothing and leads nowhere.
 
 ### namespace RegExp.RegExpNFA::Replacement
 
@@ -208,13 +218,21 @@ An empty node
 
 Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag -> RegExp.RegExpNFA::Groups -> Std::String`
 
-Calculates actual replacement string.
+The text a match is replaced by: the fragments written out one after another, each group
+standing for the text it captured.
+
+##### Parameters
+
+* `target` - The string the match was found in.
+* `rep_frags` - The fragments the replacement string compiled to.
+* `groups` - The groups the match captured.
 
 #### compile
 
 Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag`
 
-Compiles a replacement string to fragments.
+Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
+`$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
 
 ### namespace RegExp.RegExpNFA::Walk
 
@@ -311,21 +329,24 @@ Type: `Std::Bool`
 
 Defined as: `type Group = (Std::I64, Std::I64)`
 
-Type of a matched group.
-The group is represented as two stream positions: `(begin, end)`.
-`-1` means that the stream position is undefined.
+Where a group was matched: the two stream positions `(begin, end)`. `-1` stands for a position
+that was never written.
 
 #### Groups
 
 Defined as: `type Groups = Std::Array RegExp.RegExpNFA::Group`
 
-Type of the array of matched groups.
+The groups a match captured, the whole match first. Group `n` of the pattern stands at index `n`.
 
 #### NFA
 
 Defined as: `type NFA = unbox struct { ...fields... }`
 
-NFA
+The automaton a pattern compiles to.
+
+A node is a place a thread may stand at, and the transitions out of it say where the thread may
+go next. A node may offer a thread more than one way on, so a search follows several threads at
+once.
 
 ##### field `nodes`
 
@@ -367,12 +388,9 @@ Type: `Std::Bool`
 
 Defined as: `type NFAFrag = unbox struct { ...fields... }`
 
-NFA Fragment
-
-NFA Fragment is a collection of nodes. It exports one input,
-And a function to set the output.
-Internally, the output of a fragment is a collection of outputs of one or more nodes.
-Calling `set_output()` will change them all.
+A stretch of the automaton, compiled from a stretch of the pattern. A thread enters it at one
+node and may leave it from several, so where it leads onward is held as a function that points
+every one of those nodes at the same place.
 
 ##### field `input`
 
@@ -386,16 +404,12 @@ Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NF
 
 Type: `Std::String`
 
-of this fragment
-
 #### NFANode
 
 Defined as: `type NFANode = unbox struct { ...fields... }`
 
-NFA node
-
-NFA node has one input (ID of this node) and three outputs
-(one output guarded by the action, and two outputs with no guard).
+A node of the automaton. It has one input, which is its own id, and three outputs: one a thread
+takes when the node's action lets it through, and two it takes without reading anything.
 
 ##### field `id`
 
@@ -459,7 +473,7 @@ Type: `(RegExp.RegExpNFA::QuantID, Std::I64, Std::I64)`
 
 Defined as: `type NodeID = unbox struct { ...fields... }`
 
-ID of NFA node. -1 is invalid value.
+A node's name: its place in the automaton's `nodes`.
 
 ##### field `val`
 
@@ -478,7 +492,8 @@ actions are where the counting happens.
 
 Defined as: `type ReplaceFrag = unbox union { ...variants... }`
 
-A replacement fragment
+A piece of a replacement string: a byte to write out as it stands, or a group whose captured
+text to write out.
 
 ##### variant `rep_literal`
 
