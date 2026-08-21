@@ -455,12 +455,26 @@ namespace NFAFrag {
         (nfa, frag)
     );
 
+    // Creates the node a repeated fragment goes round: its plain output enters the fragment, and
+    // the fragment's output comes back to it, so that a thread may take the fragment any number of
+    // times. Returns the new node id.
+    //
+    // # Parameters
+    // * `body` - The fragment to be repeated.
+    // * `nfa` - The automaton to add the node to.
+    _new_loop_node: NFAFrag -> NFA -> (NFA, NodeID);
+    _new_loop_node = |body, nfa| (
+        let (nfa, id) = nfa.new_node;
+        let nfa = nfa.mod_node(id, set_output(body.@input));
+        let nfa = nfa.set_frag_output(body, id);
+        (nfa, id)
+    );
+
     // Compiles zero or more occurrence (`e*`) to a fragment.
     _compile_zero_or_more: NFAFrag -> NFA -> (NFA, NFAFrag);
     _compile_zero_or_more = |frag1, nfa| (
-        let (nfa, id) = nfa.new_node;
-        let nfa = nfa.mod_node(id, set_output(frag1.@input));
-        let nfa = nfa.set_frag_output(frag1, id);
+        // A thread enters at the loop node, so it may leave without taking the fragment at all.
+        let (nfa, id) = nfa._new_loop_node(frag1);
         let frag = NFAFrag {
             input: id,
             set_output: |out, nfa| (
@@ -475,9 +489,9 @@ namespace NFAFrag {
     // Compiles one or more occurrence (`e+`) to a fragment.
     _compile_one_or_more: NFAFrag -> NFA -> (NFA, NFAFrag);
     _compile_one_or_more = |frag1, nfa| (
-        let (nfa, id) = nfa.new_node;
-        let nfa = nfa.mod_node(id, set_output(frag1.@input));
-        let nfa = nfa.set_frag_output(frag1, id);
+        // A thread enters at the fragment, so it takes the fragment once before reaching the loop
+        // node.
+        let (nfa, id) = nfa._new_loop_node(frag1);
         let frag = NFAFrag {
             input: frag1.@input,
             set_output: |out, nfa| (
@@ -1851,7 +1865,6 @@ namespace Replacement {
             pure $ rep_group(num.as_some)
         };
 
-        //error_parser $ "invalid dollar"
         not_match
     };
 
