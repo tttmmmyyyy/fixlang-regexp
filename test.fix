@@ -1,9 +1,12 @@
 module Test;
 
-import RegExp::RegExp::{compile, match_all, match_one, replace_all};
+import RegExp::RegExp::{compile, match_all, match_one, replace_all, @nfa};
+import RegExp.RegExpNFA::{Groups, NFA, NFA::{search, search_all, _search_threads}};
 import Std::{
-    Array, IO, String, Array::to_iter, Debug::assert_eq, Iterator::fold_m, Monad::pure, 
-    Result::{as_ok, is_err}, ToString::to_string
+    loop, Array, Bool, I64, IO, String, U8, Array::{empty, push_back, to_iter, @, @size}, 
+    Array::pop_back, Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
+    Monad::pure, 
+    Option::{as_some, is_none}, Result::{as_ok, is_err}, String::get_bytes, ToString::to_string
 };
 
 // A case for `match_one` and `match_all`: the pattern, its flags, the string to match against, what
@@ -126,6 +129,210 @@ _replace_cases = [
 _named: String -> String -> String -> String;
 _named = |pattern, flags, target| "/" + pattern + "/" + flags + " over " + target.to_string;
 
+// The scanner and the automaton are two ways of reading the same pattern over the same bytes, and
+// they are held to the same answers: the section below draws patterns and strings at random and
+// runs the two against each other. The automaton is the one to trust, since it walks every thread
+// standing at a position and needs nothing remembered between positions.
+
+// The numbers the random cases are drawn from. The same numbers come out on every run, so a case
+// that fails can be looked at again.
+type Draws = unbox struct {
+    state: I64
+};
+
+namespace Draws {
+    // A number below a bound, and the draws that follow it.
+    //
+    // # Parameters
+    // * `bound` - The number the draw stays below.
+    // * `draws` - The numbers to draw from.
+    _below: I64 -> Draws -> (I64, Draws);
+    _below = |bound, draws| (
+        let state = (draws.@state * 1103515245 + 12345) % 2147483648;
+        (state / 65536 % bound, Draws { state: state })
+    );
+
+    // One of the strings offered, and the draws that follow it.
+    //
+    // # Parameters
+    // * `offered` - The strings to draw from.
+    // * `draws` - The numbers to draw from.
+    _one_of: Array String -> Draws -> (String, Draws);
+    _one_of = |offered, draws| (
+        let (i, draws) = draws._below(offered.@size);
+        (offered.@(i), draws)
+    );
+}
+
+// The pieces a drawn pattern is put together from.
+_atoms: Array String;
+_atoms = ["a", "b", "c", ".", "[ab]", "[^a]", "\\d", "\\w", "\\s", "(a|b)", "(ab)", "(a)", "x"];
+
+// The ways a drawn piece may be repeated. Most pieces stand once, so the empty repeat is offered
+// several times over.
+_repeats: Array String;
+_repeats = ["", "", "", "", "*", "+", "?", "{2}", "{1,2}", "{2,}", "{0,2}"];
+
+// The characters a drawn string is put together from. A line break is among them because a pattern
+// may be read over one, and `.` may not.
+_letters: Array String;
+_letters = ["a", "b", "c", "x", " ", "\n", "1"];
+
+// A run of pieces, each possibly repeated.
+//
+// # Parameters
+// * `count` - How many pieces.
+// * `draws` - The numbers to draw from.
+_draw_run: I64 -> Draws -> (String, Draws);
+_draw_run = |count, draws| (
+    Iterator::range(0, count).fold(("", draws), |_, (pattern, draws)|
+        let (atom, draws) = draws._one_of(_atoms);
+        let (repeat, draws) = draws._one_of(_repeats);
+        (pattern + atom + repeat, draws)
+    )
+);
+
+// A pattern: one or two runs of pieces, possibly held to the beginning or the end of the string.
+//
+// # Parameters
+// * `draws` - The numbers to draw from.
+_draw_pattern: Draws -> (String, Draws);
+_draw_pattern = |draws| (
+    let (count, draws) = draws._below(3);
+    let (left, draws) = _draw_run(count + 1, draws);
+    let (branches, draws) = draws._below(3);
+    let (pattern, draws) = if branches == 0 {
+        let (count, draws) = draws._below(2);
+        let (right, draws) = _draw_run(count + 1, draws);
+        (left + "|" + right, draws)
+    } else {
+        (left, draws)
+    };
+    let (begin, draws) = draws._below(6);
+    let (end, draws) = draws._below(6);
+    (
+        (if begin == 0 { "^" } else { "" }) + pattern + (if end == 0 { "$" } else { "" }),
+        draws
+    )
+);
+
+// A string for a pattern to be read over.
+//
+// # Parameters
+// * `draws` - The numbers to draw from.
+_draw_target: Draws -> (String, Draws);
+_draw_target = |draws| (
+    let (length, draws) = draws._below(40);
+    Iterator::range(0, length).fold(("", draws), |_, (target, draws)|
+        let (letter, draws) = draws._one_of(_letters);
+        (target + letter, draws)
+    )
+);
+
+// Every match the automaton finds, taken left to right, none of them overlapping another. This is
+// what `NFA::search_all` reports, worked out by walking every thread rather than by the states the
+// scanner builds.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `nfa` - The automaton to run.
+_search_all_threads: Array U8 -> NFA -> Array Groups;
+_search_all_threads = |bytes, nfa| (
+    let length = bytes.@size;
+    let (matches, _) = loop((Array::empty(8), 0), |(matches, from)|
+        if from > length { break $ (matches, from) };
+        let opt = NFA::_search_threads(bytes, from, nfa);
+        if opt.is_none { break $ (matches, from) };
+        let groups = opt.as_some;
+        let (begin, end) = groups.@(0);
+        continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 })
+    );
+    matches
+);
+
+// How many random cases to draw.
+_random_cases: I64;
+_random_cases = 4000;
+
+// Draws patterns and strings, and holds the scanner to what the automaton finds: every match of
+// `search_all`, and the match `search` finds from each position of the string.
+_test_against_threads: IO ();
+_test_against_threads = (
+    let (_, compiled, found) = *Iterator::range(0, _random_cases).fold_m(
+        (Draws { state: 20260821 }, 0, 0), |_, (draws, compiled, found)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let (target, draws) = _draw_target(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, compiled, found) };
+        let nfa = result.as_ok.@nfa;
+        let bytes = target.get_bytes.pop_back;
+        let name = _named(pattern, "g", target);
+        let matches = nfa.search_all(bytes);
+        assert_eq(|_| name + " search_all", matches, _search_all_threads(bytes, nfa));;
+        Iterator::range(0, bytes.@size + 1).fold_m((), |from, _|
+            assert_eq(
+                |_| name + " search from " + from.to_string,
+                nfa.search(bytes, from),
+                NFA::_search_threads(bytes, from, nfa)
+            )
+        );;
+        pure $ (draws, compiled + 1, found + matches.@size)
+    );
+    // The draws are held to producing work. A generator that stopped producing patterns that
+    // compile, or strings that the patterns are ever met by, would let every case agree without
+    // anything having been compared.
+    assert(|_| "the drawn patterns compile", compiled * 10 >= _random_cases * 9);;
+    assert(|_| "the drawn patterns are met by the drawn strings", found >= _random_cases / 4)
+);
+
+// The cases that carry the scanner past what it may take, where the search is given back to the
+// automaton. They are written out rather than drawn because the bounds are reached only by an input
+// far longer than a drawn one, and only by a pattern of a particular shape.
+//
+// * A pattern whose states are more than the scanner may hold: what the automaton reads next
+//   depends on the twenty bytes behind it, so the sets of threads it stands in are a million.
+// * A pattern whose attempt runs to the end of a long run of letters wherever it begins, which is
+//   the reading the scanner cannot bound and the automaton does in one pass.
+_bounded_cases: Array (String, Bool);
+_bounded_cases = [
+    ("(a|b)*a(a|b){20}", true),
+    ("[a-z]+@[a-z]+", false)
+];
+
+// The letters a drawn string is put together from.
+_alphabet: Array String;
+_alphabet = ["a", "b", "c", "d", "e", "f", "g"];
+
+// A drawn string of the given length, over the first letters of the alphabet.
+//
+// # Parameters
+// * `letters` - How many letters to draw from.
+// * `length` - How long the string is.
+_draw_letters: I64 -> I64 -> String;
+_draw_letters = |letters, length| (
+    let (target, _) = Iterator::range(0, length).fold(("", Draws { state: 20260822 }), |_, (target, draws)|
+        let (i, draws) = draws._below(letters);
+        (target + _alphabet.@(i), draws)
+    );
+    target
+);
+
+// Holds the scanner to what the automaton finds over an input long enough to carry it past its
+// bounds.
+_test_beyond_bounds: IO ();
+_test_beyond_bounds = (
+    _bounded_cases.to_iter.fold_m((), |(pattern, drawn), _|
+        let target = if drawn { _draw_letters(2, 2000) } else { _draw_letters(7, 2000) };
+        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let bytes = target.get_bytes.pop_back;
+        assert_eq(
+            |_| "/" + pattern + "/ over a drawn string",
+            nfa.search_all(bytes),
+            _search_all_threads(bytes, nfa)
+        )
+    )
+);
+
 test: IO ();
 test = (
     _match_cases.to_iter.fold_m((), |case, _|
@@ -145,5 +352,7 @@ test = (
             case.@result
         )
     );;
+    _test_against_threads;;
+    _test_beyond_bounds;;
     pure()
 );
