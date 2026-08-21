@@ -123,7 +123,7 @@ Creates new quant. Returns the new quant id.
 * `most` - The most rounds it admits.
 * `nfa` - The automaton to add the quantifier to.
 
-#### quant_round
+#### quant_next_round
 
 Type: `RegExp.RegExpNFA::QuantID -> Std::I64 -> RegExp.RegExpNFA::NFA -> Std::I64`
 
@@ -538,7 +538,7 @@ Per node, the step at which a thread took it, so that nothing has to be cleared 
 positions, and the rounds counted by the threads that took it, since two threads standing at
 one node having counted differently do not have the same future.
 
-##### field `step_counts`
+##### field `counts_at_step`
 
 Type: `Std::Array (Std::Array Std::I64)`
 

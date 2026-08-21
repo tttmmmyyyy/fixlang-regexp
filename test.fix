@@ -208,20 +208,20 @@ _draw_run = |count, draws| (
 // * `draws` - The numbers to draw from.
 _draw_pattern: Draws -> (String, Draws);
 _draw_pattern = |draws| (
-    let (count, draws) = draws._below(3);
-    let (left, draws) = _draw_run(count + 1, draws);
-    let (branches, draws) = draws._below(3);
-    let (pattern, draws) = if branches == 0 {
-        let (count, draws) = draws._below(2);
-        let (right, draws) = _draw_run(count + 1, draws);
+    let (extra_pieces, draws) = draws._below(3);
+    let (left, draws) = _draw_run(extra_pieces + 1, draws);
+    let (branch_draw, draws) = draws._below(3);
+    let (pattern, draws) = if branch_draw == 0 {
+        let (extra_pieces, draws) = draws._below(2);
+        let (right, draws) = _draw_run(extra_pieces + 1, draws);
         (left + "|" + right, draws)
     } else {
         (left, draws)
     };
-    let (begin, draws) = draws._below(6);
-    let (end, draws) = draws._below(6);
+    let (begin_draw, draws) = draws._below(6);
+    let (end_draw, draws) = draws._below(6);
     (
-        (if begin == 0 { "^" } else { "" }) + pattern + (if end == 0 { "$" } else { "" }),
+        (if begin_draw == 0 { "^" } else { "" }) + pattern + (if end_draw == 0 { "$" } else { "" }),
         draws
     )
 );
@@ -335,8 +335,8 @@ _repeated = |unit, times| Iterator::range(0, times).fold("", |_, held| held + un
 // The third pattern's attempt runs to the end of a long run of letters wherever it begins, which is
 // the reading the scanner cannot bound and the automaton does in one pass. The run holds no match,
 // since it is met by no `z`, and the match is the one behind it.
-_bounded_cases: Array (String, String, Array Groups);
-_bounded_cases = [
+_beyond_bounds_cases: Array (String, String, Array Groups);
+_beyond_bounds_cases = [
     ("[ab]*a[ab]{20}", _draw_letters(2000) + "a" + _repeated("b", 20), [[(0, 2021)]]),
     ("[ab]*a[ab]{20}", "@" + _draw_letters(2000) + "a" + _repeated("b", 20), [[(1, 2022)]]),
     ("a[a-z]*z", _repeated("a", 2000) + "@abcz", [[(2001, 2005)]])
@@ -345,7 +345,7 @@ _bounded_cases = [
 // Holds the scanner to the matches written out for the inputs that carry it past its bounds.
 _test_beyond_bounds: IO ();
 _test_beyond_bounds = (
-    _bounded_cases.to_iter.fold_m((), |(pattern, target, matches), _|
+    _beyond_bounds_cases.to_iter.fold_m((), |(pattern, target, matches), _|
         let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
         let bytes = target.get_bytes.pop_back;
         assert_eq(
@@ -359,8 +359,8 @@ _test_beyond_bounds = (
 // The states the scanner holds are ordered by the threads they stand for, and taking a new state in
 // keeps that order: every state standing at or after the place it takes moves along by one, and
 // none is lost.
-_test_index_insertion: IO ();
-_test_index_insertion = (
+_test_ordered_insertion: IO ();
+_test_ordered_insertion = (
     assert_eq(|_| "a state taken in at the front", DFA::_insert_at(0, 5, [10, 30, 50]), [5, 10, 30, 50]);;
     assert_eq(|_| "a state taken in between", DFA::_insert_at(1, 20, [10, 30, 50]), [10, 20, 30, 50]);;
     assert_eq(|_| "a state taken in at the end", DFA::_insert_at(3, 60, [10, 30, 50]), [10, 30, 50, 60])
@@ -388,6 +388,6 @@ test = (
     );;
     _test_against_threads;;
     _test_beyond_bounds;;
-    _test_index_insertion;;
+    _test_ordered_insertion;;
     pure()
 );

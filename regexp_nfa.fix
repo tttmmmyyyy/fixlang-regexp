@@ -171,8 +171,8 @@ namespace NFA {
     // * `qid` - The quantifier the thread stands in.
     // * `counted` - The rounds it has counted so far.
     // * `nfa` - The automaton the quantifier belongs to.
-    quant_round: QuantID -> I64 -> NFA -> I64;
-    quant_round = |qid, counted, nfa| (
+    quant_next_round: QuantID -> I64 -> NFA -> I64;
+    quant_next_round = |qid, counted, nfa| (
         let (least, most) = nfa.@quant_bounds.@(qid);
         let round = counted + 1;
         if most != I64::maximum && round > most { -1 };
@@ -578,7 +578,7 @@ type Walk = box struct {
     // positions, and the rounds counted by the threads that took it, since two threads standing at
     // one node having counted differently do not have the same future.
     at_step: Array I64,
-    step_counts: Array (Array I64),
+    counts_at_step: Array (Array I64),
     step: I64
 };
 
@@ -600,7 +600,7 @@ namespace Walk {
             counts: Array::empty(node_count * count_width),
             pending: Array::empty(node_count),
             at_step: Array::fill(node_count, -1),
-            step_counts: if count_width > 0 {
+            counts_at_step: if count_width > 0 {
                 Array::fill(node_count, Array::empty(0))
             } else {
                 Array::empty(0)
@@ -633,15 +633,15 @@ namespace Walk {
         let step = walk.@step;
         if walk.@at_step.@(node) != step {
             let walk = walk.mod_at_step(set(node, step));
-            (true, walk.mod_step_counts(set(node, counts)))
+            (true, walk.mod_counts_at_step(set(node, counts)))
         };
-        if walk.@step_counts.@(node)._holds_counts(counts) { (false, walk) };
-        (true, walk.mod_step_counts(mod(node, append(counts))))
+        if walk.@counts_at_step.@(node)._holds_counts(counts) { (false, walk) };
+        (true, walk.mod_counts_at_step(mod(node, append(counts))))
     );
 
     // Adds a thread standing at a node, having captured and counted what a thread of this walk has,
-    // with one round put where `count_at` names, unless a thread standing at that node having
-    // counted the same rounds is there already.
+    // with one round put where `qid` names, unless a thread standing at that node having counted
+    // the same rounds is there already.
     //
     // Reports where the thread was put, or `-1` when it was not added. Two threads standing at one
     // node having counted the same rounds have the same future, so keeping the earlier of them,
@@ -650,17 +650,17 @@ namespace Walk {
     // # Parameters
     // * `node` - The node the thread stands at.
     // * `source` - The thread it carries the captures and the counts of.
-    // * `count_at` - The round to put a number at, or `-1` to carry them all forward.
-    // * `count_value` - The number to put there.
+    // * `qid` - The quantifier whose rounds to put a number at, or `-1` to carry them all forward.
+    // * `round` - The rounds to put there.
     // * `walk` - The walk to add it to.
     _offer_here: I64 -> I64 -> I64 -> I64 -> Walk -> (I64, Walk);
-    _offer_here = |node, source, count_at, count_value, walk| (
+    _offer_here = |node, source, qid, round, walk| (
         if node < 0 { (-1, walk) };
         let count_width = walk.@count_width;
         let (fresh, walk) = if count_width == 0 {
             walk._take_node(node)
         } else {
-            let counts = walk._counts_of(source, count_at, count_value);
+            let counts = walk._counts_of(source, qid, round);
             walk._take_counted(node, counts)
         };
         if !fresh { (-1, walk) };
@@ -675,25 +675,25 @@ namespace Walk {
         );
         let walk = walk.mod_counts(|counts|
             Iterator::range(0, count_width).fold(counts, |j, counts|
-                let value = if j == count_at { count_value } else { counts.@(source * count_width + j) };
+                let value = if j == qid { round } else { counts.@(source * count_width + j) };
                 counts.push_back(value)
             )
         );
         (placed, walk.mod_pending(push_back(placed)))
     );
 
-    // The rounds a thread has counted, with one of them put where `count_at` names.
+    // The rounds a thread has counted, with one of them put where `qid` names.
     //
     // # Parameters
     // * `source` - The thread to read.
-    // * `count_at` - The round to put a number at, or `-1` to read them all.
-    // * `count_value` - The number to put there.
+    // * `qid` - The quantifier whose rounds to put a number at, or `-1` to read them all.
+    // * `round` - The rounds to put there.
     // * `walk` - The walk the thread belongs to.
     _counts_of: I64 -> I64 -> I64 -> Walk -> Array I64;
-    _counts_of = |source, count_at, count_value, walk| (
+    _counts_of = |source, qid, round, walk| (
         let count_width = walk.@count_width;
         Array::from_map(count_width, |j|
-            if j == count_at { count_value } else { walk.@counts.@(source * count_width + j) }
+            if j == qid { round } else { walk.@counts.@(source * count_width + j) }
         )
     );
 
@@ -825,7 +825,7 @@ namespace Walk {
         };
         if action.is_sa_quant_loop {
             let qid = action.as_sa_quant_loop;
-            let round = nfa.quant_round(qid, walk.@counts.@(thread * walk.@count_width + qid));
+            let round = nfa.quant_next_round(qid, walk.@counts.@(thread * walk.@count_width + qid));
             if round < 0 { walk };
             let (_, walk) = walk._offer_here(next, thread, qid, round);
             walk
@@ -1005,8 +1005,8 @@ namespace NFA {
 
 // How many states the scanner may take before it gives the search back to the automaton. Each state
 // costs a row of 256 transitions, which bounds the table the scanner builds.
-_MAX_DFA_STATES: I64;
-_MAX_DFA_STATES = 1024;
+_DFA_MAX_STATES: I64;
+_DFA_MAX_STATES = 1024;
 
 // How many bytes the scanner may read for each position it rules out before it gives the search
 // back to the automaton, and how many it may read before that count is held against it.
@@ -1080,7 +1080,7 @@ namespace DFA {
             full: false
         };
         let (_, dfa) = dfa._intern(Array::empty(0));
-        let (interior, dfa) = dfa._state_where(false, false);
+        let (interior, dfa) = dfa._start_state_at(false, false);
         let first_bytes = dfa._first_bytes_of(interior);
         dfa.set_interior(interior).set_first_bytes(first_bytes)
     );
@@ -1100,8 +1100,8 @@ namespace DFA {
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
     // * `dfa` - The scanner.
-    _state_where: Bool -> Bool -> DFA -> (I64, DFA);
-    _state_where = |at_begin, at_end, dfa| (
+    _start_state_at: Bool -> Bool -> DFA -> (I64, DFA);
+    _start_state_at = |at_begin, at_end, dfa| (
         let closed = dfa._closure(at_begin, at_end, dfa._initial_thread);
         dfa._intern(closed)
     );
@@ -1120,13 +1120,13 @@ namespace DFA {
         let width = dfa.@width;
         let begin = dfa.@bounds.@(state);
         let end = dfa.@bounds.@(state + 1);
-        Iterator::range(0, (end - begin) / width).fold(Array::fill(4, 0_U64), |k, bytes|
+        Iterator::range(0, (end - begin) / width).fold(Array::fill(4, 0_U64), |k, first_bytes|
             let node = nfa.get_node(NodeID { val: dfa.@threads.@(begin + k * width) });
             let action = node.@action;
-            if !action.is_sa_char_match { bytes };
+            if !action.is_sa_char_match { first_bytes };
             let base = action.as_sa_char_match;
-            Iterator::range(0, 4).fold(bytes, |w, bytes|
-                bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
+            Iterator::range(0, 4).fold(first_bytes, |w, first_bytes|
+                first_bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
             )
         )
     );
@@ -1152,10 +1152,10 @@ namespace DFA {
     // * `dfa` - The scanner.
     _intern: Array I64 -> DFA -> (I64, DFA);
     _intern = |wanted, dfa| (
-        let (found, place) = dfa._locate(wanted);
-        if found >= 0 { (found, dfa) };
+        let (existing, place) = dfa._locate(wanted);
+        if existing >= 0 { (existing, dfa) };
         let id = dfa.@bounds.get_size - 1;
-        if id >= _MAX_DFA_STATES { (-1, dfa.set_full(true)) };
+        if id >= _DFA_MAX_STATES { (-1, dfa.set_full(true)) };
         let width = dfa.@width;
         let accepting = dfa.@nfa.@accepting_node.@val;
         let accepts = _holds_node(accepting, width, wanted);
@@ -1217,10 +1217,10 @@ namespace DFA {
     _compare = |state, wanted, dfa| (
         let begin = dfa.@bounds.@(state);
         let end = dfa.@bounds.@(state + 1);
-        let held = end - begin;
-        let offered = wanted.get_size;
+        let held_size = end - begin;
+        let offered_size = wanted.get_size;
         loop(0, |i|
-            if i == held || i == offered { break $ held - offered };
+            if i == held_size || i == offered_size { break $ held_size - offered_size };
             let difference = dfa.@threads.@(begin + i) - wanted.@(i);
             if difference != 0 { break $ difference };
             continue $ i + 1
@@ -1498,7 +1498,7 @@ namespace DFA {
         };
         if action.is_sa_quant_loop {
             let qid = action.as_sa_quant_loop;
-            let round = nfa.quant_round(qid, thread.@(1 + qid));
+            let round = nfa.quant_next_round(qid, thread.@(1 + qid));
             if round < 0 { reached };
             _offer_thread(width, next.set(1 + qid, round), reached)
         };
@@ -1540,17 +1540,17 @@ namespace DFA {
     // * `at` - The position to read from.
     // * `state` - The state the threads stand in.
     // * `best` - How far the longest match seen so far reaches, or `-1`.
-    _walk: Array U8 -> Array I64 -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64);
-    _walk = |bytes, transitions, length, at, state, best| (
+    _walk_table: Array U8 -> Array I64 -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64);
+    _walk_table = |bytes, transitions, length, at, state, best| (
         loop((at, state, best), |(at, state, best)|
             if at == length { break $ (at, state, best) };
-            let taken = transitions.@(state * 256 + bytes.@(at).to_I64);
-            if taken <= 0 {
-                if taken < 0 { break $ (at, state, best) };
+            let transition = transitions.@(state * 256 + bytes.@(at).to_I64);
+            if transition <= 0 {
+                if transition < 0 { break $ (at, state, best) };
                 break $ (at, -1, best)
             };
             let at = at + 1;
-            continue $ (at, taken / 2, if taken % 2 == 1 { at } else { best })
+            continue $ (at, transition / 2, if transition % 2 == 1 { at } else { best })
         )
     );
 
@@ -1567,14 +1567,14 @@ namespace DFA {
         // The ends of the input are the two places an assertion can hold, so a match beginning there
         // starts from a state of its own.
         let (state, dfa) = if from == 0 || from == length {
-            dfa._state_where(from == 0, from == length)
+            dfa._start_state_at(from == 0, from == length)
         } else {
             (dfa.@interior, dfa)
         };
         if state < 0 { (-1, 0, dfa) };
         let best = if dfa.@accepts.@(state) { from } else { -1 };
         loop((from, state, best, 0, dfa), |(at, state, best, steps, dfa)|
-            let (stopped, state, best) = _walk(bytes, dfa.@transitions, length, at, state, best);
+            let (stopped, state, best) = _walk_table(bytes, dfa.@transitions, length, at, state, best);
             let steps = steps + stopped - at;
             if state < 0 { break $ (best, steps, dfa) };
             if stopped == length {
@@ -1606,18 +1606,18 @@ namespace DFA {
         // the bytes a match may begin with are read off the state that stands away from either end.
         let (best, _, dfa) = if from == 0 { dfa._attempt(bytes, length, 0) } else { (-1, 0, dfa) };
         if dfa.@full { (NFA::_search_threads(bytes, from, dfa.@nfa), dfa) };
-        if best >= 0 { (dfa._captured(bytes, 0, best), dfa) };
+        if best >= 0 { (dfa._match_with_groups(bytes, 0, best), dfa) };
         loop((max(from, 1), 0, dfa), |(at, steps, dfa)|
             let at = _skip_bytes(bytes, dfa.@first_bytes, length, at);
             if steps > _DFA_STEPS_PER_POSITION * (at - from) + _DFA_STEPS_GRACE {
                 break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa)
             };
-            let (best, read, dfa) = dfa._attempt(bytes, length, at);
+            let (best, bytes_read, dfa) = dfa._attempt(bytes, length, at);
             if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa) };
-            if best >= 0 { break $ (dfa._captured(bytes, at, best), dfa) };
+            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), dfa) };
             if at >= length { break $ (none(), dfa) };
             let (next, dfa) = dfa._after_failure(bytes, length, at);
-            continue $ (next, steps + read, dfa)
+            continue $ (next, steps + bytes_read, dfa)
         )
     );
 
@@ -1738,8 +1738,8 @@ namespace DFA {
     // * `begin` - Where the match begins.
     // * `end` - Where it ends.
     // * `dfa` - The scanner that found it.
-    _captured: Array U8 -> I64 -> I64 -> DFA -> Option Groups;
-    _captured = |bytes, begin, end, dfa| (
+    _match_with_groups: Array U8 -> I64 -> I64 -> DFA -> Option Groups;
+    _match_with_groups = |bytes, begin, end, dfa| (
         if dfa.@nfa.@group_count <= 1 { some $ [(begin, end)] };
         NFA::_capture_groups(bytes, begin, end, dfa.@nfa)
     );
