@@ -105,10 +105,6 @@ Compiles a pattern to an automaton. The groups of the pattern are numbered first
 thread can write down what it captures by number, and an accepting node is put after the
 fragment the pattern compiles to.
 
-#### debug
-
-Type: `Std::String -> RegExp.RegExpNFA::NFA -> ()`
-
 #### empty
 
 Type: `RegExp.RegExpNFA::NFA`
@@ -212,18 +208,6 @@ Points every node a fragment leads out of at one node.
 * `frag` - The fragment to point onward.
 * `out` - The node it is to lead to.
 * `nfa` - The automaton the fragment was built in.
-
-#### set_node_label
-
-Type: `RegExp.RegExpNFA::NodeID -> Std::String -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
-
-`nfa.set_node_label(id, label)` gives the node whose @id is `id` a label to display.
-
-##### Parameters
-
-* `id` - The node to label.
-* `label` - The label to give it.
-* `nfa` - The automaton the node belongs to.
 
 ### namespace RegExp.RegExpNFA::NFAFrag
 
@@ -431,14 +415,6 @@ The character classes the nodes are guarded by, as one bit per byte value, four 
 class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
 so that walking the nodes costs no reference counting at all.
 
-##### field `labels`
-
-Type: `Std::Array Std::String`
-
-##### field `debug`
-
-Type: `Std::Bool`
-
 #### NFAFrag
 
 Defined as: `type NFAFrag = unbox struct { ...fields... }`
@@ -454,10 +430,6 @@ Type: `RegExp.RegExpNFA::NodeID`
 ##### field `set_output`
 
 Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
-
-##### field `label`
-
-Type: `Std::String`
 
 #### NFANode
 
