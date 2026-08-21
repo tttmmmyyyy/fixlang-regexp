@@ -30,7 +30,7 @@ Gets specified group. If the group index is out of range, returns `(-1, -1)`.
 Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::DFA -> (Std::Option RegExp.RegExpNFA::Groups, RegExp.RegExpNFA::DFA)`
 
 The leftmost match beginning at or after a position, taking the longest of those that begin
-at the same place, together with the scanner as walking it left it.
+at the same place, together with the scanner as the search left it.
 
 Positions holding a byte no match can begin with are passed over without the automaton being
 walked at all, which is what makes a search over text a pattern rarely meets cost little more
@@ -127,8 +127,8 @@ Creates new quant. Returns the new quant id.
 
 Type: `RegExp.RegExpNFA::QuantID -> Std::I64 -> RegExp.RegExpNFA::NFA -> Std::I64`
 
-The rounds a thread standing at a special quantifier's loop has counted once one more round
-is counted, or `-1` when the quantifier admits no such round.
+The rounds a thread standing at a special quantifier's loop has counted after one more
+round, or `-1` when the quantifier admits no further round.
 
 A round past the most the quantifier admits leaves the thread nowhere to go: the quantifier's
 end admits no such count, and the count is never brought down again, since coming back to the
@@ -236,7 +236,8 @@ A walk carrying no thread.
 
 Defined as: `type DFA = box struct { ...fields... }`
 
-The automaton walked over sets of threads, so that reading a byte costs one table lookup.
+The scanner: the automaton walked over sets of threads, so that reading a byte costs one table
+lookup. Where the text below says "the scanner" it means a `DFA`, and "the automaton" an `NFA`.
 
 A state is a set of threads. Reading a byte carries every thread whose node admits it to the node
 that node leads to, and the threads reachable from there without reading anything join them; what
@@ -420,7 +421,7 @@ Type: `RegExp.RegExpNFA::NodeID`
 
 Defined as: `type NFANodeAction = unbox union { ...variants... }`
 
-Actions that has to be performed before the state makes a transition to `node.@out_on_action`.
+What a thread has to do, or what has to hold, before it may take a node's `output_on_action`.
 
 ##### variant `sa_none`
 
@@ -468,11 +469,10 @@ Type: `Std::I64`
 
 Defined as: `type QuantID = Std::I64`
 
-Type of special quantifiers ID.
-Special quantifiers are quantifieres other than `X?` `X*` `X+`.
-In other words, they are `X{n}` `X{n,}` `X{n,m}` etc.
-Special quantifiers are hard to implement only using node transition,
-so its iteration count are stored in the NFA state, and managed by `sa_quant_*` actions.
+Which special quantifier a node belongs to. `X{n}`, `X{n,}` and `X{n,m}` are the special
+quantifiers, and a thread counts the rounds it has taken through each of them, since how many it
+has taken decides where it may go and the node it stands at does not say. The `sa_quant_*`
+actions are where the counting happens.
 
 #### ReplaceFrag
 
@@ -535,16 +535,21 @@ The threads whose empty-string transitions are still to be followed, taken from 
 Type: `Std::Array Std::I64`
 
 Per node, the step at which a thread took it, so that nothing has to be cleared between
-positions, and the rounds counted by the threads that took it, since two threads standing at
-one node having counted differently do not have the same future.
+positions.
 
 ##### field `counts_at_step`
 
 Type: `Std::Array (Std::Array Std::I64)`
 
+Per node, the rounds counted by the threads that took it at that step, since two threads
+standing at one node having counted differently do not have the same future.
+
 ##### field `step`
 
 Type: `Std::I64`
+
+How many bytes the walk has read, which tells the marks left at one position from those left
+at another.
 
 ## Traits and aliases
 

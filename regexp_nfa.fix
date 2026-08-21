@@ -39,11 +39,10 @@ type Group = (I64, I64);
 // Type of the array of matched groups.
 type Groups = Array Group;
 
-// Type of special quantifiers ID.
-// Special quantifiers are quantifieres other than `X?` `X*` `X+`.
-// In other words, they are `X{n}` `X{n,}` `X{n,m}` etc.
-// Special quantifiers are hard to implement only using node transition,
-// so its iteration count are stored in the NFA state, and managed by `sa_quant_*` actions.
+// Which special quantifier a node belongs to. `X{n}`, `X{n,}` and `X{n,m}` are the special
+// quantifiers, and a thread counts the rounds it has taken through each of them, since how many it
+// has taken decides where it may go and the node it stands at does not say. The `sa_quant_*`
+// actions are where the counting happens.
 type QuantID = I64;
 
 // NFA
@@ -156,8 +155,8 @@ namespace NFA {
         (nfa.mod_quant_bounds(push_back((least, most))), id)
     );
 
-    // The rounds a thread standing at a special quantifier's loop has counted once one more round
-    // is counted, or `-1` when the quantifier admits no such round.
+    // The rounds a thread standing at a special quantifier's loop has counted after one more
+    // round, or `-1` when the quantifier admits no further round.
     //
     // A round past the most the quantifier admits leaves the thread nowhere to go: the quantifier's
     // end admits no such count, and the count is never brought down again, since coming back to the
@@ -218,7 +217,7 @@ impl NFA: ToString {
     );
 }
 
-// Actions that has to be performed before the state makes a transition to `node.@out_on_action`.
+// What a thread has to do, or what has to hold, before it may take a node's `output_on_action`.
 type NFANodeAction = unbox union {
     sa_none: (),
     sa_char_match: I64,                     // Where the class the input character must belong to begins
@@ -567,18 +566,21 @@ _holds_counts = |counts, held| (
 // `t * slot_width` - a beginning and an end to a group, the whole match first - and has counted the
 // `count_width` numbers of `counts` beginning at `t * count_width`.
 type Walk = box struct {
-    slot_width: I64,
-    count_width: I64,
-    nodes: Array I64,
-    slots: Array I64,
-    counts: Array I64,
+    slot_width: I64,     // how many numbers a thread's captures take: two to a group
+    count_width: I64,    // how many numbers a thread's counts take: one per special quantifier
+    nodes: Array I64,    // the node each thread stands at
+    slots: Array I64,    // what every thread has captured, laid end to end
+    counts: Array I64,   // what every thread has counted, laid end to end
     // The threads whose empty-string transitions are still to be followed, taken from the end.
     pending: Array I64,
     // Per node, the step at which a thread took it, so that nothing has to be cleared between
-    // positions, and the rounds counted by the threads that took it, since two threads standing at
-    // one node having counted differently do not have the same future.
+    // positions.
     at_step: Array I64,
+    // Per node, the rounds counted by the threads that took it at that step, since two threads
+    // standing at one node having counted differently do not have the same future.
     counts_at_step: Array (Array I64),
+    // How many bytes the walk has read, which tells the marks left at one position from those left
+    // at another.
     step: I64
 };
 
@@ -1009,7 +1011,7 @@ _DFA_MAX_STATES: I64;
 _DFA_MAX_STATES = 1024;
 
 // How many bytes the scanner may read for each position it rules out before it gives the search
-// back to the automaton, and how many it may read before that count is held against it.
+// back to the automaton.
 //
 // The scanner reads a byte in one table lookup where the automaton walks every thread standing
 // there, so reading a position over is worth it several times over. What it cannot do is bound the
@@ -1018,10 +1020,13 @@ _DFA_MAX_STATES = 1024;
 _DFA_STEPS_PER_POSITION: I64;
 _DFA_STEPS_PER_POSITION = 24;
 
+// How many bytes the scanner may read before that count is held against it, so that a search over a
+// short input is finished by the scanner whatever it reads.
 _DFA_STEPS_GRACE: I64;
 _DFA_STEPS_GRACE = 4096;
 
-// The automaton walked over sets of threads, so that reading a byte costs one table lookup.
+// The scanner: the automaton walked over sets of threads, so that reading a byte costs one table
+// lookup. Where the text below says "the scanner" it means a `DFA`, and "the automaton" an `NFA`.
 //
 // A state is a set of threads. Reading a byte carries every thread whose node admits it to the node
 // that node leads to, and the threads reachable from there without reading anything join them; what
@@ -1035,7 +1040,7 @@ _DFA_STEPS_GRACE = 4096;
 // The scanner reports where a match begins and ends and nothing else. The groups a match captured
 // are read off afterwards by the automaton, over the stretch the match covers.
 type DFA = box struct {
-    nfa: NFA,
+    nfa: NFA,                     // the automaton the states are worked out from
     width: I64,                   // numbers to a thread: the node, then one count per special quantifier
     threads: Array I64,           // the threads of every state, laid end to end
     bounds: Array I64,            // state `i` holds the threads from `bounds.@(i)` to `bounds.@(i+1)`
@@ -1414,7 +1419,7 @@ namespace DFA {
         (taken.mod(node, append(counts)), pending.append(thread))
     );
 
-    // The rounds a thread has counted, as the threads reached at a node are told apart by.
+    // The rounds a thread has counted. Two threads reached at one node are told apart by these.
     //
     // # Parameters
     // * `width` - How many numbers a thread takes.
@@ -1508,8 +1513,8 @@ namespace DFA {
         _offer_thread(width, next, reached)
     );
 
-    // Whether a state accepts where the input ends, where `$` holds, working it out when it has not
-    // been asked before.
+    // Whether a state accepts where the input ends, where `$` holds. The answer is worked out on
+    // the first ask and kept.
     //
     // # Parameters
     // * `state` - The state to weigh.
@@ -1588,7 +1593,7 @@ namespace DFA {
     );
 
     // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place, together with the scanner as walking it left it.
+    // at the same place, together with the scanner as the search left it.
     //
     // Positions holding a byte no match can begin with are passed over without the automaton being
     // walked at all, which is what makes a search over text a pattern rarely meets cost little more
