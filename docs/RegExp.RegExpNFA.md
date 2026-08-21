@@ -2,7 +2,8 @@
 
 Defined in regexp@1.1.5
 
-NFA (Nondeterministic Finite Automaton). This is internal module of `RegExp`.
+The automaton a pattern is compiled to, and the compiler that builds it. This is an internal
+module of `RegExp`.
 
 For details, see web pages below.
 - https://swtch.com/~rsc/regexp/regexp1.html
@@ -23,36 +24,38 @@ Gets specified group. If the group index is out of range, returns `(-1, -1)`.
 * `group_idx` - The index of the group.
 * `groups` - The captured groups.
 
-### namespace RegExp.RegExpNFA::DFA
-
-#### find
-
-Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::DFA -> (Std::Option RegExp.RegExpNFA::Groups, RegExp.RegExpNFA::DFA)`
-
-The leftmost match beginning at or after a position, taking the longest of those that begin
-at the same place, together with the scanner as the search left it.
-
-Positions holding a byte no match can begin with are passed over without the automaton being
-walked at all, which is what makes a search over text a pattern rarely meets cost little more
-than reading the text.
-
-##### Parameters
-
-* `bytes` - The bytes to read.
-* `from` - The position at or after which the match has to begin.
-* `dfa` - The scanner.
-
-#### make
-
-Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::DFA`
-
-A scanner that has walked nothing yet.
-
-##### Parameters
-
-* `nfa` - The automaton to walk.
-
 ### namespace RegExp.RegExpNFA::NFA
+
+#### action_quant
+
+Type: `RegExp.RegExpNFA::NFANodeAction -> Std::I64`
+
+The special quantifier whose rounds a node's action reads, or `-1` where it reads none. A
+walk reads that many rounds off the thread and hands them to `action_step`.
+
+##### Parameters
+
+* `action` - The action to read.
+
+#### action_step
+
+Type: `Std::Bool -> Std::Bool -> Std::I64 -> RegExp.RegExpNFA::NFANode -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::ActionStep`
+
+What a node's action lets a thread standing at it do: where it may step, the rounds it writes
+there, and the group whose beginning or end it records. `next` is `-1` where the action lets
+the thread nowhere, and `quant`, `opens` and `closes` are `-1` where the step writes and
+records nothing.
+
+Every walk of the automaton asks this, and each writes the answer into threads of its own
+shape, which is why the answer is numbers rather than a thread.
+
+##### Parameters
+
+* `at_begin` - Whether the position is the beginning of the input, where `^` holds.
+* `at_end` - Whether it is the end of the input, where `$` holds.
+* `counted` - The rounds the thread has counted for the quantifier the action reads.
+* `node` - The node whose action to read.
+* `nfa` - The automaton the node belongs to.
 
 #### class_holds
 
@@ -71,10 +74,6 @@ Whether a byte belongs to the class whose words begin at a position.
 Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpNFA::NFA`
 
 `NFA::compile(pattern)` compiles a pattern to NFA.
-
-#### debug
-
-Type: `Std::String -> RegExp.RegExpNFA::NFA -> ()`
 
 #### empty
 
@@ -144,47 +143,11 @@ own; holding the counter there keeps their number finite and admits the same pat
 * `counted` - The rounds it has counted so far.
 * `nfa` - The automaton the quantifier belongs to.
 
-#### search
-
-Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::NFA -> Std::Option RegExp.RegExpNFA::Groups`
-
-Runs the automaton over the bytes and reports the leftmost match beginning at or after a
-position, taking the longest of those that begin at the same place.
-
-##### Parameters
-
-* `bytes` - The bytes to read.
-* `from` - The position at or after which the match has to begin.
-* `nfa` - The automaton to run.
-
-#### search_all
-
-Type: `Std::Array Std::U8 -> RegExp.RegExpNFA::NFA -> Std::Array RegExp.RegExpNFA::Groups`
-
-Every match the automaton finds, taken left to right, none of them overlapping another.
-
-##### Parameters
-
-* `bytes` - The bytes to read.
-* `nfa` - The automaton to run.
-
 #### set_frag_output
 
 Type: `RegExp.RegExpNFA::NFAFrag -> RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
 
 `nfa.set_frag_output(frag, out)` sets the output of the fragment to `out`.
-
-#### set_node_label
-
-Type: `RegExp.RegExpNFA::NodeID -> Std::String -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
-
-`nfa.set_node_label(id, label)` gives the node whose @id is `id` a label to display.
-
-##### Parameters
-
-* `id` - The node to label.
-* `label` - The label to give it.
-* `nfa` - The automaton the node belongs to.
 
 ### namespace RegExp.RegExpNFA::NFAFrag
 
@@ -202,110 +165,35 @@ Type: `RegExp.RegExpNFA::NFANode`
 
 An empty node
 
-### namespace RegExp.RegExpNFA::Replacement
-
-#### calc_replacement
-
-Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag -> RegExp.RegExpNFA::Groups -> Std::String`
-
-Calculates actual replacement string.
-
-#### compile
-
-Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag`
-
-Compiles a replacement string to fragments.
-
-### namespace RegExp.RegExpNFA::Walk
-
-#### make
-
-Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::Walk`
-
-A walk carrying no thread.
-
-##### Parameters
-
-* `nfa` - The automaton to walk.
-
 ## Types and aliases
 
 ### namespace RegExp.RegExpNFA
 
-#### DFA
+#### ActionStep
 
-Defined as: `type DFA = box struct { ...fields... }`
+Defined as: `type ActionStep = unbox struct { ...fields... }`
 
-The scanner: the automaton walked over sets of threads, so that reading a byte costs one table
-lookup. Where the text below says "the scanner" it means a `DFA`, and "the automaton" an `NFA`.
+What a node's action lets a thread standing at it do. See `NFA::action_step`.
 
-A state is a set of threads. Reading a byte carries every thread whose node admits it to the node
-that node leads to, and the threads reachable from there without reading anything join them; what
-comes out is again a state. States and the transitions between them are worked out as the input
-calls for them and kept, so that a byte read again in the same state costs one lookup.
-
-A thread is `width` numbers: the node it stands at, then the rounds it has counted for each
-special quantifier. A state holds its threads ordered by node, so that two sets holding the same
-threads are one state.
-
-The scanner reports where a match begins and ends and nothing else. The groups a match captured
-are read off afterwards by the automaton, over the stretch the match covers.
-
-##### field `nfa`
-
-Type: `RegExp.RegExpNFA::NFA`
-
-##### field `width`
+##### field `next`
 
 Type: `Std::I64`
 
-##### field `threads`
-
-Type: `Std::Array Std::I64`
-
-##### field `bounds`
-
-Type: `Std::Array Std::I64`
-
-##### field `ordered`
-
-Type: `Std::Array Std::I64`
-
-##### field `transitions`
-
-Type: `Std::Array Std::I64`
-
-##### field `accepts`
-
-Type: `Std::Array Std::Bool`
-
-##### field `accepts_at_end`
-
-Type: `Std::Array Std::I64`
-
-##### field `untaken`
-
-Type: `Std::Array Std::I64`
-
-`1` where it does, `0` where it does not, `-1` until asked
-
-##### field `interior`
+##### field `quant`
 
 Type: `Std::I64`
 
-##### field `first_bytes`
+##### field `round`
 
-Type: `Std::Array Std::U64`
+Type: `Std::I64`
 
-##### field `absorbing`
+##### field `opens`
 
-Type: `Std::Array Std::U8`
+Type: `Std::I64`
 
-##### field `full`
+##### field `closes`
 
-Type: `Std::Bool`
-
-`2` where it does not, `0` where it has not been worked out
+Type: `Std::I64`
 
 #### Group
 
@@ -355,14 +243,6 @@ The character classes the nodes are guarded by, as one bit per byte value, four 
 class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
 so that walking the nodes costs no reference counting at all.
 
-##### field `labels`
-
-Type: `Std::Array Std::String`
-
-##### field `debug`
-
-Type: `Std::Bool`
-
 #### NFAFrag
 
 Defined as: `type NFAFrag = unbox struct { ...fields... }`
@@ -381,12 +261,6 @@ Type: `RegExp.RegExpNFA::NodeID`
 ##### field `set_output`
 
 Type: `RegExp.RegExpNFA::NodeID -> RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::NFA`
-
-##### field `label`
-
-Type: `Std::String`
-
-of this fragment
 
 #### NFANode
 
@@ -473,83 +347,6 @@ Which special quantifier a node belongs to. `X{n}`, `X{n,}` and `X{n,m}` are the
 quantifiers, and a thread counts the rounds it has taken through each of them, since how many it
 has taken decides where it may go and the node it stands at does not say. The `sa_quant_*`
 actions are where the counting happens.
-
-#### ReplaceFrag
-
-Defined as: `type ReplaceFrag = unbox union { ...variants... }`
-
-A replacement fragment
-
-##### variant `rep_literal`
-
-Type: `Std::U8`
-
-##### variant `rep_group`
-
-Type: `Std::I64`
-
-#### Walk
-
-Defined as: `type Walk = box struct { ...fields... }`
-
-The threads an automaton is walked with, and what each of them has captured.
-
-A thread stands at a node, has captured a beginning and an end for each group, and has counted
-rounds for each special quantifier. All three are numbers, and the threads share three arrays of
-them, so that carrying a thread forward writes numbers and allocates nothing. Gathering what one
-thread holds into a value of its own would put an array behind every thread and have it copied
-once per node the thread reaches.
-
-Thread `t` stands at `nodes.@(t)`, has captured the `slot_width` numbers of `slots` beginning at
-`t * slot_width` - a beginning and an end to a group, the whole match first - and has counted the
-`count_width` numbers of `counts` beginning at `t * count_width`.
-
-##### field `slot_width`
-
-Type: `Std::I64`
-
-##### field `count_width`
-
-Type: `Std::I64`
-
-##### field `nodes`
-
-Type: `Std::Array Std::I64`
-
-##### field `slots`
-
-Type: `Std::Array Std::I64`
-
-##### field `counts`
-
-Type: `Std::Array Std::I64`
-
-##### field `pending`
-
-Type: `Std::Array Std::I64`
-
-The threads whose empty-string transitions are still to be followed, taken from the end.
-
-##### field `at_step`
-
-Type: `Std::Array Std::I64`
-
-Per node, the step at which a thread took it, so that nothing has to be cleared between
-positions.
-
-##### field `counts_at_step`
-
-Type: `Std::Array (Std::Array Std::I64)`
-
-Per node, the rounds counted by the threads that took it at that step, since two threads
-standing at one node having counted differently do not have the same future.
-
-##### field `step`
-
-Type: `Std::I64`
-
-How many bytes the walk has read, which tells the marks left at one position from those left
-at another.
 
 ## Traits and aliases
 
