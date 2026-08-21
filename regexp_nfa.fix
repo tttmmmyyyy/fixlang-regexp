@@ -1155,9 +1155,10 @@ namespace DFA {
     _insert_at: I64 -> I64 -> Array I64 -> Array I64;
     _insert_at = |place, state, ordered| (
         let ordered = ordered.push_back(state);
-        loop(ordered.get_size - 1, |i|
+        loop((ordered.get_size - 1, ordered), |(i, ordered)|
             if i == place { break $ ordered.set(place, state) };
-            continue $ i - 1
+            let earlier = ordered.@(i - 1);
+            continue $ (i - 1, ordered.set(i, earlier))
         )
     );
 
@@ -1268,8 +1269,8 @@ namespace DFA {
             let pending = pending.truncate(base);
             let node = nfa.get_node(NodeID { val: thread.@(0) });
             let reached = _follow_action(nfa, at_begin, at_end, width, node, thread, (taken, pending));
-            let reached = _offer_thread(width, thread.set(0, node.@output.@val), reached);
-            continue $ _offer_thread(width, thread.set(0, node.@output2.@val), reached)
+            let reached = _offer_thread(width, thread.set(0, node.@output2.@val), reached);
+            continue $ _offer_thread(width, thread.set(0, node.@output.@val), reached)
         );
         _gather_threads(width, taken)
     );
