@@ -24,7 +24,7 @@ import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
     Array::{append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, to_iter, truncate, @}, 
-    Debug::debug_eprintln, Functor::map, I64::{maximum, to_U64, to_U8}, 
+    Functor::map, I64::{maximum, to_U64, to_U8}, 
     Iterator::{check_any, fold, map, range}, LessThan::{max, min}, LoopState::{break, continue}, 
     Monad::pure, Option::{as_some, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
     String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
@@ -55,9 +55,7 @@ type NFA = unbox struct {
     // The character classes the nodes are guarded by, as one bit per byte value, four words to a
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
-    classes: Array U64,
-    labels: Array String,     // a label per node, to display
-    debug: Bool               // true if debug
+    classes: Array U64
 };
 
 namespace NFA {
@@ -69,9 +67,7 @@ namespace NFA {
         accepting_node: _INVALID_NODE_ID,
         group_count: 0,
         quant_bounds: Array::empty(0),
-        classes: Array::empty(0),
-        labels: Array::empty(0),
-        debug: false
+        classes: Array::empty(0)
     };
 
     // Creates new node. Returns the new node id.
@@ -80,19 +76,8 @@ namespace NFA {
         let id = NodeID { val: nfa.@nodes.get_size };
         let node = NFANode::empty;
         let node = node.set_id(id);
-        let nfa = nfa.mod_nodes(push_back(node)).mod_labels(push_back(""));
+        let nfa = nfa.mod_nodes(push_back(node));
         (nfa, id)
-    );
-
-    // `nfa.set_node_label(id, label)` gives the node whose @id is `id` a label to display.
-    //
-    // # Parameters
-    // * `id` - The node to label.
-    // * `label` - The label to give it.
-    // * `nfa` - The automaton the node belongs to.
-    set_node_label: NodeID -> String -> NFA -> NFA;
-    set_node_label = |id, label, nfa| (
-        nfa.mod_labels(set(id.@val, label))
     );
 
     // Stores a character class and returns where its four words begin.
@@ -178,6 +163,62 @@ namespace NFA {
         min(round, if most == I64::maximum { least } else { most })
     );
 
+    // What a node's action lets a thread standing at it do: where it may step, the rounds it writes
+    // there, and the group whose beginning or end it records. `next` is `-1` where the action lets
+    // the thread nowhere, and `quant`, `opens` and `closes` are `-1` where the step writes and
+    // records nothing.
+    //
+    // Every walk of the automaton asks this, and each writes the answer into threads of its own
+    // shape, which is why the answer is numbers rather than a thread.
+    //
+    // # Parameters
+    // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
+    // * `at_end` - Whether it is the end of the input, where `$` holds.
+    // * `counted` - The rounds the thread has counted for the quantifier the action reads.
+    // * `node` - The node whose action to read.
+    // * `nfa` - The automaton the node belongs to.
+    action_step: Bool -> Bool -> I64 -> NFANode -> NFA -> ActionStep;
+    action_step = |at_begin, at_end, counted, node, nfa| (
+        let blocked = ActionStep { next: -1, quant: -1, round: 0, opens: -1, closes: -1 };
+        let action = node.@action;
+        // A node guarded by a character class leads nowhere until a byte is read, and one guarding
+        // nothing leads nowhere through its action.
+        if action.is_sa_char_match || action.is_sa_none { blocked };
+        let step = blocked.set_next(node.@output_on_action.@val);
+        if action.is_sa_assert {
+            let assertion = action.as_sa_assert;
+            let holds = (assertion.is_pa_begin && at_begin) || (assertion.is_pa_end && at_end);
+            if holds { step } else { blocked }
+        };
+        if action.is_sa_group_begin { step.set_opens(action.as_sa_group_begin) };
+        if action.is_sa_group_end { step.set_closes(action.as_sa_group_end) };
+        if action.is_sa_quant_begin { step.set_quant(action.as_sa_quant_begin) };
+        if action.is_sa_quant_loop {
+            let qid = action.as_sa_quant_loop;
+            let round = nfa.quant_next_round(qid, counted);
+            if round < 0 { blocked };
+            step.set_quant(qid).set_round(round)
+        };
+        let (qid, least, most) = action.as_sa_quant_end;
+        if counted < least || most < counted { blocked };
+        step
+    );
+
+    // The special quantifier whose rounds a node's action reads, or `-1` where it reads none. A
+    // walk reads that many rounds off the thread and hands them to `action_step`.
+    //
+    // # Parameters
+    // * `action` - The action to read.
+    action_quant: NFANodeAction -> I64;
+    action_quant = |action| (
+        if action.is_sa_quant_loop { action.as_sa_quant_loop };
+        if action.is_sa_quant_end {
+            let (qid, _, _) = action.as_sa_quant_end;
+            qid
+        };
+        -1
+    );
+
     // `NFA::compile(pattern)` compiles a pattern to NFA.
     compile: Pattern -> NFA;
     compile = |pattern| (
@@ -194,22 +235,16 @@ namespace NFA {
         let (nfa, accept_id) = nfa.new_node;
         let nfa = nfa.set_accepting_node(accept_id);
         let nfa = nfa.set_frag_output(frag, accept_id);
-        // Returns the NFA
-        eval nfa.debug(nfa.to_string);
         nfa
     );
 
-    debug: String -> NFA -> ();
-    debug = |msg, nfa| (
-        if nfa.@debug { debug_eprintln(msg) } else { () }
-    );
 }
 
 impl NFA: ToString {
     to_string = |nfa| (
         "NFA { nodes=\n"
         + range(0, nfa.@nodes.get_size).map(|i|
-            "  " + nfa.@nodes.@(i).to_string + ":" + nfa.@labels.@(i) + "\n"
+            "  " + nfa.@nodes.@(i).to_string + "\n"
         ).concat_iter
         + "  initial_node=" + nfa.@initial_node.to_string + "\n"
         + "  accepting_node=" + nfa.@accepting_node.to_string + "\n"
@@ -242,6 +277,15 @@ impl NFANodeAction: ToString {
         ""
     );
 }
+
+// What a node's action lets a thread standing at it do. See `NFA::action_step`.
+type ActionStep = unbox struct {
+    next: I64,     // the node the thread steps to, or `-1`
+    quant: I64,    // the special quantifier whose rounds the step writes, or `-1`
+    round: I64,    // the rounds to write there
+    opens: I64,    // the group whose beginning the step records, or `-1`
+    closes: I64    // the group whose end it records, or `-1`
+};
 
 // NFA node
 //
@@ -307,7 +351,6 @@ type NFAFrag = unbox struct {
     input: NodeID,                     // NodeID of input of this fragment
     set_output: NodeID -> NFA -> NFA,  // A function to set NodeID of output
                                        // of this fragment
-    label: String                      // A label to display (for debugging only)
 };
 
 namespace NFAFrag {
@@ -319,8 +362,7 @@ namespace NFAFrag {
             let cls = pat.as_pclass;
             let (nfa, base) = nfa.new_class(cls);
             let (nfa, frag) = nfa._compile_action(sa_char_match(base));
-            let nfa = nfa.set_node_label(frag.@input, cls.to_string);
-            (nfa, frag.set_label(cls.to_string))
+        (nfa, frag)
         };
         if pat.is_psequence {
             let patterns = pat.as_psequence;
@@ -383,10 +425,8 @@ namespace NFAFrag {
             input: id,
             set_output: |out, nfa| (
                 nfa.mod_node(id, set_output_on_action(out))
-            ),
-            label: action.to_string
+            )
         };
-        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -398,10 +438,8 @@ namespace NFAFrag {
             input: id,
             set_output: |out, nfa| (
                 nfa.mod_node(id, set_output(out))
-            ),
-            label: "``"
+            )
         };
-        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -413,8 +451,7 @@ namespace NFAFrag {
             input: frag1.@input,
             set_output: |out, nfa| (
                 nfa.set_frag_output(frag2, out)
-            ),
-            label: frag1.@label + frag2.@label
+            )
         };
         (nfa, frag)
     );
@@ -430,10 +467,8 @@ namespace NFAFrag {
             set_output: |out, nfa| (
                 nfa.set_frag_output(frag1, out)
                    .set_frag_output(frag2, out)
-            ),
-            label: frag1.@label + "|" + frag2.@label
+            )
         };
-        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
 
     );
@@ -448,10 +483,8 @@ namespace NFAFrag {
             set_output: |out, nfa| (
                 let nfa = nfa.set_frag_output(frag1, out);
                 nfa.mod_node(id, set_output2(out))
-            ),
-            label: frag1.@label + "?"
+            )
         };
-        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -465,10 +498,8 @@ namespace NFAFrag {
             input: id,
             set_output: |out, nfa| (
                 nfa.mod_node(id, set_output2(out))
-            ),
-            label: frag1.@label + "*"
+            )
         };
-        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -482,10 +513,8 @@ namespace NFAFrag {
             input: frag1.@input,
             set_output: |out, nfa| (
                 nfa.mod_node(id, set_output2(out))
-            ),
-            label: frag1.@label + "+"
+            )
         };
-        let nfa = nfa.set_node_label(id, frag.@label);
         (nfa, frag)
     );
 
@@ -494,7 +523,6 @@ namespace NFAFrag {
     _compile_special_quant = |frag1, min, max, nfa| (
         let (nfa, qid) = nfa.new_quant(min, max);
         let (nfa, branch_id) = nfa.new_node;
-        let nfa = nfa.set_node_label(branch_id, "branch(q" + qid.to_string + ")");
         let (nfa, frag_begin) = nfa._compile_action(sa_quant_begin $ qid);
         let (nfa, frag_loop) = nfa._compile_action(sa_quant_loop $ qid);
         let (nfa, frag_end) = nfa._compile_action(sa_quant_end $ (qid, min, max));
@@ -507,8 +535,7 @@ namespace NFAFrag {
             input: frag_begin.@input,
             set_output: |out, nfa| (
                 nfa.set_frag_output(frag_end, out)
-            ),
-            label: frag1.@label + "{" + min.to_string + "," + max.to_string + "}"
+            )
         };
         (nfa, frag)
     );
@@ -801,41 +828,14 @@ namespace Walk {
     // * `walk` - The walk it belongs to.
     _act: NFA -> I64 -> I64 -> NFANode -> I64 -> Walk -> Walk;
     _act = |nfa, at, length, node, thread, walk| (
-        let action = node.@action;
-        if action.is_sa_char_match || action.is_sa_none { walk };
-        let next = node.@output_on_action.@val;
-        if action.is_sa_assert {
-            let assertion = action.as_sa_assert;
-            let holds = (assertion.is_pa_begin && at == 0) || (assertion.is_pa_end && at == length);
-            if !holds { walk };
-            let (_, walk) = walk._offer_here(next, thread, -1, 0);
-            walk
-        };
-        if action.is_sa_group_begin {
-            let (placed, walk) = walk._offer_here(next, thread, -1, 0);
-            if placed < 0 { walk };
-            walk._open_group(action.as_sa_group_begin, at, placed)
-        };
-        if action.is_sa_group_end {
-            let (placed, walk) = walk._offer_here(next, thread, -1, 0);
-            if placed < 0 { walk };
-            walk._close_group(action.as_sa_group_end, at, placed)
-        };
-        if action.is_sa_quant_begin {
-            let (_, walk) = walk._offer_here(next, thread, action.as_sa_quant_begin, 0);
-            walk
-        };
-        if action.is_sa_quant_loop {
-            let qid = action.as_sa_quant_loop;
-            let round = nfa.quant_next_round(qid, walk.@counts.@(thread * walk.@count_width + qid));
-            if round < 0 { walk };
-            let (_, walk) = walk._offer_here(next, thread, qid, round);
-            walk
-        };
-        let (qid, least, most) = action.as_sa_quant_end;
-        let count = walk.@counts.@(thread * walk.@count_width + qid);
-        if count < least || most < count { walk };
-        let (_, walk) = walk._offer_here(next, thread, -1, 0);
+        let qid = action_quant(node.@action);
+        let counted = if qid < 0 { 0 } else { walk.@counts.@(thread * walk.@count_width + qid) };
+        let step = nfa.action_step(at == 0, at == length, counted, node);
+        if step.@next < 0 { walk };
+        let (placed, walk) = walk._offer_here(step.@next, thread, step.@quant, step.@round);
+        if placed < 0 { walk };
+        if step.@opens >= 0 { walk._open_group(step.@opens, at, placed) };
+        if step.@closes >= 0 { walk._close_group(step.@closes, at, placed) };
         walk
     );
 
@@ -1363,16 +1363,11 @@ namespace DFA {
     // * `reached` - The nodes reached so far.
     _follow_node_action: NFA -> Bool -> Bool -> NFANode -> (Array Bool, Array I64) -> (Array Bool, Array I64);
     _follow_node_action = |nfa, at_begin, at_end, node, reached| (
-        let action = node.@action;
-        if action.is_sa_char_match || action.is_sa_none { reached };
-        let next = node.@output_on_action.@val;
-        if action.is_sa_assert {
-            let assertion = action.as_sa_assert;
-            let holds = (assertion.is_pa_begin && at_begin) || (assertion.is_pa_end && at_end);
-            if !holds { reached };
-            _offer_node(next, reached)
-        };
-        _offer_node(next, reached)
+        // A pattern with no special quantifier has no node that counts, so the action reads and
+        // writes no rounds.
+        let step = nfa.action_step(at_begin, at_end, 0, node);
+        if step.@next < 0 { reached };
+        _offer_node(step.@next, reached)
     );
 
     // The thread that begins at a place among threads laid end to end.
@@ -1486,30 +1481,12 @@ namespace DFA {
     // * `reached` - The threads reached so far.
     _follow_action: NFA -> Bool -> Bool -> I64 -> NFANode -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
     _follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
-        let action = node.@action;
-        if action.is_sa_char_match || action.is_sa_none { reached };
-        let next = thread.set(0, node.@output_on_action.@val);
-        if action.is_sa_assert {
-            let assertion = action.as_sa_assert;
-            if assertion.is_pa_begin && at_begin { _offer_thread(width, next, reached) };
-            if assertion.is_pa_end && at_end { _offer_thread(width, next, reached) };
-            reached
-        };
-        if action.is_sa_group_begin || action.is_sa_group_end {
-            _offer_thread(width, next, reached)
-        };
-        if action.is_sa_quant_begin {
-            _offer_thread(width, next.set(1 + action.as_sa_quant_begin, 0), reached)
-        };
-        if action.is_sa_quant_loop {
-            let qid = action.as_sa_quant_loop;
-            let round = nfa.quant_next_round(qid, thread.@(1 + qid));
-            if round < 0 { reached };
-            _offer_thread(width, next.set(1 + qid, round), reached)
-        };
-        let (qid, least, most) = action.as_sa_quant_end;
-        let count = thread.@(1 + qid);
-        if count < least || most < count { reached };
+        let qid = action_quant(node.@action);
+        let counted = if qid < 0 { 0 } else { thread.@(1 + qid) };
+        let step = nfa.action_step(at_begin, at_end, counted, node);
+        if step.@next < 0 { reached };
+        let next = thread.set(0, step.@next);
+        let next = if step.@quant < 0 { next } else { next.set(1 + step.@quant, step.@round) };
         _offer_thread(width, next, reached)
     );
 
