@@ -1,6 +1,6 @@
 # RegExp.RegExpPattern
 
-Defined in regexp@1.1.5
+Defined in regexp@1.1.6
 
 Character class and Pattern parser. This is internal module of `RegExp`.
 

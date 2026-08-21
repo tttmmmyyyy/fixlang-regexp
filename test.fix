@@ -1,8 +1,7 @@
 module Test;
 
 import RegExp::RegExp::{compile, match_all, match_one, replace_all, @nfa};
-import RegExp.RegExpNFA::{Groups, NFA};
-import RegExp.RegExpSearch::{DFA::_insert_at, NFA::{search, search_all, _search_threads}};
+import RegExp.RegExpNFA::{Groups, NFA, DFA::_insert_at, NFA::{search, search_all, _search_threads}};
 import Std::{
     loop, Array, I64, IO, String, U8, Array::{empty, pop_back, push_back, to_iter, @, @size}, 
     Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
