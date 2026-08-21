@@ -10,26 +10,26 @@ import Std::{
     ToString::to_string
 };
 
-// A case for `match_one` and `match_all`: the pattern, its flags, the string to match against, what
-// `match_one` gives (an empty array standing for `NotMatch`), and what `match_all` gives.
+// A case for `match_one` and `match_all`.
 type MatchCase = unbox struct {
-    pattern: String,
-    flags: String,
-    target: String,
-    one: Array String,
-    all: Array (Array String)
+    pattern: String,            // the pattern to compile
+    flags: String,              // the flags to compile it with
+    target: String,             // the string to match against
+    one: Array String,          // what `match_one` gives, an empty array standing for `NotMatch`
+    all: Array (Array String)   // what `match_all` gives
 };
 
-// A case for `replace_all`: the pattern, its flags, the string to work over, the replacement, and
-// what comes back.
+// A case for `replace_all`.
 type ReplaceCase = unbox struct {
-    pattern: String,
-    flags: String,
-    target: String,
-    replacement: String,
-    result: String
+    pattern: String,       // the pattern to compile
+    flags: String,         // the flags to compile it with
+    target: String,        // the string to work over
+    replacement: String,   // the text to put in place of every match
+    result: String         // the string that comes back
 };
 
+// The cases `match_one` and `match_all` are held to. The groups below take the features of the
+// pattern language one at a time.
 _match_cases: Array MatchCase;
 _match_cases = [
     // Characters and classes.
@@ -118,6 +118,7 @@ _match_cases = [
     MatchCase { pattern: "z", flags: "g", target: "abc", one: [], all: [] }
 ];
 
+// The cases `replace_all` is held to.
 _replace_cases: Array ReplaceCase;
 _replace_cases = [
     ReplaceCase { pattern: "(\\w\\w)(\\w)", flags: "", target: "abc def ijk",
@@ -367,7 +368,8 @@ _test_ordered_insertion = (
     assert_eq(|_| "a state taken in at the end", DFA::_insert_at(3, 60, [10, 30, 50]), [10, 30, 50, 60])
 );
 
-
+// Runs the whole suite: the matching and replacing cases written out above, then the sections that
+// hold the scanner to the automaton.
 test: IO ();
 test = (
     _match_cases.to_iter.fold_m((), |case, _|

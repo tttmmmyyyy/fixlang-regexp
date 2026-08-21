@@ -17,24 +17,32 @@ import Std::{
     Result::{as_ok, is_err}, String::{get_bytes, get_size}
 };
 
-// A replacement fragment
+// A piece of a replacement string: a byte to write out as it stands, or a group whose captured
+// text to write out.
 type ReplaceFrag = unbox union {
-    rep_literal: U8,
-    rep_group: I64
+    rep_literal: U8,   // the byte to write out
+    rep_group: I64     // which group to write the captured text of
 };
 
 namespace Replacement {
 
-    // Compiles a replacement string to fragments.
+    // Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
+    // `$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
     compile: String -> Array ReplaceFrag;
     compile = |replacement| (
-        let res = _parse_replacement_seq.run_parser_str(replacement);
-        if res.is_err { undefined("_parse_replacement_seq failed") };
-        let (reps, _) = res.as_ok;
-        reps
+        let parsed = _parse_replacement_seq.run_parser_str(replacement);
+        if parsed.is_err { undefined("_parse_replacement_seq failed") };
+        let (frags, _) = parsed.as_ok;
+        frags
     );
 
-    // Calculates actual replacement string.
+    // The text a match is replaced by: the fragments written out one after another, each group
+    // standing for the text it captured.
+    //
+    // # Parameters
+    // * `target` - The string the match was found in.
+    // * `rep_frags` - The fragments the replacement string compiled to.
+    // * `groups` - The groups the match captured.
     calc_replacement: String -> Array ReplaceFrag -> Groups -> String;
     calc_replacement = |target, rep_frags, groups| (
         let output: Array U8 = Array::empty(target.get_size + rep_frags.get_size);
@@ -46,14 +54,15 @@ namespace Replacement {
             if rep.is_rep_group {
                 let group_idx = rep.as_rep_group;
                 let (begin, end) = groups.group_at(group_idx);
-                let str = target.substring(begin, end);
-                output.append(str.get_bytes.pop_back)
+                let captured = target.substring(begin, end);
+                output.append(captured.get_bytes.pop_back)
             };
             undefined("err")
         );
         output._unsafe_to_string
     );
 
+    // Parses a whole replacement string: every fragment it holds, in the order they stand in.
     _parse_replacement_seq: Parser (Array ReplaceFrag);
     _parse_replacement_seq = do {
         repeat(
@@ -62,6 +71,7 @@ namespace Replacement {
         )
     };
 
+    // Parses a `$` escape: `$$` for a `$`, `$&` for the whole match, and `$n` for group `n`.
     _parse_dollar: Parser ReplaceFrag;
     _parse_dollar = do {
         let _ = *match_char('$');
@@ -71,8 +81,8 @@ namespace Replacement {
             pure $ rep_literal('$')
         };
 
-        let ampasand = *match_char_if_exists('&');    // $&
-        if ampasand.is_some {
+        let ampersand = *match_char_if_exists('&');    // $&
+        if ampersand.is_some {
             pure $ rep_group(0)
         };
 
@@ -83,10 +93,10 @@ namespace Replacement {
             pure $ rep_group(num.as_some)
         };
 
-        //error_parser $ "invalid dollar"
         not_match
     };
 
+    // Parses one byte, which stands for itself.
     _parse_literal: Parser ReplaceFrag;
     _parse_literal = do {
         match_any_char.map(rep_literal)

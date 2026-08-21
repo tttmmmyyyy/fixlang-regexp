@@ -12,13 +12,21 @@ Building the text a match is replaced with. This is an internal module of `RegEx
 
 Type: `Std::String -> Std::Array RegExp.RegExpReplacement::ReplaceFrag -> RegExp.RegExpNFA::Groups -> Std::String`
 
-Calculates actual replacement string.
+The text a match is replaced by: the fragments written out one after another, each group
+standing for the text it captured.
+
+##### Parameters
+
+* `target` - The string the match was found in.
+* `rep_frags` - The fragments the replacement string compiled to.
+* `groups` - The groups the match captured.
 
 #### compile
 
 Type: `Std::String -> Std::Array RegExp.RegExpReplacement::ReplaceFrag`
 
-Compiles a replacement string to fragments.
+Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
+`$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
 
 ## Types and aliases
 
@@ -28,7 +36,8 @@ Compiles a replacement string to fragments.
 
 Defined as: `type ReplaceFrag = unbox union { ...variants... }`
 
-A replacement fragment
+A piece of a replacement string: a byte to write out as it stands, or a group whose captured
+text to write out.
 
 ##### variant `rep_literal`
 
