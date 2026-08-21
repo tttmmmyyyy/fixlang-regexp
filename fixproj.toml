@@ -7,8 +7,6 @@ description = "Provides regular expression matching."
 files = [
     "regexp.fix",
     "regexp_nfa.fix",
-    "regexp_search.fix",
-    "regexp_replacement.fix",
     "regexp_pattern.fix",
     "simple_parser.fix",
     "stringex.fix",
