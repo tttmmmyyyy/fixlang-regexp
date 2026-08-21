@@ -123,6 +123,27 @@ Creates new quant. Returns the new quant id.
 * `most` - The most rounds it admits.
 * `nfa` - The automaton to add the quantifier to.
 
+#### quant_round
+
+Type: `RegExp.RegExpNFA::QuantID -> Std::I64 -> RegExp.RegExpNFA::NFA -> Std::I64`
+
+The rounds a thread standing at a special quantifier's loop has counted once one more round
+is counted, or `-1` when the quantifier admits no such round.
+
+A round past the most the quantifier admits leaves the thread nowhere to go: the quantifier's
+end admits no such count, and the count is never brought down again, since coming back to the
+quantifier's beginning means leaving through its end first.
+
+Counting past what the quantifier can still tell apart would give every round a state of its
+own; holding the counter there keeps their number finite and admits the same paths, since
+`most` being unbounded makes every count at or above `least` alike.
+
+##### Parameters
+
+* `qid` - The quantifier the thread stands in.
+* `counted` - The rounds it has counted so far.
+* `nfa` - The automaton the quantifier belongs to.
+
 #### search
 
 Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::NFA -> Std::Option RegExp.RegExpNFA::Groups`
@@ -474,9 +495,10 @@ Defined as: `type Walk = box struct { ...fields... }`
 The threads an automaton is walked with, and what each of them has captured.
 
 A thread stands at a node, has captured a beginning and an end for each group, and has counted
-rounds for each special quantifier. The three are held as numbers in arrays the threads share
-rather than as a value per thread, so that carrying a thread forward writes numbers where a value
-would have its arrays copied.
+rounds for each special quantifier. All three are numbers, and the threads share three arrays of
+them, so that carrying a thread forward writes numbers and allocates nothing. Gathering what one
+thread holds into a value of its own would put an array behind every thread and have it copied
+once per node the thread reaches.
 
 Thread `t` stands at `nodes.@(t)`, has captured the `slot_width` numbers of `slots` beginning at
 `t * slot_width` - a beginning and an end to a group, the whole match first - and has counted the

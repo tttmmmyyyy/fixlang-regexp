@@ -28,7 +28,7 @@ import Std::{
     Iterator::{check_any, fold, map, range}, LessThan::{max, min}, LoopState::{break, continue}, 
     Monad::pure, Option::{as_some, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
     String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
-    U64::{bit_and, bit_or, shift_left, shift_right}, U8::to_I64
+    U64::{bit_and, bit_or, maximum, shift_left, shift_right}, U8::to_I64
 };
 
 // Type of a matched group.
@@ -123,8 +123,7 @@ namespace NFA {
     // * `nfa` - The automaton holding the classes.
     class_holds: I64 -> U8 -> NFA -> Bool;
     class_holds = |base, byte, nfa| (
-        let index = byte.to_I64;
-        nfa.@classes.@(base + index / 64).shift_right((index % 64).to_U64).bit_and(1_U64) == 1_U64
+        nfa.@classes._holds_byte(base, byte)
     );
 
     // `nfa.get_node(id)` gets the node whose @id is `id`.
@@ -155,6 +154,29 @@ namespace NFA {
     new_quant = |least, most, nfa| (
         let id = nfa.@quant_bounds.get_size;
         (nfa.mod_quant_bounds(push_back((least, most))), id)
+    );
+
+    // The rounds a thread standing at a special quantifier's loop has counted once one more round
+    // is counted, or `-1` when the quantifier admits no such round.
+    //
+    // A round past the most the quantifier admits leaves the thread nowhere to go: the quantifier's
+    // end admits no such count, and the count is never brought down again, since coming back to the
+    // quantifier's beginning means leaving through its end first.
+    //
+    // Counting past what the quantifier can still tell apart would give every round a state of its
+    // own; holding the counter there keeps their number finite and admits the same paths, since
+    // `most` being unbounded makes every count at or above `least` alike.
+    //
+    // # Parameters
+    // * `qid` - The quantifier the thread stands in.
+    // * `counted` - The rounds it has counted so far.
+    // * `nfa` - The automaton the quantifier belongs to.
+    quant_round: QuantID -> I64 -> NFA -> I64;
+    quant_round = |qid, counted, nfa| (
+        let (least, most) = nfa.@quant_bounds.@(qid);
+        let round = counted + 1;
+        if most != I64::maximum && round > most { -1 };
+        min(round, if most == I64::maximum { least } else { most })
     );
 
     // `NFA::compile(pattern)` compiles a pattern to NFA.
@@ -506,6 +528,33 @@ group_at = |group_idx, groups| (
     groups.@(group_idx)
 );
 
+// Whether a byte stands among a set of bytes held as one bit each in the four words beginning at a
+// place.
+//
+// # Parameters
+// * `base` - Where the four words begin.
+// * `byte` - The byte to look for.
+// * `words` - The words the set stands in.
+_holds_byte: I64 -> U8 -> Array U64 -> Bool;
+_holds_byte = |base, byte, words| (
+    let index = byte.to_I64;
+    words.@(base + index / 64).shift_right((index % 64).to_U64).bit_and(1_U64) == 1_U64
+);
+
+// Whether a run of rounds stands among the rounds already counted at one node, which are laid end
+// to end, each run as long as the one looked for.
+//
+// # Parameters
+// * `counts` - The rounds to look for.
+// * `held` - The rounds already counted there, one thread after another.
+_holds_counts: Array I64 -> Array I64 -> Bool;
+_holds_counts = |counts, held| (
+    let width = counts.get_size;
+    Iterator::range(0, held.get_size / width).check_any(|k|
+        Iterator::range(0, width).fold(true, |j, same| same && held.@(k * width + j) == counts.@(j))
+    )
+);
+
 // The threads an automaton is walked with, and what each of them has captured.
 //
 // A thread stands at a node, has captured a beginning and an end for each group, and has counted
@@ -586,12 +635,7 @@ namespace Walk {
             let walk = walk.mod_at_step(set(node, step));
             (true, walk.mod_step_counts(set(node, counts)))
         };
-        let width = counts.get_size;
-        let held = walk.@step_counts.@(node);
-        let already = Iterator::range(0, held.get_size / width).check_any(|k|
-            Iterator::range(0, width).fold(true, |j, same| same && held.@(k * width + j) == counts.@(j))
-        );
-        if already { (false, walk) };
+        if walk.@step_counts.@(node)._holds_counts(counts) { (false, walk) };
         (true, walk.mod_step_counts(mod(node, append(counts))))
     );
 
@@ -726,7 +770,6 @@ namespace Walk {
     _open_group: I64 -> I64 -> I64 -> Walk -> Walk;
     _open_group = |group, at, thread, walk| (
         let base = thread * walk.@slot_width + 2 * group;
-        if group == 0 { walk.mod_slots(set(base, at)) };
         walk.mod_slots(|slots| slots.set(base, at).set(base + 1, -1))
     );
 
@@ -782,17 +825,9 @@ namespace Walk {
         };
         if action.is_sa_quant_loop {
             let qid = action.as_sa_quant_loop;
-            let (least, most) = nfa.@quant_bounds.@(qid);
-            let count = walk.@counts.@(thread * walk.@count_width + qid) + 1;
-            // A round past the most the quantifier admits leaves the thread nowhere to go: the
-            // quantifier's end admits no such count, and the count is never brought down again,
-            // since coming back to the quantifier's beginning means leaving through its end first.
-            if most != I64::maximum && count > most { walk };
-            // Counting past what the quantifier can still tell apart would give every round a state
-            // of its own; holding the counter there keeps their number finite and admits the same
-            // paths, since `most` being unbounded makes every count at or above `least` alike.
-            let ceiling = if most == I64::maximum { least } else { most };
-            let (_, walk) = walk._offer_here(next, thread, qid, min(count, ceiling));
+            let round = nfa.quant_round(qid, walk.@counts.@(thread * walk.@count_width + qid));
+            if round < 0 { walk };
+            let (_, walk) = walk._offer_here(next, thread, qid, round);
             walk
         };
         let (qid, least, most) = action.as_sa_quant_end;
@@ -1080,7 +1115,7 @@ namespace DFA {
     // * `dfa` - The scanner.
     _first_bytes_of: I64 -> DFA -> Array U64;
     _first_bytes_of = |state, dfa| (
-        if dfa.@accepts.@(state) { Array::fill(4, 18446744073709551615_U64) };
+        if dfa.@accepts.@(state) { Array::fill(4, U64::maximum) };
         let nfa = dfa.@nfa;
         let width = dfa.@width;
         let begin = dfa.@bounds.@(state);
@@ -1094,17 +1129,6 @@ namespace DFA {
                 bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
             )
         )
-    );
-
-    // Whether a byte is one of those a set of bytes holds.
-    //
-    // # Parameters
-    // * `byte` - The byte to look for.
-    // * `bytes` - The set to look in.
-    _holds_byte: U8 -> Array U64 -> Bool;
-    _holds_byte = |byte, bytes| (
-        let index = byte.to_I64;
-        bytes.@(index / 64).shift_right((index % 64).to_U64).bit_and(1_U64) == 1_U64
     );
 
     // Whether a node stands among threads laid end to end.
@@ -1355,6 +1379,23 @@ namespace DFA {
     _thread_at: I64 -> I64 -> Array I64 -> Array I64;
     _thread_at = |base, width, threads| Array::from_map(width, |j| threads.@(base + j));
 
+    // How two runs of numbers laid end to end stand against each other, taken number by number: a
+    // negative number when the run at `first` comes first, zero when the two are the same, and a
+    // positive number when the run at `second` comes first.
+    //
+    // # Parameters
+    // * `first` - Where one run begins.
+    // * `second` - Where the other begins.
+    // * `width` - How many numbers a run takes.
+    // * `runs` - The numbers the two runs stand in.
+    _run_order: I64 -> I64 -> I64 -> Array I64 -> I64;
+    _run_order = |first, second, width, runs| (
+        Iterator::range(0, width).fold(0, |j, order|
+            if order != 0 { order };
+            runs.@(first + j) - runs.@(second + j)
+        )
+    );
+
     // Adds a thread to those reached, unless a thread standing at the same node having counted the
     // same rounds is there already. Two such threads have the same future, so keeping one loses
     // nothing.
@@ -1369,25 +1410,17 @@ namespace DFA {
         let node = thread.@(0);
         if node < 0 { (taken, pending) };
         let counts = _thread_counts(width, thread);
-        let held = taken.@(node);
-        let stride = counts.get_size;
-        let already = Iterator::range(0, held.get_size / stride).check_any(|k|
-            Iterator::range(0, stride).fold(true, |j, same| same && held.@(k * stride + j) == counts.@(j))
-        );
-        if already { (taken, pending) };
+        if taken.@(node)._holds_counts(counts) { (taken, pending) };
         (taken.mod(node, append(counts)), pending.append(thread))
     );
 
-    // The rounds a thread has counted, as the threads reached at a node are told apart by. A pattern
-    // with no special quantifier counts nothing, and a single zero stands for its threads, so that a
-    // node reached twice is still recognised.
+    // The rounds a thread has counted, as the threads reached at a node are told apart by.
     //
     // # Parameters
     // * `width` - How many numbers a thread takes.
     // * `thread` - The thread to read.
     _thread_counts: I64 -> Array I64 -> Array I64;
     _thread_counts = |width, thread| (
-        if width == 1 { [0] };
         Array::from_map(width - 1, |j| thread.@(1 + j))
     );
 
@@ -1400,12 +1433,11 @@ namespace DFA {
     // * `taken` - The counts of the threads reached at each node.
     _gather_threads: I64 -> Array (Array I64) -> Array I64;
     _gather_threads = |width, taken| (
-        let stride = max(1, width - 1);
+        let stride = width - 1;
         Iterator::range(0, taken.get_size).fold(Array::empty(taken.get_size * width), |node, threads|
             let held = _sorted_counts(stride, taken.@(node));
             Iterator::range(0, held.get_size / stride).fold(threads, |k, threads|
                 let threads = threads.push_back(node);
-                if width == 1 { threads };
                 Iterator::range(0, stride).fold(threads, |j, threads|
                     threads.push_back(held.@(k * stride + j))
                 )
@@ -1425,10 +1457,7 @@ namespace DFA {
         Iterator::range(1, count).fold(held, |k, held|
             loop((k, held), |(k, held)|
                 if k == 0 { break $ held };
-                let order = Iterator::range(0, stride).fold(0, |j, order|
-                    if order != 0 { order };
-                    held.@((k - 1) * stride + j) - held.@(k * stride + j)
-                );
+                let order = held._run_order((k - 1) * stride, k * stride, stride);
                 if order <= 0 { break $ held };
                 let held = Iterator::range(0, stride).fold(held, |j, held|
                     let earlier = held.@((k - 1) * stride + j);
@@ -1469,16 +1498,9 @@ namespace DFA {
         };
         if action.is_sa_quant_loop {
             let qid = action.as_sa_quant_loop;
-            let (least, most) = nfa.@quant_bounds.@(qid);
-            let count = thread.@(1 + qid) + 1;
-            // A round past the most the quantifier admits leaves the thread nowhere to go: the
-            // quantifier's end admits no such count, and the count is never brought down again,
-            // since coming back to the quantifier's beginning means leaving through its end first.
-            if most != I64::maximum && count > most { reached };
-            // Counting past what the quantifier can still tell apart would give every round a state
-            // of its own; holding the counter there keeps their number finite and admits the same
-            // paths, since `most` being unbounded makes every count at or above `least` alike.
-            _offer_thread(width, next.set(1 + qid, min(count, if most == I64::maximum { least } else { most })), reached)
+            let round = nfa.quant_round(qid, thread.@(1 + qid));
+            if round < 0 { reached };
+            _offer_thread(width, next.set(1 + qid, round), reached)
         };
         let (qid, least, most) = action.as_sa_quant_end;
         let count = thread.@(1 + qid);
@@ -1684,10 +1706,7 @@ namespace DFA {
             let decides = action.is_sa_char_match || action.is_sa_assert || node == accepting;
             if !decides { continue $ (i + width, o) };
             if o == outer_end { break $ false };
-            let order = Iterator::range(0, width).fold(0, |j, order|
-                if order != 0 { order };
-                dfa.@threads.@(i + j) - dfa.@threads.@(o + j)
-            );
+            let order = dfa.@threads._run_order(i, o, width);
             if order == 0 { continue $ (i + width, o + width) };
             if order > 0 { continue $ (i, o + width) };
             break $ false
@@ -1705,7 +1724,7 @@ namespace DFA {
     _skip_bytes = |bytes, first_bytes, length, at| (
         loop(at, |at|
             if at >= length { break $ length };
-            if _holds_byte(bytes.@(at), first_bytes) { break $ at };
+            if first_bytes._holds_byte(0, bytes.@(at)) { break $ at };
             continue $ at + 1
         )
     );
