@@ -3,10 +3,10 @@ module Test;
 import RegExp::RegExp::{compile, match_all, match_one, replace_all, @nfa};
 import RegExp.RegExpNFA::{Groups, NFA, DFA::_insert_at, NFA::{search, search_all, _search_threads}};
 import Std::{
-    loop, Array, Bool, I64, IO, String, U8, Array::{empty, push_back, to_iter, @, @size}, 
-    Array::pop_back, Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
-    Monad::pure, 
-    Option::{as_some, is_none}, Result::{as_ok, is_err}, String::get_bytes, ToString::to_string
+    loop, Array, I64, IO, String, U8, Array::{empty, pop_back, push_back, to_iter, @, @size}, 
+    Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
+    Monad::pure, Option::{as_some, is_none}, Result::{as_ok, is_err}, String::get_bytes, 
+    ToString::to_string
 };
 
 // A case for `match_one` and `match_all`: the pattern, its flags, the string to match against, what
@@ -195,7 +195,7 @@ _letters = ["a", "b", "c", "x", " ", "\n", "1"];
 // * `draws` - The numbers to draw from.
 _draw_run: I64 -> Draws -> (String, Draws);
 _draw_run = |count, draws| (
-    Iterator::range(0, count).fold(("", draws), |_, (pattern, draws)|
+    range(0, count).fold(("", draws), |_, (pattern, draws)|
         let (atom, draws) = draws._one_of(_atoms);
         let (repeat, draws) = draws._one_of(_repeats);
         (pattern + atom + repeat, draws)
@@ -233,7 +233,7 @@ _draw_pattern = |draws| (
 _draw_target: Draws -> (String, Draws);
 _draw_target = |draws| (
     let (length, draws) = draws._below(40);
-    Iterator::range(0, length).fold(("", draws), |_, (target, draws)|
+    range(0, length).fold(("", draws), |_, (target, draws)|
         let (letter, draws) = draws._one_of(_letters);
         (target + letter, draws)
     )
@@ -268,7 +268,7 @@ _random_cases = 4000;
 // `search_all`, and the match `search` finds from each position of the string.
 _test_against_threads: IO ();
 _test_against_threads = (
-    let (_, compiled, found) = *Iterator::range(0, _random_cases).fold_m(
+    let (_, compiled, found) = *range(0, _random_cases).fold_m(
         (Draws { state: 20260821 }, 0, 0), |_, (draws, compiled, found)|
         let (pattern, draws) = _draw_pattern(draws);
         let (target, draws) = _draw_target(draws);
@@ -279,7 +279,7 @@ _test_against_threads = (
         let name = _named(pattern, "g", target);
         let matches = nfa.search_all(bytes);
         assert_eq(|_| name + " search_all", matches, _search_all_threads(bytes, nfa));;
-        Iterator::range(0, bytes.@size + 1).fold_m((), |from, _|
+        range(0, bytes.@size + 1).fold_m((), |from, _|
             assert_eq(
                 |_| name + " search from " + from.to_string,
                 nfa.search(bytes, from),
@@ -303,7 +303,7 @@ _test_against_threads = (
 // * `length` - How long the string is.
 _draw_letters: I64 -> String;
 _draw_letters = |length| (
-    let (target, _) = Iterator::range(0, length).fold(("", Draws { state: 20260822 }), |_, (target, draws)|
+    let (target, _) = range(0, length).fold(("", Draws { state: 20260822 }), |_, (target, draws)|
         let (i, draws) = draws._below(2);
         (target + (if i == 0 { "a" } else { "b" }), draws)
     );
@@ -316,7 +316,7 @@ _draw_letters = |length| (
 // * `unit` - The string to hold.
 // * `times` - How many times to hold it.
 _repeated: String -> I64 -> String;
-_repeated = |unit, times| Iterator::range(0, times).fold("", |_, held| held + unit);
+_repeated = |unit, times| range(0, times).fold("", |_, held| held + unit);
 
 // The cases that carry the scanner past what it may take, where the search is given back to the
 // automaton: the pattern, the string to read, and the matches the string holds. They are written

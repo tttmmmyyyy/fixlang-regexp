@@ -105,8 +105,8 @@ namespace NFA {
     new_class = |cls, nfa| (
         let base = nfa.@classes.get_size;
         let nfa = nfa.mod_classes(|words|
-            Iterator::range(0, 4).fold(words, |w, words|
-                words.push_back(Iterator::range(0, 64).fold(0_U64, |b, mask|
+            range(0, 4).fold(words, |w, words|
+                words.push_back(range(0, 64).fold(0_U64, |b, mask|
                     if !cls.contains((w * 64 + b).to_U8) { mask };
                     mask.bit_or(1_U64.shift_left(b.to_U64))
                 ))
@@ -209,7 +209,7 @@ namespace NFA {
 impl NFA: ToString {
     to_string = |nfa| (
         "NFA { nodes=\n"
-        + Iterator::range(0, nfa.@nodes.get_size).map(|i|
+        + range(0, nfa.@nodes.get_size).map(|i|
             "  " + nfa.@nodes.@(i).to_string + ":" + nfa.@labels.@(i) + "\n"
         ).concat_iter
         + "  initial_node=" + nfa.@initial_node.to_string + "\n"
@@ -550,8 +550,8 @@ _holds_byte = |base, byte, words| (
 _holds_counts: Array I64 -> Array I64 -> Bool;
 _holds_counts = |counts, held| (
     let width = counts.get_size;
-    Iterator::range(0, held.get_size / width).check_any(|k|
-        Iterator::range(0, width).fold(true, |j, same| same && held.@(k * width + j) == counts.@(j))
+    range(0, held.get_size / width).check_any(|k|
+        range(0, width).fold(true, |j, same| same && held.@(k * width + j) == counts.@(j))
     )
 );
 
@@ -668,13 +668,13 @@ namespace Walk {
         let placed = walk.@nodes.get_size;
         let walk = walk.mod_nodes(push_back(node));
         let walk = walk.mod_slots(|slots|
-            Iterator::range(0, slot_width).fold(slots, |j, slots|
+            range(0, slot_width).fold(slots, |j, slots|
                 let value = slots.@(source * slot_width + j);
                 slots.push_back(value)
             )
         );
         let walk = walk.mod_counts(|counts|
-            Iterator::range(0, count_width).fold(counts, |j, counts|
+            range(0, count_width).fold(counts, |j, counts|
                 let value = if j == qid { round } else { counts.@(source * count_width + j) };
                 counts.push_back(value)
             )
@@ -721,12 +721,12 @@ namespace Walk {
         let placed = walk.@nodes.get_size;
         let walk = walk.mod_nodes(push_back(node));
         let walk = walk.mod_slots(|slots|
-            Iterator::range(0, slot_width).fold(slots, |j, slots|
+            range(0, slot_width).fold(slots, |j, slots|
                 slots.push_back(read_slots.@(source * slot_width + j))
             )
         );
         let walk = walk.mod_counts(|counts|
-            Iterator::range(0, count_width).fold(counts, |j, counts|
+            range(0, count_width).fold(counts, |j, counts|
                 counts.push_back(read_counts.@(source * count_width + j))
             )
         );
@@ -752,10 +752,10 @@ namespace Walk {
         let placed = walk.@nodes.get_size;
         let walk = walk.mod_nodes(push_back(initial));
         let walk = walk.mod_slots(|slots|
-            Iterator::range(0, slot_width).fold(slots, |_, slots| slots.push_back(-1))
+            range(0, slot_width).fold(slots, |_, slots| slots.push_back(-1))
         );
         let walk = walk.mod_counts(|counts|
-            Iterator::range(0, count_width).fold(counts, |_, counts| counts.push_back(0))
+            range(0, count_width).fold(counts, |_, counts| counts.push_back(0))
         );
         walk.mod_pending(push_back(placed))
     );
@@ -875,7 +875,7 @@ namespace Walk {
     // * `walk` - The walk they move into, holding no thread yet.
     _step: NFA -> I64 -> I64 -> U8 -> Array I64 -> Array I64 -> Array I64 -> Walk -> Walk;
     _step = |nfa, at, length, byte, read_nodes, read_slots, read_counts, walk| (
-        Iterator::range(0, read_nodes.get_size).fold(walk, |thread, walk|
+        range(0, read_nodes.get_size).fold(walk, |thread, walk|
             let node = nfa.get_node(NodeID { val: read_nodes.@(thread) });
             let action = node.@action;
             if !action.is_sa_char_match { walk };
@@ -908,7 +908,7 @@ namespace Walk {
     _better = |accepting, best, walk| (
         if walk.@at_step.@(accepting) != walk.@step { best };
         let slot_width = walk.@slot_width;
-        Iterator::range(0, walk.@nodes.get_size).fold(best, |thread, best|
+        range(0, walk.@nodes.get_size).fold(best, |thread, best|
             if walk.@nodes.@(thread) != accepting { best };
             let begin = walk.@slots.@(thread * slot_width);
             let end = walk.@slots.@(thread * slot_width + 1);
@@ -1120,12 +1120,12 @@ namespace DFA {
         let width = dfa.@width;
         let begin = dfa.@bounds.@(state);
         let end = dfa.@bounds.@(state + 1);
-        Iterator::range(0, (end - begin) / width).fold(Array::fill(4, 0_U64), |k, first_bytes|
+        range(0, (end - begin) / width).fold(Array::fill(4, 0_U64), |k, first_bytes|
             let node = nfa.get_node(NodeID { val: dfa.@threads.@(begin + k * width) });
             let action = node.@action;
             if !action.is_sa_char_match { first_bytes };
             let base = action.as_sa_char_match;
-            Iterator::range(0, 4).fold(first_bytes, |w, first_bytes|
+            range(0, 4).fold(first_bytes, |w, first_bytes|
                 first_bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
             )
         )
@@ -1139,7 +1139,7 @@ namespace DFA {
     // * `threads` - The threads to look through.
     _holds_node: I64 -> I64 -> Array I64 -> Bool;
     _holds_node = |node, width, threads| (
-        Iterator::range(0, threads.get_size / width).check_any(|k| threads.@(k * width) == node)
+        range(0, threads.get_size / width).check_any(|k| threads.@(k * width) == node)
     );
 
     // The state a set of threads stands for, taking it as a new state when it is one.
@@ -1257,14 +1257,14 @@ namespace DFA {
         let width = dfa.@width;
         let begin = dfa.@bounds.@(state);
         let end = dfa.@bounds.@(state + 1);
-        Iterator::range(0, (end - begin) / width).fold(Array::empty(end - begin), |k, seeds|
+        range(0, (end - begin) / width).fold(Array::empty(end - begin), |k, seeds|
             let base = begin + k * width;
             let node = nfa.get_node(NodeID { val: dfa.@threads.@(base) });
             let action = node.@action;
             if !action.is_sa_char_match { seeds };
             if !nfa.class_holds(action.as_sa_char_match, byte) { seeds };
             let seeds = seeds.push_back(node.@output_on_action.@val);
-            Iterator::range(1, width).fold(seeds, |j, seeds| seeds.push_back(dfa.@threads.@(base + j)))
+            range(1, width).fold(seeds, |j, seeds| seeds.push_back(dfa.@threads.@(base + j)))
         )
     );
 
@@ -1282,7 +1282,7 @@ namespace DFA {
         let nfa = dfa.@nfa;
         let width = dfa.@width;
         let node_count = nfa.@nodes.get_size;
-        let reached = Iterator::range(0, seeds.get_size / width).fold(
+        let reached = range(0, seeds.get_size / width).fold(
             (Array::fill(node_count, Array::empty(0)), Array::empty(node_count * width)),
             |k, reached| _offer_thread(width, _thread_at(k * width, width, seeds), reached)
         );
@@ -1315,7 +1315,7 @@ namespace DFA {
     _closure_nodes = |at_begin, at_end, seeds, dfa| (
         let nfa = dfa.@nfa;
         let node_count = nfa.@nodes.get_size;
-        let reached = Iterator::range(0, seeds.get_size).fold(
+        let reached = range(0, seeds.get_size).fold(
             (Array::fill(node_count, false), Array::empty(node_count)),
             |k, reached| _offer_node(seeds.@(k), reached)
         );
@@ -1327,7 +1327,7 @@ namespace DFA {
             let reached = _offer_node(node.@output2.@val, reached);
             continue $ _offer_node(node.@output.@val, reached)
         );
-        Iterator::range(0, node_count).fold(Array::empty(node_count), |node, threads|
+        range(0, node_count).fold(Array::empty(node_count), |node, threads|
             if !marks.@(node) { threads };
             threads.push_back(node)
         )
@@ -1390,7 +1390,7 @@ namespace DFA {
     // * `runs` - The numbers the two runs stand in.
     _run_order: I64 -> I64 -> I64 -> Array I64 -> I64;
     _run_order = |first, second, width, runs| (
-        Iterator::range(0, width).fold(0, |j, order|
+        range(0, width).fold(0, |j, order|
             if order != 0 { order };
             runs.@(first + j) - runs.@(second + j)
         )
@@ -1434,11 +1434,11 @@ namespace DFA {
     _gather_threads: I64 -> Array (Array I64) -> Array I64;
     _gather_threads = |width, taken| (
         let stride = width - 1;
-        Iterator::range(0, taken.get_size).fold(Array::empty(taken.get_size * width), |node, threads|
+        range(0, taken.get_size).fold(Array::empty(taken.get_size * width), |node, threads|
             let held = _sorted_counts(stride, taken.@(node));
-            Iterator::range(0, held.get_size / stride).fold(threads, |k, threads|
+            range(0, held.get_size / stride).fold(threads, |k, threads|
                 let threads = threads.push_back(node);
-                Iterator::range(0, stride).fold(threads, |j, threads|
+                range(0, stride).fold(threads, |j, threads|
                     threads.push_back(held.@(k * stride + j))
                 )
             )
@@ -1454,12 +1454,12 @@ namespace DFA {
     _sorted_counts = |stride, held| (
         let count = held.get_size / stride;
         if count <= 1 { held };
-        Iterator::range(1, count).fold(held, |k, held|
+        range(1, count).fold(held, |k, held|
             loop((k, held), |(k, held)|
                 if k == 0 { break $ held };
                 let order = held._run_order((k - 1) * stride, k * stride, stride);
                 if order <= 0 { break $ held };
-                let held = Iterator::range(0, stride).fold(held, |j, held|
+                let held = range(0, stride).fold(held, |j, held|
                     let earlier = held.@((k - 1) * stride + j);
                     held.set((k - 1) * stride + j, held.@(k * stride + j)).set(k * stride + j, earlier)
                 );
