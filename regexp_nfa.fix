@@ -20,7 +20,7 @@ import RegExp.SimpleParser::{
         run_parser_str
     }
 };
-import RegExp.StdBytes::find_byte;
+import RegExp.StdBytes::{find_byte, find_bytes};
 import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
@@ -1094,6 +1094,10 @@ type DFA = box struct {
     first_bytes: Array U64,       // the bytes a match may begin with, one bit each
     first_byte: I64,              // the one byte a match may begin with, or `-1` where a match may
                                   // begin with several bytes or with none
+    prefix: Array U8,             // the bytes every match begins with, empty where the first byte
+                                  // a match may begin with is not forced
+    prefix_size: I64,             // how many bytes `prefix` holds, read where the scan chooses how
+                                  // to look so that the choice costs no reference count
     absorbing: Array U8,          // per byte: `1` where reading it leaves every thread standing,
                                   // `2` where it does not, `0` where it has not been worked out
     full: Bool                    // whether the states have outgrown what the scanner may take
@@ -1124,14 +1128,45 @@ namespace DFA {
             interior: _DEAD_STATE,
             first_bytes: Array::fill(4, 0_U64),
             first_byte: -1,
+            prefix: Array::empty(0),
+            prefix_size: 0,
             absorbing: Array::fill(256, 0_U8),
             full: false
         };
         let (_, dfa) = dfa._intern(Array::empty(0));
         let (interior, dfa) = dfa._start_state_at(false, false);
         let first_bytes = dfa._first_bytes_of(interior);
-        dfa.set_interior(interior).set_first_bytes(first_bytes)
-            .set_first_byte(_lone_byte_of(first_bytes))
+        let dfa = dfa.set_interior(interior).set_first_bytes(first_bytes)
+            .set_first_byte(_lone_byte_of(first_bytes));
+        let (prefix, dfa) = dfa._forced_prefix;
+        dfa.set_prefix_size(prefix.get_size).set_prefix(prefix)
+    );
+
+    // How many bytes of a forced beginning the scanner works out. A longer one is rarer in the text
+    // and so rules out more positions, and the reading that looks for it costs the same either way,
+    // so what bounds this is the states the walk interns rather than the searching.
+    _MAX_PREFIX: I64;
+    _MAX_PREFIX = 32;
+
+    // The bytes every match begins with, taken as far as they are forced.
+    //
+    // A state whose matches may begin with one byte alone forces that byte; the state it leads to
+    // forces the next. A state that accepts stands for a match that ends there, so the byte after
+    // it is not forced, and `_first_bytes_of` answers with every byte at such a state, which stops
+    // the walk on its own.
+    //
+    // # Parameters
+    // * `dfa` - The scanner, walked from the state a match begins in.
+    _forced_prefix: DFA -> (Array U8, DFA);
+    _forced_prefix = |dfa| (
+        loop((Array::empty(_MAX_PREFIX), dfa.@interior, dfa), |(prefix, state, dfa)|
+            if prefix.get_size == _MAX_PREFIX { break $ (prefix, dfa) };
+            let byte = _lone_byte_of(dfa._first_bytes_of(state));
+            if byte < 0 { break $ (prefix, dfa) };
+            let (next, dfa) = dfa._next(state, byte.to_U8);
+            if dfa.@full || next < 0 { break $ (prefix, dfa) };
+            continue $ (prefix.push_back(byte.to_U8), next, dfa)
+        )
     );
 
     // The thread the automaton begins with: the initial node, having counted nothing.
@@ -1751,6 +1786,7 @@ namespace DFA {
     // * `dfa` - The scanner, for the bytes a match may begin with.
     _skip_bytes: Array U8 -> I64 -> I64 -> DFA -> I64;
     _skip_bytes = |bytes, length, at, dfa| (
+        if dfa.@prefix_size >= 2 { bytes.find_bytes(dfa.@prefix, at).as_some_or(length) };
         let lone = dfa.@first_byte;
         if lone >= 0 { bytes.find_byte(lone.to_U8, at).as_some_or(length) };
         let first_bytes = dfa.@first_bytes;
