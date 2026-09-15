@@ -22,13 +22,14 @@ import RegExp.SimpleParser::{
 };
 import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
-    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
-    Array::{append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, to_iter, truncate, @}, 
+    loop, undefined, Array, Bool, Eq, I64, Option, Ptr, String, ToString, U64, U8, 
+    Array::{append, borrow_elements, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, to_iter, truncate, @}, 
     Debug::debug_eprintln, Functor::map, I64::{maximum, to_U64, to_U8}, 
     Iterator::{check_any, fold, map, range}, LessThan::{max, min}, LoopState::{break, continue}, 
-    Monad::pure, Option::{as_some, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
-    String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
-    U64::{bit_and, bit_or, maximum, shift_left, shift_right}, U8::to_I64
+    Monad::pure, Option::{as_some, is_none, is_some, none, some}, Ptr::{add_offset, subtract_ptr}, 
+    Result::{as_ok, is_err}, String::{concat_iter, get_bytes, get_size}, ToCInt::c_int, 
+    ToCSizeT::c_size_t, ToString::to_string, U64::{bit_and, bit_or, maximum, shift_left, shift_right}, 
+    U8::to_I64
 };
 // Where a group was matched: the two stream positions `(begin, end)`. `-1` stands for a position
 // that was never written.
@@ -588,6 +589,24 @@ _holds_byte = |base, byte, words| (
     words.@(base + index / 64).shift_right((index % 64).to_U64).bit_and(1_U64) == 1_U64
 );
 
+// The one byte a set of bytes holds, or `-1` where it holds any other number of them.
+//
+// A set holding one byte is what lets the search for the next position a match may begin at be
+// handed to `memchr`, which reads many bytes at a time.
+//
+// # Parameters
+// * `words` - The words the set stands in, one bit to a byte.
+_lone_byte_of: Array U64 -> I64;
+_lone_byte_of = |words| (
+    // `-1` stands for no byte seen yet, `-2` for more than one seen.
+    let found = range(0, 256).fold(-1, |byte, found|
+        if !words._holds_byte(0, byte.to_U8) { found };
+        if found == -1 { byte } else { -2 }
+    );
+    if found == -2 { -1 };
+    found
+);
+
 // Whether a run of rounds stands among the rounds already counted at one node, which are laid end
 // to end, each run as long as the one looked for.
 //
@@ -1073,6 +1092,8 @@ type DFA = box struct {
     untaken: Array I64,           // a row of transitions none of which has been taken
     interior: I64,                // the state a match begins in, away from either end of the input
     first_bytes: Array U64,       // the bytes a match may begin with, one bit each
+    first_byte: I64,              // the one byte a match may begin with, or `-1` where a match may
+                                  // begin with several bytes or with none
     absorbing: Array U8,          // per byte: `1` where reading it leaves every thread standing,
                                   // `2` where it does not, `0` where it has not been worked out
     full: Bool                    // whether the states have outgrown what the scanner may take
@@ -1102,6 +1123,7 @@ namespace DFA {
             untaken: Array::fill(256, -1),
             interior: _DEAD_STATE,
             first_bytes: Array::fill(4, 0_U64),
+            first_byte: -1,
             absorbing: Array::fill(256, 0_U8),
             full: false
         };
@@ -1109,6 +1131,7 @@ namespace DFA {
         let (interior, dfa) = dfa._start_state_at(false, false);
         let first_bytes = dfa._first_bytes_of(interior);
         dfa.set_interior(interior).set_first_bytes(first_bytes)
+            .set_first_byte(_lone_byte_of(first_bytes))
     );
 
     // The thread the automaton begins with: the initial node, having counted nothing.
@@ -1610,17 +1633,21 @@ namespace DFA {
         let (best, _, dfa) = if from == 0 { dfa._attempt(bytes, length, 0) } else { (-1, 0, dfa) };
         if dfa.@full { (NFA::_search_threads(bytes, from, dfa.@nfa), dfa) };
         if best >= 0 { (dfa._match_with_groups(bytes, 0, best), dfa) };
-        loop((max(from, 1), 0, dfa), |(at, steps, dfa)|
-            let at = _skip_bytes(bytes, dfa.@first_bytes, length, at);
-            if steps > _DFA_STEPS_PER_POSITION * (at - from) + _DFA_STEPS_GRACE {
-                break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa)
-            };
-            let (best, bytes_read, dfa) = dfa._attempt(bytes, length, at);
-            if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa) };
-            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), dfa) };
-            if at >= length { break $ (none(), dfa) };
-            let (next, dfa) = dfa._after_failure(bytes, length, at);
-            continue $ (next, steps + bytes_read, dfa)
+        // The bytes are borrowed for the whole search, so that looking for the next position a
+        // match may begin at costs one call into the C library and nothing around it.
+        bytes.borrow_elements(|base|
+            loop((max(from, 1), 0, dfa), |(at, steps, dfa)|
+                let at = dfa._skip_bytes(bytes, base, length, at);
+                if steps > _DFA_STEPS_PER_POSITION * (at - from) + _DFA_STEPS_GRACE {
+                    break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa)
+                };
+                let (best, bytes_read, dfa) = dfa._attempt(bytes, length, at);
+                if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa) };
+                if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), dfa) };
+                if at >= length { break $ (none(), dfa) };
+                let (next, dfa) = dfa._after_failure(bytes, length, at);
+                continue $ (next, steps + bytes_read, dfa)
+            )
         )
     );
 
@@ -1718,18 +1745,42 @@ namespace DFA {
 
     // The next position at or after a position where a match may begin.
     //
+    // Where a match may begin with one byte alone, the C library looks for it, reading many bytes
+    // at a time. Where it may begin with several, the bytes are read one at a time against the set.
+    //
     // # Parameters
     // * `bytes` - The bytes to read.
-    // * `first_bytes` - The bytes a match may begin with.
+    // * `base` - Where those bytes begin, borrowed for the search.
     // * `length` - How many bytes there are.
     // * `at` - The position to look from.
-    _skip_bytes: Array U8 -> Array U64 -> I64 -> I64 -> I64;
-    _skip_bytes = |bytes, first_bytes, length, at| (
+    // * `dfa` - The scanner, for the bytes a match may begin with.
+    _skip_bytes: Array U8 -> Ptr -> I64 -> I64 -> DFA -> I64;
+    _skip_bytes = |bytes, base, length, at, dfa| (
+        let lone = dfa.@first_byte;
+        if lone >= 0 { _skip_to_byte(base, lone, length, at) };
+        let first_bytes = dfa.@first_bytes;
         loop(at, |at|
             if at >= length { break $ length };
             if first_bytes._holds_byte(0, bytes.@(at)) { break $ at };
             continue $ at + 1
         )
+    );
+
+    // The next position at or after a position holding a byte, or where the input ends when the
+    // byte stands nowhere at or after it.
+    //
+    // # Parameters
+    // * `base` - Where the bytes to read begin.
+    // * `wanted` - The byte to look for.
+    // * `length` - How many bytes there are.
+    // * `at` - The position to look from.
+    _skip_to_byte: Ptr -> I64 -> I64 -> I64 -> I64;
+    _skip_to_byte = |base, wanted, length, at| (
+        if at >= length { length };
+        let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
+            base.add_offset(at), wanted.c_int, (length - at).c_size_t];
+        if found == nullptr { length };
+        found.subtract_ptr(base)
     );
 
     // A match together with the groups it captured. A pattern that captures nothing has the whole
