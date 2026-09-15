@@ -1151,9 +1151,10 @@ namespace DFA {
     // The bytes every match begins with, taken as far as they are forced.
     //
     // A state whose matches may begin with one byte alone forces that byte; the state it leads to
-    // forces the next. A state that accepts stands for a match that ends there, so the byte after
-    // it is not forced, and `_first_bytes_of` answers with every byte at such a state, which stops
-    // the walk on its own.
+    // forces the next. A state a match can end at forces nothing after it, and there are two ways
+    // to end: the state holds the accepting node, where `_first_bytes_of` answers with every byte
+    // and the walk stops on its own, or it reaches that node where the input ends, which `$` is
+    // matched by and which the state's own threads do not show.
     //
     // # Parameters
     // * `dfa` - The scanner, walked from the state a match begins in.
@@ -1161,6 +1162,8 @@ namespace DFA {
     _forced_prefix = |dfa| (
         loop((Array::empty(_MAX_PREFIX), dfa.@interior, dfa), |(prefix, state, dfa)|
             if prefix.get_size == _MAX_PREFIX { break $ (prefix, dfa) };
+            let (ends_here, dfa) = dfa._accepts_at_end(state);
+            if ends_here { break $ (prefix, dfa) };
             let byte = _lone_byte_of(dfa._first_bytes_of(state));
             if byte < 0 { break $ (prefix, dfa) };
             let (next, dfa) = dfa._next(state, byte.to_U8);
