@@ -1792,10 +1792,23 @@ namespace DFA {
         if dfa.@prefix_size >= 2 { bytes.find_bytes(dfa.@prefix, at).as_some_or(length) };
         let lone = dfa.@first_byte;
         if lone >= 0 { bytes.find_byte(lone.to_U8, at).as_some_or(length) };
-        let first_bytes = dfa.@first_bytes;
+        _skip_to_any(bytes, dfa.@first_bytes, length, at)
+    );
+
+    // The next position at or after a position holding one of a set of bytes, read a byte at a
+    // time. It stands apart from the reading that the C library does, so that neither is compiled
+    // into the other.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `wanted` - The bytes to look for, one bit each.
+    // * `length` - How many bytes there are.
+    // * `at` - The position to look from.
+    _skip_to_any: Array U8 -> Array U64 -> I64 -> I64 -> I64;
+    _skip_to_any = |bytes, wanted, length, at| (
         loop(at, |at|
             if at >= length { break $ length };
-            if first_bytes._holds_byte(0, bytes.@(at)) { break $ at };
+            if wanted._holds_byte(0, bytes.@(at)) { break $ at };
             continue $ at + 1
         )
     );
