@@ -1119,11 +1119,11 @@ type DFA = box struct {
                                   // to look so that the choice costs no reference count
     absorbing: Array U8,          // per byte: `1` where reading it leaves every thread standing,
                                   // `2` where it does not, `0` where it has not been worked out
-    literals: Array (Array U8),   // the byte strings every match holds, which the scan looks for,
+    forced_strings: Array (Array U8), // the byte strings every match holds, which the scan looks for,
                                   // empty where the scan reads for the bytes a match may begin with
-    literal_count: I64,           // how many `literals` holds, read where the scan chooses how to
+    forced_count: I64,            // how many `forced_strings` holds, read where the scan chooses how
                                   // look so that the choice costs no reference count
-    back_max: I64,                // most bytes the pattern may read before a string of `literals`
+    back_max: I64,                // most bytes the pattern may read before a string of `forced_strings`
     back_class: Array U64,        // the byte values it may read before one, one bit each
     full: Bool                    // whether the states have outgrown what the scanner may take
 };
@@ -1162,8 +1162,8 @@ namespace DFA {
             prefix: Array::empty(0),
             prefix_size: 0,
             absorbing: Array::fill(256, 0_U8),
-            literals: Array::empty(0),
-            literal_count: 0,
+            forced_strings: Array::empty(0),
+            forced_count: 0,
             back_max: 0,
             back_class: _no_bytes,
             full: false
@@ -1855,7 +1855,7 @@ namespace DFA {
     // * `dfa` - The scanner, for the bytes a match may begin with.
     _skip_bytes: Array U8 -> I64 -> I64 -> DFA -> I64;
     _skip_bytes = |bytes, length, at, dfa| (
-        if dfa.@literal_count > 0 { dfa._skip_to_forced(bytes, length, at) };
+        if dfa.@forced_count > 0 { dfa._skip_to_forced(bytes, length, at) };
         if dfa.@prefix_size >= 2 { bytes.find_bytes(dfa.@prefix, at).as_some_or(length) };
         let lone = dfa.@first_byte;
         if lone >= 0 { bytes.find_byte(lone.to_U8, at).as_some_or(length) };
@@ -1897,7 +1897,7 @@ namespace DFA {
     _skip_to_forced = |bytes, length, at, dfa| (
         // The strings stand in the order the text holds them most often, so the one looked for
         // first bounds how far the rest are looked for.
-        let hit = dfa.@literals.to_iter.fold(length, |wanted, earliest|
+        let hit = dfa.@forced_strings.to_iter.fold(length, |wanted, earliest|
             bytes.find_bytes_within(wanted, at, earliest).as_some_or(earliest)
         );
         if hit >= length { length };
@@ -1950,7 +1950,7 @@ namespace DFA {
         // Looking for a string costs a reading of its own on top of the walking, so a set is taken
         // only where it rules out enough more than the bytes a match may begin with to pay for it.
         let (best, _) = range(0, sets.get_size).fold((-1, stops / 2), |i, (best, fewest)|
-            let cost = _forced_cost(bytes, sample, sets.@(i));
+            let cost = _stops_of_forced_set(bytes, sample, sets.@(i));
             if cost >= fewest { (best, fewest) };
             (i, cost)
         );
@@ -1966,20 +1966,20 @@ namespace DFA {
     // * `dfa` - The scanner.
     _without_forced_set: DFA -> DFA;
     _without_forced_set = |dfa| (
-        if dfa.@literal_count == 0 { dfa };
-        dfa._set_literals(Array::empty(0))
+        if dfa.@forced_count == 0 { dfa };
+        dfa._set_forced_strings(Array::empty(0))
     );
 
-    // The scanner told which byte strings to look for. `literal_count` holds what `literals` holds,
+    // The scanner told which byte strings to look for. `forced_count` holds what `forced_strings` holds,
     // so this is where both are written.
     //
     // # Parameters
-    // * `literals` - The byte strings to look for, none of them where the scan is to read for the
+    // * `strings` - The byte strings to look for, none of them where the scan is to read for the
     //   bytes a match may begin with.
     // * `dfa` - The scanner.
-    _set_literals: Array (Array U8) -> DFA -> DFA;
-    _set_literals = |literals, dfa| (
-        dfa.set_literal_count(literals.get_size).set_literals(literals)
+    _set_forced_strings: Array (Array U8) -> DFA -> DFA;
+    _set_forced_strings = |strings, dfa| (
+        dfa.set_forced_count(strings.get_size).set_forced_strings(strings)
     );
 
     // The leftmost match beginning at or after a position, taking the longest of those that begin
@@ -2038,7 +2038,7 @@ namespace DFA {
     _with_forced_set = |bytes, set, dfa| (
         let sample = min(bytes.get_size, _FORCED_SAMPLE);
         let runs = _by_falling_count(bytes, sample, set);
-        dfa._set_literals(runs.map(@bytes))
+        dfa._set_forced_strings(runs.map(@bytes))
             .set_back_max(set.to_iter.fold(0, |run, most| max(most, run.@back_max)))
             .set_back_class(set.to_iter.fold(
                 _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
@@ -2070,14 +2070,14 @@ namespace DFA {
     // * `bytes` - The text the search is over.
     // * `sample` - How many bytes of it to read.
     // * `set` - The set to weigh.
-    _forced_cost: Array U8 -> I64 -> Array ForcedRun -> I64;
-    _forced_cost = |bytes, sample, set| (
+    _stops_of_forced_set: Array U8 -> I64 -> Array ForcedRun -> I64;
+    _stops_of_forced_set = |bytes, sample, set| (
         let back_max = set.to_iter.fold(0, |run, most| max(most, run.@back_max));
         let bits = set.to_iter.fold(
             _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
         );
         set.to_iter.fold(0, |run, cost|
-            cost + _positions_of(bytes, sample, run.@bytes, bits, back_max)
+            cost + _stops_of_string(bytes, sample, run.@bytes, bits, back_max)
         )
     );
 
@@ -2104,7 +2104,7 @@ namespace DFA {
     // * `sample` - How many bytes of it to read.
     // * `wanted` - The byte string to look for.
     _places_of: Array U8 -> I64 -> Array U8 -> I64;
-    _places_of = |bytes, sample, wanted| _positions_of(bytes, sample, wanted, _no_bytes, 0);
+    _places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, _no_bytes, 0);
 
     // How many positions a search would hand the automaton over a stretch of the text, for one of
     // the forced byte strings it looks for: every place the string stands, and every position
@@ -2116,8 +2116,8 @@ namespace DFA {
     // * `wanted` - The byte string to look for.
     // * `back_class` - The byte values the pattern may read before it, one bit each.
     // * `back_max` - How many bytes the pattern may read before it.
-    _positions_of: Array U8 -> I64 -> Array U8 -> Array U64 -> I64 -> I64;
-    _positions_of = |bytes, sample, wanted, back_class, back_max| (
+    _stops_of_string: Array U8 -> I64 -> Array U8 -> Array U64 -> I64 -> I64;
+    _stops_of_string = |bytes, sample, wanted, back_class, back_max| (
         loop((0, 0), |(at, cost)|
             if at >= sample { break $ cost };
             let hit = bytes.find_bytes_within(wanted, at, sample);

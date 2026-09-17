@@ -462,10 +462,13 @@ namespace Pattern {
         undefined("err")
     );
 }
-// How many bytes a stretch of a pattern may read where it may read any number of them. It stands
-// for "any number" and is added and multiplied without overflowing.
+// How many bytes a stretch of a pattern may read where it may read any number of them.
+//
+// It stands for "any number", and it is a quarter of the largest number there is, so that the
+// bound a quantifier with no upper bound carries is itself at least this much, and so that two of
+// these added or multiplied together stay a number.
 _UNBOUNDED_READ : I64;
-_UNBOUNDED_READ = 1000000000;
+_UNBOUNDED_READ = I64::maximum / 4;
 
 // How many sets of forced byte strings are kept for a pattern. Alternation multiplies them, and a
 // search takes the one set the text it is over holds least often, so what this bounds is how many
@@ -561,8 +564,8 @@ type Forced = unbox struct {
 };
 
 // A pattern that forces nothing and reads nothing.
-_forces_nothing : Forced;
-_forces_nothing = Forced {
+_forced_of_nothing : Forced;
+_forced_of_nothing = Forced {
     exact: none(), sets: Array::empty(0), max_read: 0, read_bytes: _no_bytes
 };
 
@@ -570,8 +573,8 @@ _forces_nothing = Forced {
 //
 // # Parameters
 // * `bytes` - The byte string it matches.
-_forces_bytes : Array U8 -> Forced;
-_forces_bytes = |bytes| Forced {
+_forced_of_bytes : Array U8 -> Forced;
+_forced_of_bytes = |bytes| Forced {
     exact: some(bytes),
     sets: if bytes.get_size == 0 { Array::empty(0) } else {
         [[ForcedRun { bytes: bytes, back_max: 0, back_class: _no_bytes }]]
@@ -639,12 +642,12 @@ _forced_of_sequence = |pats| (
             // A string that would outgrow the room kept for it is broken here, and what follows
             // starts a string of its own, so that every string kept stands in the text entire.
             if run.get_size + more.get_size > _MAX_FORCED_LENGTH {
-                let sets = _closed_run(run, run_max, run_bits, sets);
+                let sets = _sets_with_run_closed(run, run_max, run_bits, sets);
                 (more, pre_max, pre_bits, next_max, next_bits, sets, false)
             };
             (run.append(more), run_max, run_bits, next_max, next_bits, sets, is_exact)
         };
-        let sets = _closed_run(run, run_max, run_bits, sets);
+        let sets = _sets_with_run_closed(run, run_max, run_bits, sets);
         let sets = forced.@sets.to_iter.fold(sets, |set, sets|
             if sets.get_size >= _MAX_FORCED_SETS { sets };
             sets.push_back(_runs_after(pre_max, pre_bits, set))
@@ -653,7 +656,7 @@ _forced_of_sequence = |pats| (
     );
     Forced {
         exact: if is_exact { some(run) } else { none() },
-        sets: _closed_run(run, run_max, run_bits, sets),
+        sets: _sets_with_run_closed(run, run_max, run_bits, sets),
         max_read: total_max,
         read_bytes: total_bits
     }
@@ -666,8 +669,8 @@ _forced_of_sequence = |pats| (
 // * `run_max` - How many bytes the pattern may read before it.
 // * `run_bits` - The byte values those bytes may be drawn from.
 // * `sets` - The sets to put it among.
-_closed_run : Array U8 -> I64 -> Array U64 -> Array (Array ForcedRun) -> Array (Array ForcedRun);
-_closed_run = |run, run_max, run_bits, sets| (
+_sets_with_run_closed : Array U8 -> I64 -> Array U64 -> Array (Array ForcedRun) -> Array (Array ForcedRun);
+_sets_with_run_closed = |run, run_max, run_bits, sets| (
     if run.get_size == 0 { sets };
     if sets.get_size >= _MAX_FORCED_SETS { sets };
     sets.push_back([ForcedRun { bytes: run, back_max: run_max, back_class: run_bits }])
@@ -691,10 +694,10 @@ forced_of : Pattern -> Forced;
 forced_of = |pat| (
     if pat.is_pclass {
         let (bits, lone) = _bytes_of_class(pat.as_pclass);
-        let forced = if lone < 0 { _forces_nothing } else { _forces_bytes([lone.to_U8]) };
+        let forced = if lone < 0 { _forced_of_nothing } else { _forced_of_bytes([lone.to_U8]) };
         forced.set_max_read(1).set_read_bytes(bits)
     };
-    if pat.is_passert { _forces_bytes(Array::empty(0)) };
+    if pat.is_passert { _forced_of_bytes(Array::empty(0)) };
     if pat.is_pgroup { let (_, inner) = pat.as_pgroup; forced_of(inner) };
     if pat.is_psequence { _forced_of_sequence(pat.as_psequence) };
     if pat.is_peither {
