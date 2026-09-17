@@ -32,8 +32,8 @@ import Std::{
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
-    flags: String, 
-    nfa: NFA
+    flags: String,   // the flags it was compiled with, of which `g` is read
+    nfa: NFA         // the automaton the pattern compiled to
 };
 
 namespace RegExp {
@@ -99,13 +99,6 @@ namespace RegExp {
         found
     );
 
-    _convert_groups_to_string: Array Group -> String -> Array String;
-    _convert_groups_to_string = |groups, target| (
-        groups.to_iter.map(|(begin, end)|
-            if begin < 0 || end < 0 { "" };
-            target.substring(begin, end)
-        ).to_array
-    );
 
     // `regexp.match_all(target)` matches `target` against `regexp`.
     // All matching results will be returned including captured groups.
@@ -144,6 +137,20 @@ namespace RegExp {
     );
 }
 
+// The stretches of a string the groups of a match cover, a group that captured nothing giving the
+// empty string.
+//
+// # Parameters
+// * `groups` - Where each group of the match runs from and to.
+// * `target` - The string the match was found in.
+_groups_to_strings: Array Group -> String -> Array String;
+_groups_to_strings = |groups, target| (
+    groups.to_iter.map(|(begin, end)|
+        if begin < 0 || end < 0 { "" };
+        target.substring(begin, end)
+    ).to_array
+);
+
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
@@ -170,14 +177,14 @@ namespace Matcher {
             if matches.is_empty {
                 (err $ "NotMatch", matcher)
             };
-            (ok $ target._convert_groups_to_string(matches.map(|groups| groups.@(0))), matcher)
+            (ok $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
         } else {
             let (opt, dfa) = matcher.@dfa.search_from(bytes, 0);
             let matcher = matcher.set_dfa(dfa);
             if opt.is_none {
                 (err $ "NotMatch", matcher)
             };
-            (ok $ target._convert_groups_to_string(opt.as_some), matcher)
+            (ok $ target._groups_to_strings(opt.as_some), matcher)
         }
     );
 
@@ -193,7 +200,7 @@ namespace Matcher {
     match_all = |target, matcher| (
         let bytes = target.get_bytes.pop_back;
         let (matches, dfa) = matcher.@dfa.search_every(bytes);
-        (matches.map(|groups| target._convert_groups_to_string(groups)), matcher.set_dfa(dfa))
+        (matches.map(|groups| target._groups_to_strings(groups)), matcher.set_dfa(dfa))
     );
 
     // `matcher.replace_all(target, replacement)` replaces every stretch of `target` the regular

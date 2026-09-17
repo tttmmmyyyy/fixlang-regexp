@@ -628,9 +628,9 @@ _test_beyond_bounds = (
 // none is lost.
 _test_ordered_insertion: IO ();
 _test_ordered_insertion = (
-    assert_eq(|_| "a state taken in at the front", DFA::_insert_at(0, 5, [10, 30, 50]), [5, 10, 30, 50]);;
-    assert_eq(|_| "a state taken in between", DFA::_insert_at(1, 20, [10, 30, 50]), [10, 20, 30, 50]);;
-    assert_eq(|_| "a state taken in at the end", DFA::_insert_at(3, 60, [10, 30, 50]), [10, 30, 50, 60])
+    assert_eq(|_| "a state taken in at the front", _insert_at(0, 5, [10, 30, 50]), [5, 10, 30, 50]);;
+    assert_eq(|_| "a state taken in between", _insert_at(1, 20, [10, 30, 50]), [10, 20, 30, 50]);;
+    assert_eq(|_| "a state taken in at the end", _insert_at(3, 60, [10, 30, 50]), [10, 30, 50, 60])
 );
 
 // Runs the whole suite: the matching and replacing cases written out above, then the sections that

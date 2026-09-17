@@ -9,7 +9,7 @@ module RegExp.RegExpNFA;
 import RegExp.RegExpPattern::{
     CharClass, ForcedRun, PAssertion, Pattern, CharClass::contains, 
     ForcedRun::{@back_class, @back_max, @bytes}, PAssertion::{is_pa_begin, is_pa_end}, 
-    forced_of, _bytes_of_class, _bytes_union, _no_bytes, Forced::@sets, 
+    forced_of, _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, Forced::@sets, 
     Pattern::{
         as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, is_passert, is_pclass, 
         is_peither, is_pgroup, is_pquant, is_psequence, psequence, _assign_group_number
@@ -1097,7 +1097,7 @@ type DFA = box struct {
     width: I64,                   // numbers to a thread: the node, then one count per special quantifier
     threads: Array I64,           // the threads of every state, laid end to end
     bounds: Array I64,            // state `i` holds the threads from `bounds.@(i)` to `bounds.@(i+1)`
-    ordered: Array I64,           // the states, ordered by the threads they hold
+    ordered_states: Array I64,    // the states, ordered by the threads they hold
     transitions: Array I64,       // `state * 256 + byte` -> `2 * next + accepting`, `-1` when untaken
     accepts: Array Bool,          // whether the state holds the accepting node
     accepts_at_end: Array I64,    // whether it holds it where the input ends, where `$` holds:
@@ -1145,7 +1145,7 @@ namespace DFA {
             width: 1 + nfa.@quant_bounds.get_size,
             threads: Array::empty(64),
             bounds: [0],
-            ordered: Array::empty(16),
+            ordered_states: Array::empty(16),
             transitions: Array::empty(256 * 2),
             accepts: Array::empty(16),
             accepts_at_end: Array::empty(16),
@@ -1256,12 +1256,12 @@ namespace DFA {
     // * `dfa` - The scanner.
     _first_bytes_of: I64 -> DFA -> Array U64;
     _first_bytes_of = |state, dfa| (
-        if dfa.@accepts.@(state) { Array::fill(4, U64::maximum) };
+        if dfa.@accepts.@(state) { _all_bytes };
         let nfa = dfa.@nfa;
         let width = dfa.@width;
         let begin = dfa.@bounds.@(state);
         let end = dfa.@bounds.@(state + 1);
-        range(0, (end - begin) / width).fold(Array::fill(4, 0_U64), |k, first_bytes|
+        range(0, (end - begin) / width).fold(_no_bytes, |k, first_bytes|
             let node = nfa.get_node(NodeID { val: dfa.@threads.@(begin + k * width) });
             let action = node.@action;
             if !action.is_sa_char_match { first_bytes };
@@ -1306,7 +1306,7 @@ namespace DFA {
             .mod_accepts(push_back(accepts))
             .mod_accepts_at_end(push_back(if accepts { 1 } else { -1 }))
             .mod_transitions(append(_UNTAKEN_ROW))
-            .mod_ordered(_insert_at(place, id));
+            .mod_ordered_states(_insert_at(place, id));
         (id, dfa)
     );
 
@@ -1334,10 +1334,10 @@ namespace DFA {
     // * `dfa` - The scanner.
     _locate: Array I64 -> DFA -> (I64, I64);
     _locate = |wanted, dfa| (
-        loop((0, dfa.@ordered.get_size), |(low, high)|
+        loop((0, dfa.@ordered_states.get_size), |(low, high)|
             if low == high { break $ (-1, low) };
             let middle = (low + high) / 2;
-            let state = dfa.@ordered.@(middle);
+            let state = dfa.@ordered_states.@(middle);
             let order = dfa._compare(state, wanted);
             if order == 0 { break $ (state, middle) };
             if order < 0 { continue $ (middle + 1, high) };

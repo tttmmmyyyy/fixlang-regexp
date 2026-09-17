@@ -17,14 +17,14 @@ import Std::{
     Array::{append, empty, fill, get_size, mod, push_back, set, to_iter, @}, Functor::map, 
     I64::{maximum, to_U64, to_U8}, Iterator::{count_up, fold, map, range, take}, Monad::pure, 
     Option::{as_some, is_none, is_some, none, some}, String::{get_size, join}, ToString::to_string, 
-    U64::{bit_or, shift_left}, U8::to_I64
+    U64::{bit_or, maximum, shift_left}, U8::to_I64
 };
 
 // Type of a character class.
 type CharClass = unbox struct {
     // A label that describes this class (for debugging only)
     label: String,
-    // A member function that judges whether a character is contained in this class or not
+    // A function that judges whether a character is a member of this class
     f: U8 -> Bool
 };
 
@@ -95,7 +95,7 @@ namespace CharClass {
     // using that table.
     to_table: CharClass -> CharClass;
     to_table = |cls| (
-        let table = Iterator::count_up(0).take(256).fold(
+        let table = count_up(0).take(256).fold(
             Array::fill(256, false), |i, arr|
             arr.set(i, cls.contains(i.to_U8))
         );
@@ -489,6 +489,10 @@ _MAX_FORCED_LENGTH = 16;
 // The empty set of byte values.
 _no_bytes : Array U64;
 _no_bytes = Array::fill(4, 0_U64);
+
+// The set of every byte value.
+_all_bytes : Array U64;
+_all_bytes = Array::fill(4, U64::maximum);
 
 // The byte values a character class holds, one bit each, together with the one it holds where it
 // holds one alone: `-1` where it holds none and `-2` where it holds several.
