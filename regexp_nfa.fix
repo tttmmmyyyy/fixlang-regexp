@@ -1671,18 +1671,26 @@ namespace DFA {
         let (best, _, dfa) = if from == 0 { dfa._attempt(bytes, length, 0) } else { (-1, 0, dfa) };
         if dfa.@full { (NFA::_search_threads(bytes, from, dfa.@nfa), dfa) };
         if best >= 0 { (dfa._match_with_groups(bytes, 0, best), dfa) };
-        loop((max(from, 1), 0, dfa), |(at, steps, dfa)|
+        // The table of which bytes carry the state a match begins in forward is read out of the
+        // scanner once for the walk. A field of the scanner is a field of a boxed value, so reading
+        // one raises and lowers a reference count, and the walk reads this table at every position
+        // it looks at. The scanner goes on holding it, so the first byte weighed here copies it,
+        // and the copy is what the scanner is left with: a byte is weighed at most once for each of
+        // the 256 there are, over the whole of a search.
+        let absorbing = dfa.@absorbing;
+        let (found, absorbing, dfa) = loop((max(from, 1), 0, absorbing, dfa), |(at, steps, absorbing, dfa)|
             let at = dfa._skip_bytes(bytes, length, at);
             if steps > _DFA_STEPS_PER_POSITION * (at - from) + _DFA_STEPS_GRACE {
-                break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa)
+                break $ (NFA::_search_threads(bytes, at, dfa.@nfa), absorbing, dfa)
             };
             let (best, bytes_read, dfa) = dfa._attempt(bytes, length, at);
-            if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa) };
-            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), dfa) };
-            if at >= length { break $ (none(), dfa) };
-            let (next, dfa) = dfa._after_failure(bytes, length, at);
-            continue $ (next, steps + bytes_read, dfa)
-        )
+            if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), absorbing, dfa) };
+            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), absorbing, dfa) };
+            if at >= length { break $ (none(), absorbing, dfa) };
+            let (next, absorbing, dfa) = dfa._after_failure(bytes, length, at, absorbing);
+            continue $ (next, steps + bytes_read, absorbing, dfa)
+        );
+        (found, dfa.set_absorbing(absorbing))
     );
 
     // Where the search goes on after no match was found at a position.
@@ -1700,15 +1708,17 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `length` - How many bytes there are.
     // * `at` - The position no match was found at.
+    // * `absorbing` - Which bytes carry that state forward, held out of the scanner.
     // * `dfa` - The scanner.
-    _after_failure: Array U8 -> I64 -> I64 -> DFA -> (I64, DFA);
-    _after_failure = |bytes, length, at, dfa| (
-        loop((at, dfa), |(at, dfa)|
-            let at = _absorbed_to(bytes, dfa.@absorbing, length, at);
-            if at + 1 >= length { break $ (at + 1, dfa) };
+    _after_failure: Array U8 -> I64 -> I64 -> Array U8 -> DFA -> (I64, Array U8, DFA);
+    _after_failure = |bytes, length, at, absorbing, dfa| (
+        loop((at, absorbing, dfa), |(at, absorbing, dfa)|
+            let at = _absorbed_to(bytes, absorbing, length, at);
+            if at + 1 >= length { break $ (at + 1, absorbing, dfa) };
             let byte = bytes.@(at);
-            if dfa.@absorbing.@(byte.to_I64) != 0_U8 { break $ (at + 1, dfa) };
-            continue $ (at, dfa._learn_absorbing(byte))
+            if absorbing.@(byte.to_I64) != 0_U8 { break $ (at + 1, absorbing, dfa) };
+            let (absorbing, dfa) = dfa._learn_absorbing(byte, absorbing);
+            continue $ (at, absorbing, dfa)
         )
     );
 
@@ -1734,12 +1744,13 @@ namespace DFA {
     //
     // # Parameters
     // * `byte` - The byte to weigh.
+    // * `absorbing` - The answers worked out so far, held out of the scanner.
     // * `dfa` - The scanner.
-    _learn_absorbing: U8 -> DFA -> DFA;
-    _learn_absorbing = |byte, dfa| (
+    _learn_absorbing: U8 -> Array U8 -> DFA -> (Array U8, DFA);
+    _learn_absorbing = |byte, absorbing, dfa| (
         let (next, dfa) = dfa._next(dfa.@interior, byte);
         let absorbs = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
-        dfa.mod_absorbing(set(byte.to_I64, if absorbs { 1_U8 } else { 2_U8 }))
+        (absorbing.set(byte.to_I64, if absorbs { 1_U8 } else { 2_U8 }), dfa)
     );
 
     // Whether every thread that decides what one state does next stands among the threads of
