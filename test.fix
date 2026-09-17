@@ -1,7 +1,9 @@
 module Test;
 
-import RegExp::{Matcher, Matcher::{match_all, match_one, replace_all}};
-import RegExp::RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa};
+import RegExp::{
+    Matcher::{match_all, match_one, replace_all}, 
+    RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa}
+};
 import RegExp.RegExpNFA::{
     DFA, Groups, NFA, DFA::{find, make, _insert_at, _with_forced_set}, 
     NFA::{search, search_all, @forced_sets, @prefix, _search_threads}
@@ -12,8 +14,7 @@ import Std::{
     Array::{empty, pop_back, push_back, to_iter, @, @size}, 
     Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
     Monad::pure, Option::{as_some, is_none, none, some}, Result::{as_ok, is_err}, 
-    String::get_bytes, 
-    ToString::to_string
+    String::get_bytes, ToString::to_string
 };
 
 // A case for `match_one` and `match_all`.

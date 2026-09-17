@@ -27,12 +27,13 @@ import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
     Array::{append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, to_iter, truncate, @}, 
-    Debug::debug_eprintln, Functor::map, I64::{maximum, to_U64, to_U8}, 
-    Iterator::{check_any, fold, map, range}, LessThan::{max, min}, LoopState::{break, continue}, 
-    Monad::pure, Option::{as_some, as_some_or, is_none, is_some, none, some}, 
-    Result::{as_ok, is_err}, String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
+    Functor::map, I64::{maximum, to_U64, to_U8}, Iterator::{check_any, fold, map, range}, 
+    LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
+    Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
+    String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
     U64::{bit_and, bit_or, maximum, shift_left, shift_right}, U8::to_I64
 };
+
 // Where a group was matched: the two stream positions `(begin, end)`. `-1` stands for a position
 // that was never written.
 type Group = (I64, I64);
