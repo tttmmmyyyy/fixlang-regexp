@@ -25,7 +25,7 @@ import RegExp.RegExpNFA::{
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
+    Array, Bool, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
     Functor::map, Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, 
     Result::{err, ok}, String::{concat_iter, get_bytes, get_size}
 };
@@ -63,7 +63,9 @@ namespace RegExp {
     // let (second, matcher) = matcher.match_all("ghi jkl");
     // ```
     matcher: RegExp -> Matcher;
-    matcher = |regexp| Matcher { flags: regexp.@flags, dfa: DFA::make(regexp.@nfa) };
+    matcher = |regexp| Matcher {
+        global: regexp.@flags.find_byte('g').is_some, dfa: DFA::make(regexp.@nfa)
+    };
 
     // `regexp.match(target)` matches `target` against `regexp`.
     //
@@ -145,8 +147,8 @@ namespace RegExp {
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
-    flags: String,   // the flags the regular expression was compiled with
-    dfa: DFA         // the automaton, and what the scanner has worked out of it so far
+    global: Bool,   // whether the global flag was given, which `match_one` reads
+    dfa: DFA        // the automaton, and what the scanner has worked out of it so far
 };
 
 namespace Matcher {
@@ -162,7 +164,7 @@ namespace Matcher {
     match_one: String -> Matcher -> (Result ErrMsg (Array String), Matcher);
     match_one = |target, matcher| (
         let bytes = target.get_bytes.pop_back;
-        if matcher.@flags.find_byte('g').is_some {
+        if matcher.@global {
             let (matches, dfa) = matcher.@dfa.search_every(bytes);
             let matcher = matcher.set_dfa(dfa);
             if matches.is_empty {

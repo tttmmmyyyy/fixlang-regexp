@@ -26,7 +26,10 @@ import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
-    Array::{append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, to_iter, truncate, @}, 
+    Array::{
+        append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, sort_by, 
+        to_iter, truncate, @
+    }, 
     Functor::map, I64::{maximum, to_U64, to_U8}, Iterator::{check_any, fold, map, range}, 
     LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
     Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
@@ -2000,10 +2003,20 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `dfa` - The scanner to search with.
     search_every: Array U8 -> DFA -> (Array Groups, DFA);
-    search_every = |bytes, dfa| (
+    search_every = |bytes, dfa| dfa._choose_forced_set(bytes)._every_match(bytes);
+
+    // Every match a scanner finds, taken left to right, none of them overlapping another, together
+    // with the scanner as the search left it. The scanner searches as it stands, looking for
+    // whatever it has been told to look for.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `dfa` - The scanner to search with.
+    _every_match: Array U8 -> DFA -> (Array Groups, DFA);
+    _every_match = |bytes, dfa| (
         let length = bytes.get_size;
         let (matches, _, dfa) = loop(
-            (Array::empty(8), 0, dfa._choose_forced_set(bytes)), |(matches, from, dfa)|
+            (Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
             let (opt, dfa) = dfa.find(bytes, from);
             if opt.is_none { break $ (matches, from, dfa) };
@@ -2079,33 +2092,19 @@ namespace DFA {
     // * `set` - The set to order.
     _by_falling_count: Array U8 -> I64 -> Array ForcedRun -> Array ForcedRun;
     _by_falling_count = |bytes, sample, set| (
-        let counted = set.map(|run| (_positions_of(bytes, sample, run.@bytes, _no_bytes, 0), run));
-        // The sets are small, so the order is worked out by taking the largest that is left.
-        let (ordered, _) = range(0, counted.get_size).fold(
-            (Array::empty(counted.get_size), counted), |_, (ordered, rest)|
-            let (best, _) = range(0, rest.get_size).fold((0, -1), |i, (best, most)|
-                let (count, _) = rest.@(i);
-                if count <= most { (best, most) };
-                (i, count)
-            );
-            let (_, run) = rest.@(best);
-            (ordered.push_back(run), _without(best, rest))
-        );
-        ordered
+        set.map(|run| (_places_of(bytes, sample, run.@bytes), run))
+            .sort_by(|((left, _), (right, _))| left > right)
+            .map(|(_, run)| run)
     );
 
-    // An array with the item at a position taken out.
+    // How many places a byte string stands at in a stretch of the text.
     //
     // # Parameters
-    // * `at` - The position to take out.
-    // * `items` - The array to take it out of.
-    _without: I64 -> Array a -> Array a;
-    _without = |at, items| (
-        range(0, items.get_size).fold(Array::empty(items.get_size), |i, out|
-            if i == at { out };
-            out.push_back(items.@(i))
-        )
-    );
+    // * `bytes` - The text to read.
+    // * `sample` - How many bytes of it to read.
+    // * `wanted` - The byte string to look for.
+    _places_of: Array U8 -> I64 -> Array U8 -> I64;
+    _places_of = |bytes, sample, wanted| _positions_of(bytes, sample, wanted, _no_bytes, 0);
 
     // How many positions a search would hand the automaton over a stretch of the text, for one of
     // the forced byte strings it looks for: every place the string stands, and every position

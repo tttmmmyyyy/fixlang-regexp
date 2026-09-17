@@ -5,7 +5,7 @@ import RegExp::{
     RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa}
 };
 import RegExp.RegExpNFA::{
-    DFA, Groups, NFA, DFA::{find, make, _insert_at, _with_forced_set}, 
+    DFA, Groups, NFA, DFA::{make, _every_match, _insert_at, _with_forced_set}, 
     NFA::{search, search_all, @forced_sets, @prefix, _search_threads}
 };
 import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
@@ -424,7 +424,7 @@ _forced_sets_agree = |nfa, pattern, target, tried| (
     let sets = nfa.@forced_sets;
     range(0, sets.@size).fold_m(tried, |i, tried|
         let dfa = DFA::make(nfa)._with_forced_set(bytes, sets.@(i));
-        assert_eq(|_| name + " forced set " + i.to_string, _search_all_by(bytes, dfa), by_threads);;
+        assert_eq(|_| name + " forced set " + i.to_string, _search_all_scanner(bytes, dfa), by_threads);;
         pure $ tried + 1
     )
 );
@@ -550,22 +550,15 @@ _test_kept_scanner = (
     assert(|_| "the kept scanner finds matches", found >= _random_cases / 4)
 );
 
-// Every match a scanner finds over a text, taken one after another as a search takes them.
+// Every match the given scanner finds over a text, which is what a search finds once the scanner
+// has been told what to look for.
 //
 // # Parameters
 // * `bytes` - The text to search.
 // * `dfa` - The scanner to search with.
-_search_all_by: Array U8 -> DFA -> Array Groups;
-_search_all_by = |bytes, dfa| (
-    let length = bytes.@size;
-    let (matches, _, _) = loop((Array::empty(8), 0, dfa), |(matches, from, dfa)|
-        if from > length { break $ (matches, from, dfa) };
-        let (opt, dfa) = dfa.find(bytes, from);
-        if opt.is_none { break $ (matches, from, dfa) };
-        let groups = opt.as_some;
-        let (begin, end) = groups.@(0);
-        continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 }, dfa)
-    );
+_search_all_scanner: Array U8 -> DFA -> Array Groups;
+_search_all_scanner = |bytes, dfa| (
+    let (matches, _) = dfa._every_match(bytes);
     matches
 );
 

@@ -49,26 +49,7 @@ find_byte = |wanted, from, bytes| (
 // * `from` - The position to look from.
 // * `bytes` - The bytes to read.
 find_bytes : Array U8 -> I64 -> Array U8 -> Option I64;
-find_bytes = |wanted, from, bytes| (
-    let length = bytes.get_size;
-    let wanted_length = wanted.get_size;
-    if wanted_length == 0 { if from <= length { some(from) } else { none() } };
-    if from + wanted_length > length { none() };
-    let head = wanted.@(0);
-    // The last position a run of `wanted_length` bytes can begin at.
-    let last_begin = length - wanted_length;
-    bytes.borrow_elements(|base|
-        loop(from, |at|
-            if at > last_begin { break $ none() };
-            let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
-                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
-            if found == nullptr { break $ none() };
-            let begin = found.subtract_ptr(base);
-            if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };
-            continue $ begin + 1
-        )
-    )
-);
+find_bytes = |wanted, from, bytes| bytes.find_bytes_within(wanted, from, bytes.get_size);
 
 // The first position at or after `from` and before `limit` where `bytes` holds `wanted` entire, or
 // `none` where it holds it nowhere between the two.
