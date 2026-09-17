@@ -185,8 +185,11 @@ _bounded_bytes_cases: Array (String, I64, I64, String, Option I64);
 _bounded_bytes_cases = [
     ("bc", 0, 6, "abcabc", some(1)),
     ("bc", 2, 5, "abcabc", some(4)),
-    // The run at 4 begins past the position the looking stops at.
+    // The run at 4 begins past the position the looking stops at, and the one at the position
+    // itself is found, since the bound is on where a run begins.
     ("bc", 2, 3, "abcabc", none()),
+    ("bc", 2, 4, "abcabc", some(4)),
+    ("", 2, 1, "abcabc", none()),
     ("abcd", 0, 6, "abc", none())
 ];
 
