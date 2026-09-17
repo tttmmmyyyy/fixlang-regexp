@@ -13,10 +13,11 @@ import RegExp.SimpleParser::{
 };
 import RegExp.StringEx::{byte_to_string, find_byte};
 import Std::{
-    undefined, Array, Bool, ErrMsg, I64, Result, String, ToString, U8, 
-    Array::{empty, fill, get_size, push_back, set, to_iter, @}, Functor::map, I64::{maximum, to_U8}, 
-    Iterator::{count_up, fold, map, take}, Monad::pure, Option::{as_some, is_none, is_some, none, some}, 
-    String::{get_size, join}, ToString::to_string, U8::to_I64
+    undefined, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
+    Array::{append, empty, fill, get_size, mod, push_back, set, to_iter, @}, Functor::map, 
+    I64::{maximum, to_U64, to_U8}, Iterator::{count_up, fold, map, range, take}, Monad::pure, 
+    Option::{as_some, is_none, is_some, none, some}, String::{get_size, join}, ToString::to_string, 
+    U64::{bit_or, shift_left}, U8::to_I64
 };
 
 // Type of a character class.
@@ -461,3 +462,301 @@ namespace Pattern {
         undefined("err")
     );
 }
+// How many bytes a stretch of a pattern may read where it may read any number of them. It stands
+// for "any number" and is added and multiplied without overflowing.
+_UNBOUNDED_READ : I64;
+_UNBOUNDED_READ = 1000000000;
+
+// How many sets of forced byte strings are kept for a pattern. Alternation multiplies them, and a
+// search takes the one set the text it is over holds least often, so what this bounds is how many
+// sets are weighed against the text.
+_MAX_FORCED_SETS : I64;
+_MAX_FORCED_SETS = 4;
+
+// How many byte strings a set of forced ones may hold. A set is looked for by looking for each of
+// its members in turn, so a large one costs more to look for than it rules out.
+_MAX_FORCED_MEMBERS : I64;
+_MAX_FORCED_MEMBERS = 4;
+
+// How many bytes of a forced byte string are kept. A longer one rules out more, and the reading
+// that looks for it costs the same either way, so what bounds this is the room the strings take.
+_MAX_FORCED_LENGTH : I64;
+_MAX_FORCED_LENGTH = 16;
+
+// The empty set of byte values.
+_no_bytes : Array U64;
+_no_bytes = Array::fill(4, 0_U64);
+
+// The byte values a character class holds, one bit each.
+//
+// # Parameters
+// * `cls` - The class to read.
+_bytes_of_class : CharClass -> Array U64;
+_bytes_of_class = |cls| (
+    Iterator::range(0, 256).fold(_no_bytes, |i, bits|
+        if !cls.contains(i.to_U8) { bits };
+        bits.mod(i / 64, bit_or(1_U64.shift_left((i % 64).to_U64)))
+    )
+);
+
+// The byte values either set holds, one bit each.
+//
+// # Parameters
+// * `other` - The set to take together with this one.
+// * `bits` - The set to take it together with.
+_bytes_union : Array U64 -> Array U64 -> Array U64;
+_bytes_union = |other, bits| (
+    Iterator::range(0, 4).fold(bits, |w, bits| bits.mod(w, bit_or(other.@(w))))
+);
+
+// The one byte a character class holds, or `-1` where it holds none and `-2` where it holds
+// several.
+//
+// # Parameters
+// * `cls` - The class to read.
+_lone_member : CharClass -> I64;
+_lone_member = |cls| (
+    Iterator::range(0, 256).fold(-1, |i, found|
+        if !cls.contains(i.to_U8) { found };
+        if found != -1 { -2 };
+        i
+    )
+);
+
+// The sum of two counts of bytes read, "any number" swallowing whatever it is added to.
+_read_sum : I64 -> I64 -> I64;
+_read_sum = |a, b| if a >= _UNBOUNDED_READ || b >= _UNBOUNDED_READ { _UNBOUNDED_READ } else { a + b };
+
+// A count of bytes read, taken that many times over, "any number" swallowing whatever multiplies
+// it.
+_read_times : I64 -> I64 -> I64;
+_read_times = |a, n| (
+    if a >= _UNBOUNDED_READ || n >= _UNBOUNDED_READ { _UNBOUNDED_READ };
+    if n <= 0 || a <= 0 { 0 };
+    if a > _UNBOUNDED_READ / n { _UNBOUNDED_READ };
+    a * n
+);
+
+// The most bytes a pattern may read, or `_UNBOUNDED_READ` where it may read any number.
+//
+// # Parameters
+// * `pat` - The pattern to read.
+_max_read : Pattern -> I64;
+_max_read = |pat| (
+    if pat.is_pclass { 1 };
+    if pat.is_passert { 0 };
+    if pat.is_pgroup { let (_, inner) = pat.as_pgroup; _max_read(inner) };
+    if pat.is_psequence {
+        pat.as_psequence.to_iter.fold(0, |p, total| _read_sum(total, _max_read(p)))
+    };
+    if pat.is_peither {
+        let (left, right) = pat.as_peither;
+        let (l, r) = (_max_read(left), _max_read(right));
+        if l >= r { l } else { r }
+    };
+    if pat.is_pquant {
+        let (inner, _, most) = pat.as_pquant;
+        _read_times(_max_read(inner), most)
+    };
+    undefined("_max_read: unknown pattern")
+);
+
+// The byte values a pattern may read, one bit each.
+//
+// # Parameters
+// * `pat` - The pattern to read.
+_read_bytes : Pattern -> Array U64;
+_read_bytes = |pat| (
+    if pat.is_pclass { _bytes_of_class(pat.as_pclass) };
+    if pat.is_passert { _no_bytes };
+    if pat.is_pgroup { let (_, inner) = pat.as_pgroup; _read_bytes(inner) };
+    if pat.is_psequence {
+        pat.as_psequence.to_iter.fold(_no_bytes, |p, bits| _bytes_union(_read_bytes(p), bits))
+    };
+    if pat.is_peither {
+        let (left, right) = pat.as_peither;
+        _bytes_union(_read_bytes(left), _read_bytes(right))
+    };
+    if pat.is_pquant { let (inner, _, _) = pat.as_pquant; _read_bytes(inner) };
+    undefined("_read_bytes: unknown pattern")
+);
+
+// A byte string every text a pattern matches holds, together with what the pattern may read before
+// it.
+//
+// A search that finds the string standing at a position knows a match holding that string begins
+// no earlier than `back_max` bytes before it, and no earlier than the run of bytes drawn from
+// `back_class` that ends there.
+type ForcedRun = unbox struct {
+    bytes: Array U8,        // the byte string every match holds
+    back_max: I64,          // most bytes the pattern may read before it
+    back_class: Array U64   // the byte values the pattern may read before it, one bit each
+};
+
+// What a pattern forces the text it matches to hold.
+type Forced = unbox struct {
+    // The one byte string the pattern matches, where it matches that one and no other.
+    exact: Option (Array U8),
+    // Sets of forced byte strings. Every text the pattern matches holds a member of each of these
+    // sets, so a search is free to take whichever set it likes and look for that set alone.
+    sets: Array (Array ForcedRun)
+};
+
+// A pattern that forces nothing.
+_forces_nothing : Forced;
+_forces_nothing = Forced { exact: none(), sets: Array::empty(0) };
+
+// A pattern that matches one byte string and no other, standing where nothing is read before it.
+//
+// # Parameters
+// * `bytes` - The byte string it matches.
+_forces_bytes : Array U8 -> Forced;
+_forces_bytes = |bytes| Forced {
+    exact: some(bytes),
+    sets: if bytes.get_size == 0 { Array::empty(0) } else {
+        [[ForcedRun { bytes: bytes, back_max: 0, back_class: _no_bytes }]]
+    }
+};
+
+// The runs of a set, each told that more may be read before it than it knew.
+//
+// # Parameters
+// * `more` - How many more bytes may be read before them.
+// * `bits` - The byte values those bytes may be drawn from.
+// * `runs` - The set to move back.
+_runs_after : I64 -> Array U64 -> Array ForcedRun -> Array ForcedRun;
+_runs_after = |more, bits, runs| (
+    runs.map(|run| run
+        .mod_back_max(|m| _read_sum(m, more))
+        .mod_back_class(_bytes_union(bits))
+    )
+);
+
+// The sets of two stretches a text may match either of, each set of the one taken together with
+// each set of the other.
+//
+// A text that matches either stretch holds a member of every set of that stretch, so a set of one
+// put together with a set of the other binds both.
+//
+// # Parameters
+// * `left` - The sets of the one.
+// * `right` - The sets of the other.
+_sets_together : Array (Array ForcedRun) -> Array (Array ForcedRun) -> Array (Array ForcedRun);
+_sets_together = |left, right| (
+    if left.get_size == 0 || right.get_size == 0 { Array::empty(0) };
+    left.to_iter.fold(Array::empty(_MAX_FORCED_SETS), |l, out|
+        right.to_iter.fold(out, |r, out|
+            if out.get_size >= _MAX_FORCED_SETS { out };
+            let both = l.append(r);
+            if both.get_size > _MAX_FORCED_MEMBERS { out };
+            out.push_back(both)
+        )
+    )
+);
+
+// What a sequence of patterns forces the text it matches to hold.
+//
+// Neighbouring stretches that each match one byte string and no other are read as one byte string,
+// which is longer and so stands in fewer places than either. A stretch that matches several breaks
+// the string being built and hands over whatever it forces on its own.
+//
+// # Parameters
+// * `pats` - The patterns, in the order the text meets them.
+_forced_of_sequence : Array Pattern -> Forced;
+_forced_of_sequence = |pats| (
+    let empty_run = Array::empty(_MAX_FORCED_LENGTH);
+    let start = (empty_run, 0, _no_bytes, 0, _no_bytes, Array::empty(_MAX_FORCED_SETS), true);
+    let (run, run_max, run_bits, _, _, sets, whole) = pats.to_iter.fold(start,
+        |pat, (run, run_max, run_bits, pre_max, pre_bits, sets, whole)|
+        let forced = forced_of(pat);
+        let next_max = _read_sum(pre_max, _max_read(pat));
+        let next_bits = _bytes_union(_read_bytes(pat), pre_bits);
+        if forced.@exact.is_some {
+            let more = forced.@exact.as_some;
+            let (run_max, run_bits) = if run.get_size == 0 { (pre_max, pre_bits) } else { (run_max, run_bits) };
+            // A string that would outgrow the room kept for it is broken here, and what follows
+            // starts a string of its own, so that every string kept stands in the text entire.
+            if run.get_size + more.get_size > _MAX_FORCED_LENGTH {
+                let sets = _closed_run(run, run_max, run_bits, sets);
+                (more, pre_max, pre_bits, next_max, next_bits, sets, false)
+            };
+            (run.append(more), run_max, run_bits, next_max, next_bits, sets, whole)
+        };
+        let sets = _closed_run(run, run_max, run_bits, sets);
+        let sets = forced.@sets.to_iter.fold(sets, |set, sets|
+            if sets.get_size >= _MAX_FORCED_SETS { sets };
+            sets.push_back(_runs_after(pre_max, pre_bits, set))
+        );
+        (empty_run, 0, _no_bytes, next_max, next_bits, sets, false)
+    );
+    Forced {
+        exact: if whole { some(run) } else { none() },
+        sets: _closed_run(run, run_max, run_bits, sets)
+    }
+);
+
+// The sets a run being built is put among, where it holds anything.
+//
+// # Parameters
+// * `run` - The byte string built so far.
+// * `run_max` - How many bytes the pattern may read before it.
+// * `run_bits` - The byte values those bytes may be drawn from.
+// * `sets` - The sets to put it among.
+_closed_run : Array U8 -> I64 -> Array U64 -> Array (Array ForcedRun) -> Array (Array ForcedRun);
+_closed_run = |run, run_max, run_bits, sets| (
+    if run.get_size == 0 { sets };
+    if sets.get_size >= _MAX_FORCED_SETS { sets };
+    sets.push_back([ForcedRun { bytes: run, back_max: run_max, back_class: run_bits }])
+);
+
+// A byte string written out a number of times over.
+//
+// # Parameters
+// * `bytes` - The byte string to write out.
+// * `times` - How many times to write it.
+_repeated : Array U8 -> I64 -> Array U8;
+_repeated = |bytes, times| (
+    Iterator::range(0, times).fold(Array::empty(bytes.get_size * times), |_, out| out.append(bytes))
+);
+
+// What a pattern forces the text it matches to hold.
+//
+// # Parameters
+// * `pat` - The pattern to read.
+forced_of : Pattern -> Forced;
+forced_of = |pat| (
+    if pat.is_pclass {
+        let lone = _lone_member(pat.as_pclass);
+        if lone < 0 { _forces_nothing };
+        _forces_bytes([lone.to_U8])
+    };
+    if pat.is_passert { _forces_bytes(Array::empty(0)) };
+    if pat.is_pgroup { let (_, inner) = pat.as_pgroup; forced_of(inner) };
+    if pat.is_psequence { _forced_of_sequence(pat.as_psequence) };
+    if pat.is_peither {
+        let (left, right) = pat.as_peither;
+        Forced { exact: none(), sets: _sets_together(forced_of(left).@sets, forced_of(right).@sets) }
+    };
+    if pat.is_pquant {
+        let (inner, least, most) = pat.as_pquant;
+        // A round the pattern may do without forces nothing.
+        if least == 0 { _forces_nothing };
+        let held = forced_of(inner);
+        if held.@exact.is_some && held.@exact.as_some.get_size > 0 {
+            let once = held.@exact.as_some;
+            let rounds = if once.get_size * least > _MAX_FORCED_LENGTH {
+                _MAX_FORCED_LENGTH / once.get_size
+            } else { least };
+            let run = _repeated(once, rounds);
+            Forced {
+                exact: if least == most && rounds == least { some(run) } else { none() },
+                sets: [[ForcedRun { bytes: run, back_max: 0, back_class: _no_bytes }]]
+            }
+        };
+        // What one round forces the whole forces, and the rounds before it may be backed over.
+        let before = _read_times(_max_read(inner), _read_sum(most, -1));
+        let bits = _read_bytes(inner);
+        Forced { exact: none(), sets: held.@sets.map(_runs_after(before, bits)) }
+    };
+    undefined("forced_of: unknown pattern")
+);

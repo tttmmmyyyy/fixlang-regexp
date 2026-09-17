@@ -7,7 +7,9 @@
 module RegExp.RegExpNFA;
 
 import RegExp.RegExpPattern::{
-    CharClass, PAssertion, Pattern, CharClass::contains, PAssertion::{is_pa_begin, is_pa_end}, 
+    CharClass, ForcedRun, PAssertion, Pattern, CharClass::contains, 
+    ForcedRun::{@back_class, @back_max, @bytes}, PAssertion::{is_pa_begin, is_pa_end}, 
+    forced_of, _bytes_union, Forced::@sets, 
     Pattern::{
         as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, is_passert, is_pclass, 
         is_peither, is_pgroup, is_pquant, is_psequence, psequence, _assign_group_number
@@ -20,7 +22,7 @@ import RegExp.SimpleParser::{
         run_parser_str
     }
 };
-import RegExp.StdBytes::{find_byte, find_bytes};
+import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import RegExp.StringEx::{substring, _unsafe_to_string};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
@@ -58,7 +60,11 @@ type NFA = unbox struct {
     // The character classes the nodes are guarded by, as one bit per byte value, four words to a
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
-    classes: Array U64
+    classes: Array U64,
+    // Sets of byte strings the pattern forces every text it matches to hold. Every match holds a
+    // member of each of these sets, so a search may look for whichever set the text it is over
+    // holds least often.
+    forced_sets: Array (Array ForcedRun)
 };
 
 namespace NFA {
@@ -70,7 +76,8 @@ namespace NFA {
         accepting_node: _INVALID_NODE_ID,
         group_count: 0,
         quant_bounds: Array::empty(0),
-        classes: Array::empty(0)
+        classes: Array::empty(0),
+        forced_sets: Array::empty(0)
     };
 
     // Adds a node that guards nothing and leads nowhere, and reports its id.
@@ -245,7 +252,7 @@ namespace NFA {
         let (nfa, accept_id) = nfa.new_node;
         let nfa = nfa.set_accepting_node(accept_id);
         let nfa = nfa.set_frag_output(frag, accept_id);
-        nfa
+        nfa.set_forced_sets(forced_of(pattern).@sets)
     );
 
 }
@@ -1100,6 +1107,12 @@ type DFA = box struct {
                                   // to look so that the choice costs no reference count
     absorbing: Array U8,          // per byte: `1` where reading it leaves every thread standing,
                                   // `2` where it does not, `0` where it has not been worked out
+    literals: Array (Array U8),   // the byte strings every match holds, which the scan looks for,
+                                  // empty where the scan reads for the bytes a match may begin with
+    literal_count: I64,           // how many `literals` holds, read where the scan chooses how to
+                                  // look so that the choice costs no reference count
+    back_max: I64,                // most bytes the pattern may read before a string of `literals`
+    back_class: Array U64,        // the byte values it may read before one, one bit each
     full: Bool                    // whether the states have outgrown what the scanner may take
 };
 
@@ -1131,6 +1144,10 @@ namespace DFA {
             prefix: Array::empty(0),
             prefix_size: 0,
             absorbing: Array::fill(256, 0_U8),
+            literals: Array::empty(0),
+            literal_count: 0,
+            back_max: 0,
+            back_class: Array::fill(4, 0_U64),
             full: false
         };
         let (_, dfa) = dfa._intern(Array::empty(0));
@@ -1671,26 +1688,18 @@ namespace DFA {
         let (best, _, dfa) = if from == 0 { dfa._attempt(bytes, length, 0) } else { (-1, 0, dfa) };
         if dfa.@full { (NFA::_search_threads(bytes, from, dfa.@nfa), dfa) };
         if best >= 0 { (dfa._match_with_groups(bytes, 0, best), dfa) };
-        // The table of which bytes carry the state a match begins in forward is read out of the
-        // scanner once for the walk. A field of the scanner is a field of a boxed value, so reading
-        // one raises and lowers a reference count, and the walk reads this table at every position
-        // it looks at. The scanner goes on holding it, so the first byte weighed here copies it,
-        // and the copy is what the scanner is left with: a byte is weighed at most once for each of
-        // the 256 there are, over the whole of a search.
-        let absorbing = dfa.@absorbing;
-        let (found, absorbing, dfa) = loop((max(from, 1), 0, absorbing, dfa), |(at, steps, absorbing, dfa)|
+        loop((max(from, 1), 0, dfa), |(at, steps, dfa)|
             let at = dfa._skip_bytes(bytes, length, at);
             if steps > _DFA_STEPS_PER_POSITION * (at - from) + _DFA_STEPS_GRACE {
-                break $ (NFA::_search_threads(bytes, at, dfa.@nfa), absorbing, dfa)
+                break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa)
             };
             let (best, bytes_read, dfa) = dfa._attempt(bytes, length, at);
-            if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), absorbing, dfa) };
-            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), absorbing, dfa) };
-            if at >= length { break $ (none(), absorbing, dfa) };
-            let (next, absorbing, dfa) = dfa._after_failure(bytes, length, at, absorbing);
-            continue $ (next, steps + bytes_read, absorbing, dfa)
-        );
-        (found, dfa.set_absorbing(absorbing))
+            if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa) };
+            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), dfa) };
+            if at >= length { break $ (none(), dfa) };
+            let (next, dfa) = dfa._after_failure(bytes, length, at);
+            continue $ (next, steps + bytes_read, dfa)
+        )
     );
 
     // Where the search goes on after no match was found at a position.
@@ -1708,17 +1717,19 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `length` - How many bytes there are.
     // * `at` - The position no match was found at.
-    // * `absorbing` - Which bytes carry that state forward, held out of the scanner.
     // * `dfa` - The scanner.
-    _after_failure: Array U8 -> I64 -> I64 -> Array U8 -> DFA -> (I64, Array U8, DFA);
-    _after_failure = |bytes, length, at, absorbing, dfa| (
-        loop((at, absorbing, dfa), |(at, absorbing, dfa)|
+    _after_failure: Array U8 -> I64 -> I64 -> DFA -> (I64, DFA);
+    _after_failure = |bytes, length, at, dfa| (
+        loop((at, dfa), |(at, dfa)|
+            // A field of the scanner is a field of a boxed value, so reading one raises and lowers
+            // a reference count. The table is read once here and stands for both the run passed
+            // over and the byte the run stopped at.
+            let absorbing = dfa.@absorbing;
             let at = _absorbed_to(bytes, absorbing, length, at);
-            if at + 1 >= length { break $ (at + 1, absorbing, dfa) };
+            if at + 1 >= length { break $ (at + 1, dfa) };
             let byte = bytes.@(at);
-            if absorbing.@(byte.to_I64) != 0_U8 { break $ (at + 1, absorbing, dfa) };
-            let (absorbing, dfa) = dfa._learn_absorbing(byte, absorbing);
-            continue $ (at, absorbing, dfa)
+            if absorbing.@(byte.to_I64) != 0_U8 { break $ (at + 1, dfa) };
+            continue $ (at, dfa._learn_absorbing(byte))
         )
     );
 
@@ -1744,13 +1755,12 @@ namespace DFA {
     //
     // # Parameters
     // * `byte` - The byte to weigh.
-    // * `absorbing` - The answers worked out so far, held out of the scanner.
     // * `dfa` - The scanner.
-    _learn_absorbing: U8 -> Array U8 -> DFA -> (Array U8, DFA);
-    _learn_absorbing = |byte, absorbing, dfa| (
+    _learn_absorbing: U8 -> DFA -> DFA;
+    _learn_absorbing = |byte, dfa| (
         let (next, dfa) = dfa._next(dfa.@interior, byte);
         let absorbs = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
-        (absorbing.set(byte.to_I64, if absorbs { 1_U8 } else { 2_U8 }), dfa)
+        dfa.mod_absorbing(set(byte.to_I64, if absorbs { 1_U8 } else { 2_U8 }))
     );
 
     // Whether every thread that decides what one state does next stands among the threads of
@@ -1800,6 +1810,7 @@ namespace DFA {
     // * `dfa` - The scanner, for the bytes a match may begin with.
     _skip_bytes: Array U8 -> I64 -> I64 -> DFA -> I64;
     _skip_bytes = |bytes, length, at, dfa| (
+        if dfa.@literal_count > 0 { dfa._skip_to_forced(bytes, length, at) };
         if dfa.@prefix_size >= 2 { bytes.find_bytes(dfa.@prefix, at).as_some_or(length) };
         let lone = dfa.@first_byte;
         if lone >= 0 { bytes.find_byte(lone.to_U8, at).as_some_or(length) };
@@ -1821,6 +1832,199 @@ namespace DFA {
             if at >= length { break $ length };
             if wanted._holds_byte(0, bytes.@(at)) { break $ at };
             continue $ at + 1
+        )
+    );
+
+    // The next position at or after a position where a match may begin, found by looking for the
+    // byte strings every match holds.
+    //
+    // A match beginning at or after `at` holds one of the strings at or after `at`, and every byte
+    // from where that match begins to where the string stands is one the pattern reads. So the
+    // first place any of the strings stands bounds where the next match may begin, and backing up
+    // from there over the bytes the pattern may read before the string finds that place.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `length` - How many bytes there are.
+    // * `at` - The position to look from.
+    // * `dfa` - The scanner, for the strings and for what may stand before them.
+    _skip_to_forced: Array U8 -> I64 -> I64 -> DFA -> I64;
+    _skip_to_forced = |bytes, length, at, dfa| (
+        // The strings stand in the order the text holds them most often, so the one looked for
+        // first bounds how far the rest are looked for.
+        let hit = dfa.@literals.to_iter.fold(length, |wanted, best|
+            bytes.find_bytes_within(wanted, at, best).as_some_or(best)
+        );
+        if hit >= length { length };
+        _backed_up_to(bytes, dfa.@back_class, dfa.@back_max, at, hit)
+    );
+
+    // How far back from where a forced byte string stands a match holding it may begin, stopping at
+    // a floor.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `back_class` - The byte values the pattern may read before the string, one bit each.
+    // * `back_max` - How many bytes the pattern may read before it.
+    // * `floor` - The position to stop at.
+    // * `at` - The position the string stands at.
+    _backed_up_to: Array U8 -> Array U64 -> I64 -> I64 -> I64 -> I64;
+    _backed_up_to = |bytes, back_class, back_max, floor, at| (
+        let stop = max(floor, at - back_max);
+        loop(at, |at|
+            if at <= stop { break $ at };
+            if !back_class._holds_byte(0, bytes.@(at - 1)) { break $ at };
+            continue $ at - 1
+        )
+    );
+
+    // How many bytes of the text are read to judge which set of forced byte strings to look for.
+    _FORCED_SAMPLE: I64;
+    _FORCED_SAMPLE = 16384;
+
+    // The scanner told which forced byte strings to look for, where looking for them beats reading
+    // for the bytes a match may begin with.
+    //
+    // Which set is worth looking for depends on the text: a string the text holds everywhere rules
+    // out nothing. So the sets are weighed against a stretch of the text the search is about to
+    // read, and the one met least often is taken where it is met less often than the bytes a match
+    // may begin with.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over.
+    // * `dfa` - The scanner.
+    _choose_forced_set: Array U8 -> DFA -> DFA;
+    _choose_forced_set = |bytes, dfa| (
+        let sets = dfa.@nfa.@forced_sets;
+        if sets.get_size == 0 { dfa };
+        // A forced beginning stands where every match begins, so it needs no backing up and nothing
+        // read from inside the pattern beats it.
+        if dfa.@prefix_size >= 2 { dfa };
+        let sample = min(bytes.get_size, _FORCED_SAMPLE);
+        let stops = _stops_of_first_bytes(bytes, sample, dfa.@first_bytes);
+        // Looking for a string costs a reading of its own on top of the walking, so a set is taken
+        // only where it rules out enough more than the bytes a match may begin with to pay for it.
+        let (best, _) = range(0, sets.get_size).fold((-1, stops / 2), |i, (best, fewest)|
+            let cost = _forced_cost(bytes, sample, sets.@(i));
+            if cost >= fewest { (best, fewest) };
+            (i, cost)
+        );
+        if best < 0 { dfa };
+        dfa._with_forced_set(bytes, sets.@(best))
+    );
+
+    // The scanner told to look for a set of forced byte strings.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over, which the strings are ordered against.
+    // * `set` - The set to look for.
+    // * `dfa` - The scanner.
+    _with_forced_set: Array U8 -> Array ForcedRun -> DFA -> DFA;
+    _with_forced_set = |bytes, set, dfa| (
+        let sample = min(bytes.get_size, _FORCED_SAMPLE);
+        let ordered = _by_falling_count(bytes, sample, set);
+        dfa.set_literals(ordered.map(@bytes))
+            .set_literal_count(ordered.get_size)
+            .set_back_max(set.to_iter.fold(0, |run, m| max(m, run.@back_max)))
+            .set_back_class(set.to_iter.fold(
+                Array::fill(4, 0_U64), |run, bits| _bytes_union(run.@back_class, bits)
+            ))
+    );
+
+    // How many positions a search hands the automaton over a stretch of the text as it stands,
+    // reading for the bytes a match may begin with. A run of them is handed over once, since the
+    // bytes that carry the state a match begins in forward are passed over after the first fails.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over.
+    // * `sample` - How many bytes of it to read.
+    // * `wanted` - The bytes a match may begin with, one bit each.
+    _stops_of_first_bytes: Array U8 -> I64 -> Array U64 -> I64;
+    _stops_of_first_bytes = |bytes, sample, wanted| (
+        range(0, sample).fold(0, |i, n|
+            if !wanted._holds_byte(0, bytes.@(i)) { n };
+            if i > 0 && wanted._holds_byte(0, bytes.@(i - 1)) { n };
+            n + 1
+        )
+    );
+
+    // How many positions a search would hand the automaton over a stretch of the text, were it to
+    // look for a set of forced byte strings: one for every place a string of the set stands, and
+    // one more for every position before it a match could begin at.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over.
+    // * `sample` - How many bytes of it to read.
+    // * `set` - The set to weigh.
+    _forced_cost: Array U8 -> I64 -> Array ForcedRun -> I64;
+    _forced_cost = |bytes, sample, set| (
+        let back_max = set.to_iter.fold(0, |run, m| max(m, run.@back_max));
+        let bits = set.to_iter.fold(
+            Array::fill(4, 0_U64), |run, bits| _bytes_union(run.@back_class, bits)
+        );
+        set.to_iter.fold(0, |run, cost|
+            cost + _positions_of(bytes, sample, run.@bytes, bits, back_max)
+        )
+    );
+
+    // A set of forced byte strings, ordered so that the one a stretch of the text holds most often
+    // stands first. A search looks for them in the order they stand in, and the one looked for
+    // first bounds how far the rest are looked for, so the commonest first leaves the least
+    // reading to the rest.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over.
+    // * `sample` - How many bytes of it to read.
+    // * `set` - The set to order.
+    _by_falling_count: Array U8 -> I64 -> Array ForcedRun -> Array ForcedRun;
+    _by_falling_count = |bytes, sample, set| (
+        let counted = set.map(|run| (_positions_of(bytes, sample, run.@bytes, Array::fill(4, 0_U64), 0), run));
+        // The sets are small, so the order is worked out by taking the largest that is left.
+        let (ordered, _) = range(0, counted.get_size).fold(
+            (Array::empty(counted.get_size), counted), |_, (ordered, left)|
+            let (best, _) = range(0, left.get_size).fold((0, -1), |i, (best, most)|
+                let (count, _) = left.@(i);
+                if count <= most { (best, most) };
+                (i, count)
+            );
+            let (_, run) = left.@(best);
+            (ordered.push_back(run), _without(best, left))
+        );
+        ordered
+    );
+
+    // An array with the item at a position taken out.
+    //
+    // # Parameters
+    // * `at` - The position to take out.
+    // * `items` - The array to take it out of.
+    _without: I64 -> Array a -> Array a;
+    _without = |at, items| (
+        range(0, items.get_size).fold(Array::empty(items.get_size), |i, out|
+            if i == at { out };
+            out.push_back(items.@(i))
+        )
+    );
+
+    // How many positions a search would hand the automaton over a stretch of the text, for one of
+    // the forced byte strings it looks for: every place the string stands, and every position
+    // before it a match holding that string could begin at.
+    //
+    // # Parameters
+    // * `bytes` - The text to read.
+    // * `sample` - How many bytes of it to read.
+    // * `wanted` - The byte string to look for.
+    // * `back_class` - The byte values the pattern may read before it, one bit each.
+    // * `back_max` - How many bytes the pattern may read before it.
+    _positions_of: Array U8 -> I64 -> Array U8 -> Array U64 -> I64 -> I64;
+    _positions_of = |bytes, sample, wanted, back_class, back_max| (
+        loop((0, 0), |(at, cost)|
+            if at >= sample { break $ cost };
+            let hit = bytes.find_bytes_within(wanted, at, sample);
+            if hit.is_none { break $ cost };
+            let hit = hit.as_some;
+            let begin = _backed_up_to(bytes, back_class, back_max, at, hit);
+            continue $ (hit + 1, cost + 1 + hit - begin)
         )
     );
 
@@ -1851,7 +2055,7 @@ namespace NFA {
     // * `nfa` - The automaton to run.
     search: Array U8 -> I64 -> NFA -> Option Groups;
     search = |bytes, from, nfa| (
-        let (found, _) = DFA::make(nfa).find(bytes, from);
+        let (found, _) = DFA::make(nfa)._choose_forced_set(bytes).find(bytes, from);
         found
     );
 
@@ -1863,7 +2067,8 @@ namespace NFA {
     search_all: Array U8 -> NFA -> Array Groups;
     search_all = |bytes, nfa| (
         let length = bytes.get_size;
-        let (matches, _, _) = loop((Array::empty(8), 0, DFA::make(nfa)), |(matches, from, dfa)|
+        let dfa = DFA::make(nfa)._choose_forced_set(bytes);
+        let (matches, _, _) = loop((Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
             let (opt, dfa) = dfa.find(bytes, from);
             if opt.is_none { break $ (matches, from, dfa) };

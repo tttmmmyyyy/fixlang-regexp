@@ -1,7 +1,10 @@
 module Test;
 
 import RegExp::RegExp::{compile, match_all, match_one, replace_all, @nfa};
-import RegExp.RegExpNFA::{Groups, NFA, DFA::_insert_at, NFA::{search, search_all, _search_threads}};
+import RegExp.RegExpNFA::{
+    DFA, Groups, NFA, DFA::{find, make, _insert_at, _with_forced_set}, 
+    NFA::{search, search_all, @forced_sets, _search_threads}
+};
 import Std::{
     loop, Array, I64, IO, String, U8, Array::{empty, pop_back, push_back, to_iter, @, @size}, 
     Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
@@ -296,6 +299,59 @@ _test_against_threads = (
     assert(|_| "the drawn patterns are met by the drawn strings", found >= _random_cases / 4)
 );
 
+// Every match the scanner finds while looking for a set of forced byte strings, the automaton
+// finds by following its threads, and no other.
+//
+// Which set a search looks for turns on the text it is over, so the scanner is held to the
+// automaton over every set the pattern offers. That is what tries a set that is wrong and that the
+// texts drawn here would have led the search past.
+_test_forced_sets: IO ();
+_test_forced_sets = (
+    let (_, tried) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260904 }, 0), |_, (draws, tried)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let (target, draws) = _draw_target(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, tried) };
+        let nfa = result.as_ok.@nfa;
+        // The text is written out twice over, so that a string the pattern forces stands in it more
+        // than once and the scanner has to go on after the first match it finds.
+        let doubled = target + target;
+        let bytes = doubled.get_bytes.pop_back;
+        let name = _named(pattern, "g", doubled);
+        let wanted = _search_all_threads(bytes, nfa);
+        let sets = nfa.@forced_sets;
+        let tried = *range(0, sets.@size).fold_m(tried, |i, tried|
+            let dfa = DFA::make(nfa)._with_forced_set(bytes, sets.@(i));
+            assert_eq(|_| name + " forced set " + i.to_string, _search_all_by(bytes, dfa), wanted);;
+            pure $ tried + 1
+        );
+        pure $ (draws, tried)
+    );
+    // The draws are held to producing work. A generator that stopped producing patterns that force
+    // anything would let every case agree without a set having been looked for at all.
+    assert(|_| "the patterns drawn force byte strings", tried >= _random_cases / 4)
+);
+
+// Every match a scanner finds over a text, taken one after another as a search takes them.
+//
+// # Parameters
+// * `bytes` - The text to search.
+// * `dfa` - The scanner to search with.
+_search_all_by: Array U8 -> DFA -> Array Groups;
+_search_all_by = |bytes, dfa| (
+    let length = bytes.@size;
+    let (matches, _, _) = loop((Array::empty(8), 0, dfa), |(matches, from, dfa)|
+        if from > length { break $ (matches, from, dfa) };
+        let (opt, dfa) = dfa.find(bytes, from);
+        if opt.is_none { break $ (matches, from, dfa) };
+        let groups = opt.as_some;
+        let (begin, end) = groups.@(0);
+        continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 }, dfa)
+    );
+    matches
+);
+
 // A drawn string of `a`s and `b`s of the given length. What carries the scanner past the states it
 // may hold is a string whose stretches of twenty bytes are nearly all different; drawing the bytes
 // gives that, where writing the string out would mean spelling every byte.
@@ -389,6 +445,7 @@ test = (
         )
     );;
     _test_against_threads;;
+    _test_forced_sets;;
     _test_beyond_bounds;;
     _test_ordered_insertion;;
     pure()
