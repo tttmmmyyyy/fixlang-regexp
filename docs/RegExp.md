@@ -22,6 +22,51 @@ And the null character (U+0000) cannot be used in Fix strings.
 
 ## Values
 
+### namespace RegExp::Matcher
+
+#### match_all
+
+Type: `Std::String -> RegExp::Matcher -> (Std::Array (Std::Array Std::String), RegExp::Matcher)`
+
+`matcher.match_all(target)` matches `target` against the regular expression, and reports the
+scanner as the match left it.
+
+What it reports is what `RegExp::match_all` reports.
+
+##### Parameters
+
+* `target` - The string to match against.
+* `matcher` - The regular expression and its scanner.
+
+#### match_one
+
+Type: `Std::String -> RegExp::Matcher -> (Std::Result Std::ErrMsg (Std::Array Std::String), RegExp::Matcher)`
+
+`matcher.match_one(target)` matches `target` against the regular expression, and reports the
+scanner as the match left it.
+
+What it reports is what `RegExp::match_one` reports.
+
+##### Parameters
+
+* `target` - The string to match against.
+* `matcher` - The regular expression and its scanner.
+
+#### replace_all
+
+Type: `Std::String -> Std::String -> RegExp::Matcher -> (Std::String, RegExp::Matcher)`
+
+`matcher.replace_all(target, replacement)` replaces every stretch of `target` the regular
+expression matches with `replacement`, and reports the scanner as the work left it.
+
+What it reports is what `RegExp::replace_all` reports.
+
+##### Parameters
+
+* `target` - The string to work over.
+* `replacement` - The text to put in place of every match.
+* `matcher` - The regular expression and its scanner.
+
 ### namespace RegExp::RegExp
 
 #### compile
@@ -75,6 +120,24 @@ If the match against the regular expression fails, an error `"NotMatch"` is repo
 This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
 function of JavaScript.
 
+#### matcher
+
+Type: `RegExp::RegExp -> RegExp::Matcher`
+
+`regexp.matcher` is the regular expression together with a scanner of its own.
+
+A scanner works out what the automaton does with a byte the first time it reads that byte in
+that state, and keeps the answer. `Matcher`'s matching functions hand the scanner back, so a
+program that matches many strings against one regular expression pays for the working out
+once, where `RegExp`'s own matching functions make a scanner for each match and let it go.
+
+Example:
+```
+let matcher = RegExp::compile("[a-z]+", "g").as_ok.matcher;
+let (first, matcher) = matcher.match_all("abc def");
+let (second, matcher) = matcher.match_all("ghi jkl");
+```
+
 #### replace_all
 
 Type: `Std::String -> Std::String -> RegExp::RegExp -> Std::String`
@@ -100,6 +163,21 @@ Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
 ## Types and aliases
 
 ### namespace RegExp
+
+#### Matcher
+
+Defined as: `type Matcher = unbox struct { ...fields... }`
+
+A compiled regular expression together with the scanner it has built so far. See
+`RegExp::matcher`.
+
+##### field `global`
+
+Type: `Std::Bool`
+
+##### field `dfa`
+
+Type: `RegExp.RegExpNFA::DFA`
 
 #### RegExp
 

@@ -42,6 +42,21 @@ than reading the text.
 * `from` - The position at or after which the match has to begin.
 * `dfa` - The scanner.
 
+#### forced_beginning
+
+Type: `RegExp.RegExpNFA::NFA -> Std::Array Std::U8`
+
+The bytes every match begins with, as far as they are forced.
+
+Working them out means walking the automaton, and the states the walk takes are thrown away
+with the scanner it walks. The answer is worked out once for the automaton and kept in its
+`prefix`, so that a search over a short string, which makes a scanner of its own, does none
+of the walking.
+
+##### Parameters
+
+* `nfa` - The automaton to walk.
+
 #### make
 
 Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::DFA`
@@ -51,6 +66,35 @@ A scanner that has walked nothing yet.
 ##### Parameters
 
 * `nfa` - The automaton to walk.
+
+#### search_every
+
+Type: `Std::Array Std::U8 -> RegExp.RegExpNFA::DFA -> (Std::Array RegExp.RegExpNFA::Groups, RegExp.RegExpNFA::DFA)`
+
+Every match a scanner finds, taken left to right, none of them overlapping another, together
+with the scanner as the search left it.
+
+##### Parameters
+
+* `bytes` - The bytes to read.
+* `dfa` - The scanner to search with.
+
+#### search_from
+
+Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::DFA -> (Std::Option RegExp.RegExpNFA::Groups, RegExp.RegExpNFA::DFA)`
+
+The leftmost match beginning at or after a position, taking the longest of those that begin
+at the same place, together with the scanner as the search left it.
+
+A scanner works out what the automaton does with a byte the first time it reads that byte in
+that state, and keeps the answer, so a search handed a scanner back reads what the searches
+before it worked out.
+
+##### Parameters
+
+* `bytes` - The bytes to read.
+* `from` - The position at or after which the match has to begin.
+* `dfa` - The scanner to search with.
 
 ### namespace RegExp.RegExpNFA::NFA
 
@@ -324,7 +368,7 @@ Type: `Std::Array Std::I64`
 
 Type: `Std::Array Std::I64`
 
-##### field `ordered`
+##### field `ordered_states`
 
 Type: `Std::Array Std::I64`
 
@@ -340,29 +384,63 @@ Type: `Std::Array Std::Bool`
 
 Type: `Std::Array Std::I64`
 
-##### field `untaken`
-
-Type: `Std::Array Std::I64`
-
-`1` where it does, `0` where it does not, `-1` until asked
-
 ##### field `interior`
 
 Type: `Std::I64`
+
+`1` where it does, `0` where it does not, `-1` until asked
 
 ##### field `first_bytes`
 
 Type: `Std::Array Std::U64`
 
+##### field `first_byte`
+
+Type: `Std::I64`
+
+##### field `prefix`
+
+Type: `Std::Array Std::U8`
+
+begin with several bytes or with none
+
+##### field `prefix_size`
+
+Type: `Std::I64`
+
+a match may begin with is not forced
+
 ##### field `absorbing`
 
 Type: `Std::Array Std::U8`
 
+to look so that the choice costs no reference count
+
+##### field `forced_strings`
+
+Type: `Std::Array (Std::Array Std::U8)`
+
+`2` where it does not, `0` where it has not been worked out
+
+##### field `forced_count`
+
+Type: `Std::I64`
+
+empty where the scan reads for the bytes a match may begin with
+
+##### field `back_max`
+
+Type: `Std::I64`
+
+look so that the choice costs no reference count
+
+##### field `back_class`
+
+Type: `Std::Array Std::U64`
+
 ##### field `full`
 
 Type: `Std::Bool`
-
-`2` where it does not, `0` where it has not been worked out
 
 #### Group
 
@@ -379,13 +457,17 @@ The groups a match captured, the whole match first. Group `n` of the pattern sta
 
 #### NFA
 
-Defined as: `type NFA = unbox struct { ...fields... }`
+Defined as: `type NFA = box struct { ...fields... }`
 
 The automaton a pattern compiles to.
 
 A node is a place a thread may stand at, and the transitions out of it say where the thread may
 go next. A node may offer a thread more than one way on, so a search follows several threads at
 once.
+
+It is boxed because a scanner holds one and reads it back at every match it reports: boxed, that
+reading raises one reference count for the automaton, where unboxed it raises one for each array
+the automaton holds.
 
 ##### field `nodes`
 
@@ -414,6 +496,21 @@ Type: `Std::Array Std::U64`
 The character classes the nodes are guarded by, as one bit per byte value, four words to a
 class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
 so that walking the nodes costs no reference counting at all.
+
+##### field `forced_sets`
+
+Type: `Std::Array (Std::Array RegExp.RegExpPattern::ForcedRun)`
+
+Sets of byte strings the pattern forces every text it matches to hold. Every match holds a
+member of each of these sets, so a search may look for whichever set the text it is over
+holds least often.
+
+##### field `prefix`
+
+Type: `Std::Array Std::U8`
+
+The bytes every match begins with. Working them out means walking the automaton, and doing
+it here leaves every scanner made from this automaton with nothing to walk.
 
 #### NFAFrag
 
