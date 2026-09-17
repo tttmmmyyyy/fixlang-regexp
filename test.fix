@@ -4,12 +4,15 @@ import RegExp::{Matcher, Matcher::{match_all, match_one, replace_all}};
 import RegExp::RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa};
 import RegExp.RegExpNFA::{
     DFA, Groups, NFA, DFA::{find, make, _insert_at, _with_forced_set}, 
-    NFA::{search, search_all, @forced_sets, _search_threads}
+    NFA::{search, search_all, @forced_sets, @prefix, _search_threads}
 };
+import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
-    loop, Array, I64, IO, String, U8, Array::{empty, pop_back, push_back, to_iter, @, @size}, 
+    loop, Array, Bool, I64, IO, Option, String, U8, 
+    Array::{empty, pop_back, push_back, to_iter, @, @size}, 
     Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
-    Monad::pure, Option::{as_some, is_none}, Result::{as_ok, is_err}, String::get_bytes, 
+    Monad::pure, Option::{as_some, is_none, none, some}, Result::{as_ok, is_err}, 
+    String::get_bytes, 
     ToString::to_string
 };
 
@@ -116,6 +119,12 @@ _match_cases = [
     MatchCase { pattern: "\\d+", flags: "g", target: "\u3042\u3061\u306f12\u30443345",
                 one: ["12", "3345"], all: [["12"], ["3345"]] },
 
+    // A run of bytes every match begins with is taken from the automaton, and the run stops where
+    // a match can end: `x*$` is met where the input ends, so nothing is forced past that and the
+    // `x` before the end is not read past.
+    MatchCase { pattern: "x*$", flags: "g", target: "bbx1ax",
+                one: ["x", ""], all: [["x"], [""]] },
+
     // Nothing to match.
     MatchCase { pattern: "z", flags: "", target: "abc", one: [], all: [] },
     MatchCase { pattern: "z", flags: "g", target: "abc", one: [], all: [] }
@@ -134,6 +143,79 @@ _replace_cases = [
                   replacement: "$2$1", result: "baba" },
     ReplaceCase { pattern: "x", flags: "g", target: "abc", replacement: "-", result: "abc" }
 ];
+
+// A case for the byte searches the automaton reads text with.
+type BytesCase = unbox struct {
+    wanted: String,      // the bytes to look for
+    from: I64,           // the position to look from
+    text: String,        // the bytes to read
+    found: Option I64    // where they stand, `none` where they stand nowhere at or after `from`
+};
+
+// The cases the byte searches are held to. `find_bytes_within` is held to the same answers with the
+// looking stopped at the end of the text, since no run begins past that, and `find_byte` is held to
+// them wherever the bytes looked for are one byte.
+_bytes_cases: Array BytesCase;
+_bytes_cases = [
+    BytesCase { wanted: "b", from: 0, text: "abcabc", found: some(1) },
+    BytesCase { wanted: "b", from: 2, text: "abcabc", found: some(4) },
+    BytesCase { wanted: "z", from: 0, text: "abc", found: none() },
+    // The end of the text, and a text holding no bytes at all.
+    BytesCase { wanted: "c", from: 3, text: "abc", found: none() },
+    BytesCase { wanted: "a", from: 0, text: "", found: none() },
+    BytesCase { wanted: "bc", from: 0, text: "abcabc", found: some(1) },
+    BytesCase { wanted: "bc", from: 2, text: "abcabc", found: some(4) },
+    // The first byte of the run stands where the whole run does not, so the reading goes on from
+    // the byte after it.
+    BytesCase { wanted: "aab", from: 0, text: "aaab", found: some(1) },
+    BytesCase { wanted: "abd", from: 0, text: "abcabd", found: some(3) },
+    // A run reaching past the end of the text stands nowhere.
+    BytesCase { wanted: "abc", from: 4, text: "abcabc", found: none() },
+    BytesCase { wanted: "abcd", from: 0, text: "abc", found: none() },
+    // No bytes at all stand at every position the text reaches.
+    BytesCase { wanted: "", from: 2, text: "abc", found: some(2) },
+    BytesCase { wanted: "", from: 3, text: "abc", found: some(3) },
+    BytesCase { wanted: "", from: 4, text: "abc", found: none() }
+];
+
+// The cases the bounded search is held to: the bytes to look for, the position to look from, the
+// position to stop looking at, the text to read, and where the bytes stand.
+_bounded_bytes_cases: Array (String, I64, I64, String, Option I64);
+_bounded_bytes_cases = [
+    ("bc", 0, 6, "abcabc", some(1)),
+    ("bc", 2, 5, "abcabc", some(4)),
+    // The run at 4 begins past the position the looking stops at.
+    ("bc", 2, 3, "abcabc", none()),
+    ("abcd", 0, 6, "abc", none())
+];
+
+// The byte searches report the first position at or after the one they are given where the bytes
+// they look for stand.
+_test_byte_searches: IO ();
+_test_byte_searches = (
+    _bytes_cases.to_iter.fold_m((), |case, _|
+        let wanted = case.@wanted.get_bytes.pop_back;
+        let text = case.@text.get_bytes.pop_back;
+        let name = "looking for " + case.@wanted.to_string + " in " + case.@text.to_string
+            + " from " + case.@from.to_string;
+        assert_eq(|_| name + " find_bytes", text.find_bytes(wanted, case.@from), case.@found);;
+        assert_eq(
+            |_| name + " find_bytes_within",
+            text.find_bytes_within(wanted, case.@from, text.@size),
+            case.@found
+        );;
+        if wanted.@size != 1 { pure() };
+        assert_eq(|_| name + " find_byte", text.find_byte(wanted.@(0), case.@from), case.@found)
+    );;
+    _bounded_bytes_cases.to_iter.fold_m((), |(wanted, from, limit, text, found), _|
+        assert_eq(
+            |_| "looking for " + wanted.to_string + " in " + text.to_string + " from "
+                + from.to_string + " up to " + limit.to_string,
+            text.get_bytes.pop_back.find_bytes_within(wanted.get_bytes.pop_back, from, limit),
+            found
+        )
+    )
+);
 
 // Names a case, so that a failure says which one failed.
 //
@@ -314,24 +396,121 @@ _test_forced_sets = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, tried) };
-        let nfa = result.as_ok.@nfa;
         // The text is written out twice over, so that a string the pattern forces stands in it more
         // than once and the scanner has to go on after the first match it finds.
-        let doubled = target + target;
-        let bytes = doubled.get_bytes.pop_back;
-        let name = _named(pattern, "g", doubled);
-        let wanted = _search_all_threads(bytes, nfa);
-        let sets = nfa.@forced_sets;
-        let tried = *range(0, sets.@size).fold_m(tried, |i, tried|
-            let dfa = DFA::make(nfa)._with_forced_set(bytes, sets.@(i));
-            assert_eq(|_| name + " forced set " + i.to_string, _search_all_by(bytes, dfa), wanted);;
-            pure $ tried + 1
-        );
+        let tried = *_forced_sets_agree(result.as_ok.@nfa, pattern, target + target, tried);
         pure $ (draws, tried)
     );
     // The draws are held to producing work. A generator that stopped producing patterns that force
     // anything would let every case agree without a set having been looked for at all.
     assert(|_| "the patterns drawn force byte strings", tried >= _random_cases / 4)
+);
+
+
+// Holds the scanner, looking for each set of forced byte strings the automaton offers in turn, to
+// what the automaton finds by following its threads, and reports how many sets were tried.
+//
+// # Parameters
+// * `nfa` - The automaton to search with.
+// * `pattern` - The pattern it was compiled from, which names a failure.
+// * `target` - The text to search.
+// * `tried` - How many sets were tried before this text.
+_forced_sets_agree: NFA -> String -> String -> I64 -> IO I64;
+_forced_sets_agree = |nfa, pattern, target, tried| (
+    let bytes = target.get_bytes.pop_back;
+    let name = _named(pattern, "g", target);
+    let wanted = _search_all_threads(bytes, nfa);
+    let sets = nfa.@forced_sets;
+    range(0, sets.@size).fold_m(tried, |i, tried|
+        let dfa = DFA::make(nfa)._with_forced_set(bytes, sets.@(i));
+        assert_eq(|_| name + " forced set " + i.to_string, _search_all_by(bytes, dfa), wanted);;
+        pure $ tried + 1
+    )
+);
+
+// The patterns whose forced byte strings take shapes a drawn pattern does not reach, together with
+// texts holding those strings where no match is. A run longer than the room kept for one is broken
+// in two, and what may be read before the second run is what says how far back a match holding it
+// begins; a run repeated past that room is cut to it.
+_forced_shape_cases: Array (String, String);
+_forced_shape_cases = [
+    ("abcdefghijklmnopqr", "zzqrz abcdefghijklmnopqr qr"),
+    ("[ab]+abcdefghijklmnopqr", "qr bababcdefghijklmnopqr abcdefghijklmnop"),
+    ("(ab){10}", "ababab abababababababababab"),
+    ("a{20}", "aaaa aaaaaaaaaaaaaaaaaaaaaa")
+];
+
+// Holds the scanner to the automaton over the patterns whose forced byte strings take shapes a
+// drawn pattern does not reach.
+_test_forced_shapes: IO ();
+_test_forced_shapes = (
+    _forced_shape_cases.to_iter.fold_m(0, |(pattern, target), tried|
+        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let next = *_forced_sets_agree(nfa, pattern, target, tried);
+        // Each case is written to force byte strings, so one that stopped forcing any would say so
+        // here rather than go on passing with nothing looked for.
+        assert(|_| _named(pattern, "g", target) + " forces byte strings", next > tried);;
+        pure $ next
+    );;
+    pure()
+);
+
+// The bytes `NFA::compile` works out as the beginning of every match are the beginning of every
+// match there is.
+//
+// A search passes over every position the run of bytes does not stand at, so a run reaching past
+// what the pattern forces takes the search past matches. Holding the run to the matches says so
+// wherever a drawn text holds one, rather than only where the text would have led the search past
+// one.
+_test_forced_beginning: IO ();
+_test_forced_beginning = (
+    let (_, checked) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260918 }, 0), |_, (draws, checked)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let (target, draws) = _draw_target(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, checked) };
+        let nfa = result.as_ok.@nfa;
+        let prefix = nfa.@prefix;
+        if prefix.@size == 0 { pure $ (draws, checked) };
+        let bytes = target.get_bytes.pop_back;
+        let name = _named(pattern, "g", target);
+        let checked = *_search_all_threads(bytes, nfa).to_iter.fold_m(checked, |groups, checked|
+            let (begin, end) = groups.@(0);
+            // The ends of the input are where an assertion may hold, so a match beginning at either
+            // is looked for from a state of its own and is never passed over.
+            if begin == 0 || begin == bytes.@size { pure $ checked };
+            assert(
+                |_| name + " match at " + begin.to_string + " begins with the forced bytes",
+                _begins_with(bytes, begin, end, prefix)
+            );;
+            pure $ checked + 1
+        );
+        pure $ (draws, checked)
+    );
+    // The draws are held to producing work. A generator that stopped producing patterns that force
+    // a beginning would let every case agree with no run having been held to anything.
+    assert(
+        |_| "the drawn patterns force a beginning the drawn strings meet",
+        checked >= _random_cases / 10
+    )
+);
+
+// Whether a stretch of the text begins with a byte string.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `begin` - Where the stretch begins.
+// * `end` - Where it ends.
+// * `wanted` - The byte string it is to begin with.
+_begins_with: Array U8 -> I64 -> I64 -> Array U8 -> Bool;
+_begins_with = |bytes, begin, end, wanted| (
+    if end - begin < wanted.@size { false };
+    loop(0, |k|
+        if k == wanted.@size { break $ true };
+        if bytes.@(begin + k) != wanted.@(k) { break $ false };
+        continue $ k + 1
+    )
 );
 
 // A scanner kept from one match to the next reports what a scanner made for each match reports.
@@ -481,8 +660,11 @@ test = (
             case.@result
         )
     );;
+    _test_byte_searches;;
     _test_against_threads;;
     _test_forced_sets;;
+    _test_forced_shapes;;
+    _test_forced_beginning;;
     _test_kept_scanner;;
     _test_beyond_bounds;;
     _test_ordered_insertion;;
