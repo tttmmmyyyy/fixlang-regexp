@@ -87,7 +87,7 @@ find_bytes_within : Array U8 -> I64 -> I64 -> Array U8 -> Option I64;
 find_bytes_within = |wanted, from, limit, bytes| (
     let length = bytes.get_size;
     let wanted_length = wanted.get_size;
-    if wanted_length == 0 { if from <= length { some(from) } else { none() } };
+    if wanted_length == 0 { if from <= min(limit, length) { some(from) } else { none() } };
     // The last position a run of `wanted_length` bytes can begin at. `limit` bounds where a run
     // begins: a run beginning before `limit` stands earlier than one beginning at it, whatever it
     // reaches, and the earliest is what is being looked for.

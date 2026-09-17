@@ -9,7 +9,7 @@ module RegExp.RegExpNFA;
 import RegExp.RegExpPattern::{
     CharClass, ForcedRun, PAssertion, Pattern, CharClass::contains, 
     ForcedRun::{@back_class, @back_max, @bytes}, PAssertion::{is_pa_begin, is_pa_end}, 
-    forced_of, _bytes_union, Forced::@sets, 
+    forced_of, _bytes_union, _no_bytes, Forced::@sets, 
     Pattern::{
         as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, is_passert, is_pclass, 
         is_peither, is_pgroup, is_pquant, is_psequence, psequence, _assign_group_number
@@ -1153,7 +1153,7 @@ namespace DFA {
             accepts: Array::empty(16),
             accepts_at_end: Array::empty(16),
             interior: _DEAD_STATE,
-            first_bytes: Array::fill(4, 0_U64),
+            first_bytes: _no_bytes,
             first_byte: -1,
             prefix: Array::empty(0),
             prefix_size: 0,
@@ -1161,7 +1161,7 @@ namespace DFA {
             literals: Array::empty(0),
             literal_count: 0,
             back_max: 0,
-            back_class: Array::fill(4, 0_U64),
+            back_class: _no_bytes,
             full: false
         };
         let (_, dfa) = dfa._intern(Array::empty(0));
@@ -1960,7 +1960,19 @@ namespace DFA {
     _without_forced_set: DFA -> DFA;
     _without_forced_set = |dfa| (
         if dfa.@literal_count == 0 { dfa };
-        dfa.set_literals(Array::empty(0)).set_literal_count(0)
+        dfa._set_literals(Array::empty(0))
+    );
+
+    // The scanner told which byte strings to look for. `literal_count` holds what `literals` holds,
+    // so this is where both are written.
+    //
+    // # Parameters
+    // * `literals` - The byte strings to look for, none of them where the scan is to read for the
+    //   bytes a match may begin with.
+    // * `dfa` - The scanner.
+    _set_literals: Array (Array U8) -> DFA -> DFA;
+    _set_literals = |literals, dfa| (
+        dfa.set_literal_count(literals.get_size).set_literals(literals)
     );
 
     // The leftmost match beginning at or after a position, taking the longest of those that begin
@@ -2009,11 +2021,10 @@ namespace DFA {
     _with_forced_set = |bytes, set, dfa| (
         let sample = min(bytes.get_size, _FORCED_SAMPLE);
         let ordered = _by_falling_count(bytes, sample, set);
-        dfa.set_literals(ordered.map(@bytes))
-            .set_literal_count(ordered.get_size)
+        dfa._set_literals(ordered.map(@bytes))
             .set_back_max(set.to_iter.fold(0, |run, m| max(m, run.@back_max)))
             .set_back_class(set.to_iter.fold(
-                Array::fill(4, 0_U64), |run, bits| _bytes_union(run.@back_class, bits)
+                _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
             ))
     );
 
@@ -2046,7 +2057,7 @@ namespace DFA {
     _forced_cost = |bytes, sample, set| (
         let back_max = set.to_iter.fold(0, |run, m| max(m, run.@back_max));
         let bits = set.to_iter.fold(
-            Array::fill(4, 0_U64), |run, bits| _bytes_union(run.@back_class, bits)
+            _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
         );
         set.to_iter.fold(0, |run, cost|
             cost + _positions_of(bytes, sample, run.@bytes, bits, back_max)
@@ -2064,7 +2075,7 @@ namespace DFA {
     // * `set` - The set to order.
     _by_falling_count: Array U8 -> I64 -> Array ForcedRun -> Array ForcedRun;
     _by_falling_count = |bytes, sample, set| (
-        let counted = set.map(|run| (_positions_of(bytes, sample, run.@bytes, Array::fill(4, 0_U64), 0), run));
+        let counted = set.map(|run| (_positions_of(bytes, sample, run.@bytes, _no_bytes, 0), run));
         // The sets are small, so the order is worked out by taking the largest that is left.
         let (ordered, _) = range(0, counted.get_size).fold(
             (Array::empty(counted.get_size), counted), |_, (ordered, left)|
