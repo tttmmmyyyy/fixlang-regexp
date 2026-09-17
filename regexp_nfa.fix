@@ -9,7 +9,7 @@ module RegExp.RegExpNFA;
 import RegExp.RegExpPattern::{
     CharClass, ForcedRun, PAssertion, Pattern, CharClass::contains, 
     ForcedRun::{@back_class, @back_max, @bytes}, PAssertion::{is_pa_begin, is_pa_end}, 
-    forced_of, _bytes_union, _no_bytes, Forced::@sets, 
+    forced_of, _bytes_of_class, _bytes_union, _no_bytes, Forced::@sets, 
     Pattern::{
         as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, is_passert, is_pclass, 
         is_peither, is_pgroup, is_pquant, is_psequence, psequence, _assign_group_number
@@ -110,15 +110,8 @@ namespace NFA {
     new_class: CharClass -> NFA -> (NFA, I64);
     new_class = |cls, nfa| (
         let base = nfa.@classes.get_size;
-        let nfa = nfa.mod_classes(|words|
-            range(0, 4).fold(words, |w, words|
-                words.push_back(range(0, 64).fold(0_U64, |b, mask|
-                    if !cls.contains((w * 64 + b).to_U8) { mask };
-                    mask.bit_or(1_U64.shift_left(b.to_U64))
-                ))
-            )
-        );
-        (nfa, base)
+        let (bits, _) = _bytes_of_class(cls);
+        (nfa.mod_classes(append(bits)), base)
     );
 
     // Whether a byte belongs to the class whose words begin at a position.
@@ -2038,11 +2031,21 @@ namespace DFA {
     _with_forced_set = |bytes, set, dfa| (
         let sample = min(bytes.get_size, _FORCED_SAMPLE);
         let runs = _by_falling_count(bytes, sample, set);
-        dfa._set_forced_strings(runs.map(@bytes))
-            .set_back_max(set.to_iter.fold(0, |run, most| max(most, run.@back_max)))
-            .set_back_class(set.to_iter.fold(
-                _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
-            ))
+        let (back_max, back_class) = _backing_of(set);
+        dfa._set_forced_strings(runs.map(@bytes)).set_back_max(back_max).set_back_class(back_class)
+    );
+
+    // What a set of forced byte strings says may stand before one of them: how many bytes at most,
+    // and which byte values. A search looks for the whole set at once, so what it may back over is
+    // what any member of the set may.
+    //
+    // # Parameters
+    // * `set` - The set to read.
+    _backing_of: Array ForcedRun -> (I64, Array U64);
+    _backing_of = |set| (
+        set.to_iter.fold((0, _no_bytes), |run, (most, bits)|
+            (max(most, run.@back_max), _bytes_union(run.@back_class, bits))
+        )
     );
 
     // How many positions a search hands the automaton over a stretch of the text as it stands,
@@ -2072,10 +2075,7 @@ namespace DFA {
     // * `set` - The set to weigh.
     _stops_of_forced_set: Array U8 -> I64 -> Array ForcedRun -> I64;
     _stops_of_forced_set = |bytes, sample, set| (
-        let back_max = set.to_iter.fold(0, |run, most| max(most, run.@back_max));
-        let bits = set.to_iter.fold(
-            _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
-        );
+        let (back_max, bits) = _backing_of(set);
         set.to_iter.fold(0, |run, cost|
             cost + _stops_of_string(bytes, sample, run.@bytes, bits, back_max)
         )
