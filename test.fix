@@ -1,6 +1,7 @@
 module Test;
 
-import RegExp::RegExp::{compile, match_all, match_one, replace_all, @nfa};
+import RegExp::{Matcher, Matcher::{match_all, match_one, replace_all}};
+import RegExp::RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa};
 import RegExp.RegExpNFA::{
     DFA, Groups, NFA, DFA::{find, make, _insert_at, _with_forced_set}, 
     NFA::{search, search_all, @forced_sets, _search_threads}
@@ -333,6 +334,42 @@ _test_forced_sets = (
     assert(|_| "the patterns drawn force byte strings", tried >= _random_cases / 4)
 );
 
+// A scanner kept from one match to the next reports what a scanner made for each match reports.
+//
+// A scanner keeps what it works out, so what it holds when a match begins depends on the matches
+// before it. Several strings are matched with one scanner here, so that a scanner carrying what
+// one string taught it is what the next string is matched with.
+_test_kept_scanner: IO ();
+_test_kept_scanner = (
+    let (_, held) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260917 }, 0), |_, (draws, held)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, held) };
+        let regexp = result.as_ok;
+        let (targets, draws) = range(0, 4).fold((Array::empty(4), draws), |_, (targets, draws)|
+            let (target, draws) = _draw_target(draws);
+            (targets.push_back(target), draws)
+        );
+        let (_, held) = *targets.to_iter.fold_m((regexp.matcher, held), |target, (matcher, held)|
+            let name = _named(pattern, "g", target);
+            let (all, matcher) = matcher.match_all(target);
+            assert_eq(|_| name + " kept match_all", all, regexp.match_all(target));;
+            let (one, matcher) = matcher.match_one(target);
+            assert_eq(|_| name + " kept match_one", one, regexp.match_one(target));;
+            let (replaced, matcher) = matcher.replace_all(target, "<$&>");
+            assert_eq(
+                |_| name + " kept replace_all", replaced, regexp.replace_all(target, "<$&>")
+            );;
+            pure $ (matcher, held + all.@size)
+        );
+        pure $ (draws, held)
+    );
+    // The draws are held to producing work. A generator that stopped producing strings the patterns
+    // are met by would let every case agree without a scanner having carried anything.
+    assert(|_| "the kept scanner finds matches", held >= _random_cases / 4)
+);
+
 // Every match a scanner finds over a text, taken one after another as a search takes them.
 //
 // # Parameters
@@ -446,6 +483,7 @@ test = (
     );;
     _test_against_threads;;
     _test_forced_sets;;
+    _test_kept_scanner;;
     _test_beyond_bounds;;
     _test_ordered_insertion;;
     pure()

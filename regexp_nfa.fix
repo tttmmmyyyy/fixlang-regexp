@@ -1947,8 +1947,56 @@ namespace DFA {
             if cost >= fewest { (best, fewest) };
             (i, cost)
         );
-        if best < 0 { dfa };
+        if best < 0 { dfa._without_forced_set };
         dfa._with_forced_set(bytes, sets.@(best))
+    );
+
+    // The scanner told to read for the bytes a match may begin with. A scanner kept from one search
+    // to the next carries the strings the text of that search wanted looked for, and a text that
+    // wants none of them is searched by reading for the bytes instead.
+    //
+    // # Parameters
+    // * `dfa` - The scanner.
+    _without_forced_set: DFA -> DFA;
+    _without_forced_set = |dfa| (
+        if dfa.@literal_count == 0 { dfa };
+        dfa.set_literals(Array::empty(0)).set_literal_count(0)
+    );
+
+    // The leftmost match beginning at or after a position, taking the longest of those that begin
+    // at the same place, together with the scanner as the search left it.
+    //
+    // A scanner works out what the automaton does with a byte the first time it reads that byte in
+    // that state, and keeps the answer, so a search handed a scanner back reads what the searches
+    // before it worked out.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `from` - The position at or after which the match has to begin.
+    // * `dfa` - The scanner to search with.
+    search_from: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
+    search_from = |bytes, from, dfa| dfa._choose_forced_set(bytes).find(bytes, from);
+
+    // Every match a scanner finds, taken left to right, none of them overlapping another, together
+    // with the scanner as the search left it.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `dfa` - The scanner to search with.
+    search_every: Array U8 -> DFA -> (Array Groups, DFA);
+    search_every = |bytes, dfa| (
+        let length = bytes.get_size;
+        let (matches, _, dfa) = loop(
+            (Array::empty(8), 0, dfa._choose_forced_set(bytes)), |(matches, from, dfa)|
+            if from > length { break $ (matches, from, dfa) };
+            let (opt, dfa) = dfa.find(bytes, from);
+            if opt.is_none { break $ (matches, from, dfa) };
+            let groups = opt.as_some;
+            let (begin, end) = groups.@(0);
+            // A match that read nothing would be found again where it was found.
+            continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 }, dfa)
+        );
+        (matches, dfa)
     );
 
     // The scanner told to look for a set of forced byte strings.
@@ -2093,7 +2141,7 @@ namespace NFA {
     // * `nfa` - The automaton to run.
     search: Array U8 -> I64 -> NFA -> Option Groups;
     search = |bytes, from, nfa| (
-        let (found, _) = DFA::make(nfa)._choose_forced_set(bytes).find(bytes, from);
+        let (found, _) = DFA::make(nfa).search_from(bytes, from);
         found
     );
 
@@ -2104,17 +2152,7 @@ namespace NFA {
     // * `nfa` - The automaton to run.
     search_all: Array U8 -> NFA -> Array Groups;
     search_all = |bytes, nfa| (
-        let length = bytes.get_size;
-        let dfa = DFA::make(nfa)._choose_forced_set(bytes);
-        let (matches, _, _) = loop((Array::empty(8), 0, dfa), |(matches, from, dfa)|
-            if from > length { break $ (matches, from, dfa) };
-            let (opt, dfa) = dfa.find(bytes, from);
-            if opt.is_none { break $ (matches, from, dfa) };
-            let groups = opt.as_some;
-            let (begin, end) = groups.@(0);
-            // A match that read nothing would be found again where it was found.
-            continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 }, dfa)
-        );
+        let (matches, _) = DFA::make(nfa).search_every(bytes);
         matches
     );
 }

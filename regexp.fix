@@ -18,13 +18,17 @@
 //
 module RegExp;
 
-import RegExp.RegExpNFA::{Group, NFA, NFA::{compile, search, search_all}, Replacement::{calc_replacement, compile}};
+import RegExp.RegExpNFA::{
+    DFA, Group, NFA, DFA::{make, search_every, search_from}, NFA::{compile, search, search_all}, 
+    Replacement::{calc_replacement, compile}
+};
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
-    Functor::map, Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, 
-    Result::{err, ok}, String::{concat_iter, get_bytes, get_size}
+    Array, ErrMsg, Option, Result, String, 
+    Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, Functor::map, 
+    Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, Result::{err, ok}, 
+    String::{concat_iter, get_bytes, get_size}
 };
 
 // Type of a compiled regular expression.
@@ -45,6 +49,22 @@ namespace RegExp {
         let nfa = NFA::compile(pattern);
         ok $ RegExp { flags: flags, nfa:nfa }
     );
+
+    // `regexp.matcher` is the regular expression together with a scanner of its own.
+    //
+    // A scanner works out what the automaton does with a byte the first time it reads that byte in
+    // that state, and keeps the answer. `Matcher`'s matching functions hand the scanner back, so a
+    // program that matches many strings against one regular expression pays for the working out
+    // once, where `RegExp`'s own matching functions make a scanner for each match and let it go.
+    //
+    // Example:
+    // ```
+    // let matcher = RegExp::compile("[a-z]+", "g").as_ok.matcher;
+    // let (first, matcher) = matcher.match_all("abc def");
+    // let (second, matcher) = matcher.match_all("ghi jkl");
+    // ```
+    matcher: RegExp -> Matcher;
+    matcher = |regexp| Matcher { flags: regexp.@flags, dfa: DFA::make(regexp.@nfa) };
 
     // `regexp.match(target)` matches `target` against `regexp`.
     //
@@ -74,20 +94,8 @@ namespace RegExp {
     // function of JavaScript.
     match_one: String -> RegExp -> Result ErrMsg (Array String);
     match_one = |target, regexp| (
-        let bytes = target.get_bytes.pop_back;
-        if regexp.@flags.find_byte('g').is_some {
-            let matches = regexp.@nfa.search_all(bytes);
-            if matches.is_empty {
-                err $ "NotMatch"
-            };
-            ok $ target._convert_groups_to_string(matches.map(|groups| groups.@(0)))
-        } else {
-            let opt = regexp.@nfa.search(bytes, 0);
-            if opt.is_none {
-                err $ "NotMatch"
-            };
-            ok $ target._convert_groups_to_string(opt.as_some)
-        }
+        let (found, _) = regexp.matcher.match_one(target);
+        found
     );
 
     _convert_groups_to_string: Array Group -> String -> Array String;
@@ -107,8 +115,8 @@ namespace RegExp {
     // function of JavaScript.
     match_all: String -> RegExp -> Array (Array String);
     match_all = |target, regexp| (
-        let bytes = target.get_bytes.pop_back;
-        regexp.@nfa.search_all(bytes).map(|groups| target._convert_groups_to_string(groups))
+        let (found, _) = regexp.matcher.match_all(target);
+        found
     );
 
     // `regexp.replace_all(target, replacement)` matches `target` against `regexp`,
@@ -130,8 +138,77 @@ namespace RegExp {
     // Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
     replace_all: String -> String -> RegExp -> String;
     replace_all = |target, replacement, regexp| (
+        let (replaced, _) = regexp.matcher.replace_all(target, replacement);
+        replaced
+    );
+}
+
+// A compiled regular expression together with the scanner it has built so far. See
+// `RegExp::matcher`.
+type Matcher = unbox struct {
+    flags: String,
+    dfa: DFA
+};
+
+namespace Matcher {
+
+    // `matcher.match_one(target)` matches `target` against the regular expression, and reports the
+    // scanner as the match left it.
+    //
+    // What it reports is what `RegExp::match_one` reports.
+    //
+    // # Parameters
+    // * `target` - The string to match against.
+    // * `matcher` - The regular expression and its scanner.
+    match_one: String -> Matcher -> (Result ErrMsg (Array String), Matcher);
+    match_one = |target, matcher| (
         let bytes = target.get_bytes.pop_back;
-        let matches = regexp.@nfa.search_all(bytes);
+        if matcher.@flags.find_byte('g').is_some {
+            let (matches, dfa) = matcher.@dfa.search_every(bytes);
+            let matcher = matcher.set_dfa(dfa);
+            if matches.is_empty {
+                (err $ "NotMatch", matcher)
+            };
+            (ok $ target._convert_groups_to_string(matches.map(|groups| groups.@(0))), matcher)
+        } else {
+            let (opt, dfa) = matcher.@dfa.search_from(bytes, 0);
+            let matcher = matcher.set_dfa(dfa);
+            if opt.is_none {
+                (err $ "NotMatch", matcher)
+            };
+            (ok $ target._convert_groups_to_string(opt.as_some), matcher)
+        }
+    );
+
+    // `matcher.match_all(target)` matches `target` against the regular expression, and reports the
+    // scanner as the match left it.
+    //
+    // What it reports is what `RegExp::match_all` reports.
+    //
+    // # Parameters
+    // * `target` - The string to match against.
+    // * `matcher` - The regular expression and its scanner.
+    match_all: String -> Matcher -> (Array (Array String), Matcher);
+    match_all = |target, matcher| (
+        let bytes = target.get_bytes.pop_back;
+        let (matches, dfa) = matcher.@dfa.search_every(bytes);
+        (matches.map(|groups| target._convert_groups_to_string(groups)), matcher.set_dfa(dfa))
+    );
+
+    // `matcher.replace_all(target, replacement)` replaces every stretch of `target` the regular
+    // expression matches with `replacement`, and reports the scanner as the work left it.
+    //
+    // What it reports is what `RegExp::replace_all` reports.
+    //
+    // # Parameters
+    // * `target` - The string to work over.
+    // * `replacement` - The text to put in place of every match.
+    // * `matcher` - The regular expression and its scanner.
+    replace_all: String -> String -> Matcher -> (String, Matcher);
+    replace_all = |target, replacement, matcher| (
+        let bytes = target.get_bytes.pop_back;
+        let (matches, dfa) = matcher.@dfa.search_every(bytes);
+        let matcher = matcher.set_dfa(dfa);
         let rep_frags = Replacement::compile(replacement);
         let output: Array String = Array::empty(matches.get_size * 2 + 1);
         let (output, last) = matches.to_iter.fold(
@@ -142,6 +219,6 @@ namespace RegExp {
             (output, end)
         );
         let output = output.push_back(target.substring(last, target.get_size));
-        output.to_iter.concat_iter
+        (output.to_iter.concat_iter, matcher)
     );
 }
