@@ -544,9 +544,10 @@ type ForcedRun = unbox struct {
 
 // What a pattern forces the text it matches to hold, and what it may read.
 //
-// What it may read is carried along because a stretch of a pattern says how far back a match
-// holding a string forced by the stretch after it may begin, and working that out apart from this
-// would walk the pattern again for every stretch of it.
+// What it may read is carried along because a string forced by one stretch of a pattern has
+// whatever the stretches before it read standing ahead of it, which is what says how far back a
+// match holding that string may begin. Working it out on its own would walk the pattern again for
+// every stretch of it.
 type Forced = unbox struct {
     // The one byte string the pattern matches, where it matches that one and no other.
     exact: Option (Array U8),

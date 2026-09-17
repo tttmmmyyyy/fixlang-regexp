@@ -387,8 +387,8 @@ _test_against_threads = (
 // finds by following its threads, and no other.
 //
 // Which set a search looks for turns on the text it is over, so the scanner is held to the
-// automaton over every set the pattern offers. That is what tries a set that is wrong and that the
-// texts drawn here would have led the search past.
+// automaton over every set the pattern offers. A set that is wrong is then caught even where the
+// search, left to choose, would not have looked for it over the texts drawn here.
 _test_forced_sets: IO ();
 _test_forced_sets = (
     let (_, tried) = *range(0, _random_cases).fold_m(

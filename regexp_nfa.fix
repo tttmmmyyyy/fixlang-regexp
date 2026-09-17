@@ -1173,8 +1173,9 @@ namespace DFA {
     // The bytes every match begins with, as far as they are forced.
     //
     // Working them out means walking the automaton, and the states the walk takes are thrown away
-    // with the scanner it walks. `NFA::compile` calls this once and keeps what it says, so that a
-    // search over a short string, which makes a scanner of its own, does none of the walking.
+    // with the scanner it walks. The answer is worked out once for the automaton and kept in its
+    // `prefix`, so that a search over a short string, which makes a scanner of its own, does none
+    // of the walking.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
@@ -1839,8 +1840,10 @@ namespace DFA {
 
     // The next position at or after a position where a match may begin.
     //
-    // Where a match may begin with one byte alone, the C library looks for it, reading many bytes
-    // at a time. Where it may begin with several, the bytes are read one at a time against the set.
+    // Where the scanner has been told which byte strings every match holds, it looks for those.
+    // Where every match begins with the same two or more bytes, or a match may begin with one byte
+    // alone, the C library looks for that, reading many bytes at a time. Otherwise the text is read
+    // a byte at a time against the set of bytes a match may begin with.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
@@ -2030,8 +2033,8 @@ namespace DFA {
     );
 
     // How many positions a search hands the automaton over a stretch of the text as it stands,
-    // reading for the bytes a match may begin with. A run of them is handed over once, since the
-    // bytes that carry the state a match begins in forward are passed over after the first fails.
+    // reading for the bytes a match may begin with. A run of them counts once: after the first of
+    // them fails, the bytes that leave every thread standing are passed over rather than tried.
     //
     // # Parameters
     // * `bytes` - The text the search is over.

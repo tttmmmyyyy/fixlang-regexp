@@ -145,8 +145,8 @@ namespace RegExp {
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
-    flags: String,
-    dfa: DFA
+    flags: String,   // the flags the regular expression was compiled with
+    dfa: DFA         // the automaton, and what the scanner has worked out of it so far
 };
 
 namespace Matcher {

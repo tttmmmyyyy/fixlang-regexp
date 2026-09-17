@@ -39,10 +39,10 @@ find_byte = |wanted, from, bytes| (
 // holds it nowhere at or after `from`. An empty `wanted` stands at every position, so the answer
 // there is `from` itself where the bytes reach that far.
 //
-// The C library looks for the first byte of `wanted`, and the rest is read here. `memmem` would
-// look for the whole of it, and on glibc 2.39 that reads 2.75 instructions a byte against the
-// 0.094 `memchr` reads, so looking for one byte and reading the rest is the cheaper way round
-// wherever the first byte is not the commonest thing in the text.
+// The C library is asked for the first byte of `wanted`, and the rest is read here. Asking it for
+// the whole of `wanted` with `memmem` reads far more slowly a byte than `memchr` does, so looking
+// for one byte and reading the rest is the cheaper way round wherever the first byte is not the
+// commonest thing in the text.
 //
 // # Parameters
 // * `wanted` - The bytes to look for.
