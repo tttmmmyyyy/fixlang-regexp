@@ -51,7 +51,11 @@ type QuantID = I64;
 // A node is a place a thread may stand at, and the transitions out of it say where the thread may
 // go next. A node may offer a thread more than one way on, so a search follows several threads at
 // once.
-type NFA = unbox struct {
+//
+// It is boxed because a scanner holds one and reads it back at every match it reports: boxed, that
+// reading raises one reference count for the automaton, where unboxed it raises one for each array
+// the automaton holds.
+type NFA = box struct {
     nodes: Array NFANode,     // every node, each named by its place here
     initial_node: NodeID,     // the node a thread starts at
     accepting_node: NodeID,   // the node a thread has matched at
@@ -64,7 +68,10 @@ type NFA = unbox struct {
     // Sets of byte strings the pattern forces every text it matches to hold. Every match holds a
     // member of each of these sets, so a search may look for whichever set the text it is over
     // holds least often.
-    forced_sets: Array (Array ForcedRun)
+    forced_sets: Array (Array ForcedRun),
+    // The bytes every match begins with. Working them out means walking the automaton, and doing
+    // it here leaves every scanner made from this automaton with nothing to walk.
+    prefix: Array U8
 };
 
 namespace NFA {
@@ -77,7 +84,8 @@ namespace NFA {
         group_count: 0,
         quant_bounds: Array::empty(0),
         classes: Array::empty(0),
-        forced_sets: Array::empty(0)
+        forced_sets: Array::empty(0),
+        prefix: Array::empty(0)
     };
 
     // Adds a node that guards nothing and leads nowhere, and reports its id.
@@ -252,7 +260,8 @@ namespace NFA {
         let (nfa, accept_id) = nfa.new_node;
         let nfa = nfa.set_accepting_node(accept_id);
         let nfa = nfa.set_frag_output(frag, accept_id);
-        nfa.set_forced_sets(forced_of(pattern).@sets)
+        let nfa = nfa.set_forced_sets(forced_of(pattern).@sets);
+        nfa.set_prefix(DFA::forced_beginning(nfa))
     );
 
 }
@@ -1096,7 +1105,6 @@ type DFA = box struct {
     accepts: Array Bool,          // whether the state holds the accepting node
     accepts_at_end: Array I64,    // whether it holds it where the input ends, where `$` holds:
                                   // `1` where it does, `0` where it does not, `-1` until asked
-    untaken: Array I64,           // a row of transitions none of which has been taken
     interior: I64,                // the state a match begins in, away from either end of the input
     first_bytes: Array U64,       // the bytes a match may begin with, one bit each
     first_byte: I64,              // the one byte a match may begin with, or `-1` where a match may
@@ -1122,22 +1130,28 @@ namespace DFA {
     _DEAD_STATE: I64;
     _DEAD_STATE = 0;
 
-    // A scanner that has walked nothing yet.
+    // The row a state is added with: one transition per byte value, each of them untaken. One row
+    // serves every scanner, so it is written once for the program. A search over a short string
+    // makes a scanner of its own, and what that scanner costs to make is most of what it costs.
+    _UNTAKEN_ROW: Array I64;
+    _UNTAKEN_ROW = Array::fill(256, -1);
+
+    // A scanner that has walked nothing yet, holding the two states a walk starts from and nothing
+    // the automaton says about where a match may begin.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
-    make: NFA -> DFA;
-    make = |nfa| (
+    _bare: NFA -> DFA;
+    _bare = |nfa| (
         let dfa = DFA {
             nfa: nfa,
             width: 1 + nfa.@quant_bounds.get_size,
             threads: Array::empty(64),
             bounds: [0],
             ordered: Array::empty(16),
-            transitions: Array::empty(256 * 8),
+            transitions: Array::empty(256 * 2),
             accepts: Array::empty(16),
             accepts_at_end: Array::empty(16),
-            untaken: Array::fill(256, -1),
             interior: _DEAD_STATE,
             first_bytes: Array::fill(4, 0_U64),
             first_byte: -1,
@@ -1152,11 +1166,36 @@ namespace DFA {
         };
         let (_, dfa) = dfa._intern(Array::empty(0));
         let (interior, dfa) = dfa._start_state_at(false, false);
-        let first_bytes = dfa._first_bytes_of(interior);
-        let dfa = dfa.set_interior(interior).set_first_bytes(first_bytes)
-            .set_first_byte(_lone_byte_of(first_bytes));
-        let (prefix, dfa) = dfa._forced_prefix;
-        dfa.set_prefix_size(prefix.get_size).set_prefix(prefix)
+        dfa.set_interior(interior)
+    );
+
+    // The bytes every match begins with, as far as they are forced.
+    //
+    // Working them out means walking the automaton, and the states the walk takes are thrown away
+    // with the scanner it walks. `NFA::compile` calls this once and keeps what it says, so that a
+    // search over a short string, which makes a scanner of its own, does none of the walking.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to walk.
+    forced_beginning: NFA -> Array U8;
+    forced_beginning = |nfa| (
+        let (prefix, _) = DFA::_bare(nfa)._forced_prefix;
+        prefix
+    );
+
+    // A scanner that has walked nothing yet.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to walk.
+    make: NFA -> DFA;
+    make = |nfa| (
+        let prefix = nfa.@prefix;
+        let dfa = DFA::_bare(nfa);
+        let first_bytes = dfa._first_bytes_of(dfa.@interior);
+        dfa.set_first_bytes(first_bytes)
+            .set_first_byte(_lone_byte_of(first_bytes))
+            .set_prefix_size(prefix.get_size)
+            .set_prefix(prefix)
     );
 
     // How many bytes of a forced beginning the scanner works out. A longer one is rarer in the text
@@ -1263,13 +1302,12 @@ namespace DFA {
         let width = dfa.@width;
         let accepting = dfa.@nfa.@accepting_node.@val;
         let accepts = _holds_node(accepting, width, wanted);
-        let untaken = dfa.@untaken;
         let dfa = dfa
             .mod_bounds(|bounds| bounds.push_back(bounds.get_last.as_some + wanted.get_size))
             .mod_threads(append(wanted))
             .mod_accepts(push_back(accepts))
             .mod_accepts_at_end(push_back(if accepts { 1 } else { -1 }))
-            .mod_transitions(append(untaken))
+            .mod_transitions(append(_UNTAKEN_ROW))
             .mod_ordered(_insert_at(place, id));
         (id, dfa)
     );
