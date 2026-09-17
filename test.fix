@@ -419,11 +419,11 @@ _forced_sets_agree: NFA -> String -> String -> I64 -> IO I64;
 _forced_sets_agree = |nfa, pattern, target, tried| (
     let bytes = target.get_bytes.pop_back;
     let name = _named(pattern, "g", target);
-    let wanted = _search_all_threads(bytes, nfa);
+    let by_threads = _search_all_threads(bytes, nfa);
     let sets = nfa.@forced_sets;
     range(0, sets.@size).fold_m(tried, |i, tried|
         let dfa = DFA::make(nfa)._with_forced_set(bytes, sets.@(i));
-        assert_eq(|_| name + " forced set " + i.to_string, _search_all_by(bytes, dfa), wanted);;
+        assert_eq(|_| name + " forced set " + i.to_string, _search_all_by(bytes, dfa), by_threads);;
         pure $ tried + 1
     )
 );
@@ -520,17 +520,17 @@ _begins_with = |bytes, begin, end, wanted| (
 // one string taught it is what the next string is matched with.
 _test_kept_scanner: IO ();
 _test_kept_scanner = (
-    let (_, held) = *range(0, _random_cases).fold_m(
-        (Draws { state: 20260917 }, 0), |_, (draws, held)|
+    let (_, found) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260917 }, 0), |_, (draws, found)|
         let (pattern, draws) = _draw_pattern(draws);
         let result = RegExp::compile(pattern, "g");
-        if result.is_err { pure $ (draws, held) };
+        if result.is_err { pure $ (draws, found) };
         let regexp = result.as_ok;
         let (targets, draws) = range(0, 4).fold((Array::empty(4), draws), |_, (targets, draws)|
             let (target, draws) = _draw_target(draws);
             (targets.push_back(target), draws)
         );
-        let (_, held) = *targets.to_iter.fold_m((regexp.matcher, held), |target, (matcher, held)|
+        let (_, found) = *targets.to_iter.fold_m((regexp.matcher, found), |target, (matcher, found)|
             let name = _named(pattern, "g", target);
             let (all, matcher) = matcher.match_all(target);
             assert_eq(|_| name + " kept match_all", all, regexp.match_all(target));;
@@ -540,13 +540,13 @@ _test_kept_scanner = (
             assert_eq(
                 |_| name + " kept replace_all", replaced, regexp.replace_all(target, "<$&>")
             );;
-            pure $ (matcher, held + all.@size)
+            pure $ (matcher, found + all.@size)
         );
-        pure $ (draws, held)
+        pure $ (draws, found)
     );
     // The draws are held to producing work. A generator that stopped producing strings the patterns
     // are met by would let every case agree without a scanner having carried anything.
-    assert(|_| "the kept scanner finds matches", held >= _random_cases / 4)
+    assert(|_| "the kept scanner finds matches", found >= _random_cases / 4)
 );
 
 // Every match a scanner finds over a text, taken one after another as a search takes them.

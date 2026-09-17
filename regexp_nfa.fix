@@ -1890,8 +1890,8 @@ namespace DFA {
     _skip_to_forced = |bytes, length, at, dfa| (
         // The strings stand in the order the text holds them most often, so the one looked for
         // first bounds how far the rest are looked for.
-        let hit = dfa.@literals.to_iter.fold(length, |wanted, best|
-            bytes.find_bytes_within(wanted, at, best).as_some_or(best)
+        let hit = dfa.@literals.to_iter.fold(length, |wanted, earliest|
+            bytes.find_bytes_within(wanted, at, earliest).as_some_or(earliest)
         );
         if hit >= length { length };
         _backed_up_to(bytes, dfa.@back_class, dfa.@back_max, at, hit)
@@ -2020,9 +2020,9 @@ namespace DFA {
     _with_forced_set: Array U8 -> Array ForcedRun -> DFA -> DFA;
     _with_forced_set = |bytes, set, dfa| (
         let sample = min(bytes.get_size, _FORCED_SAMPLE);
-        let ordered = _by_falling_count(bytes, sample, set);
-        dfa._set_literals(ordered.map(@bytes))
-            .set_back_max(set.to_iter.fold(0, |run, m| max(m, run.@back_max)))
+        let runs = _by_falling_count(bytes, sample, set);
+        dfa._set_literals(runs.map(@bytes))
+            .set_back_max(set.to_iter.fold(0, |run, most| max(most, run.@back_max)))
             .set_back_class(set.to_iter.fold(
                 _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
             ))
@@ -2055,7 +2055,7 @@ namespace DFA {
     // * `set` - The set to weigh.
     _forced_cost: Array U8 -> I64 -> Array ForcedRun -> I64;
     _forced_cost = |bytes, sample, set| (
-        let back_max = set.to_iter.fold(0, |run, m| max(m, run.@back_max));
+        let back_max = set.to_iter.fold(0, |run, most| max(most, run.@back_max));
         let bits = set.to_iter.fold(
             _no_bytes, |run, bits| _bytes_union(run.@back_class, bits)
         );
@@ -2078,14 +2078,14 @@ namespace DFA {
         let counted = set.map(|run| (_positions_of(bytes, sample, run.@bytes, _no_bytes, 0), run));
         // The sets are small, so the order is worked out by taking the largest that is left.
         let (ordered, _) = range(0, counted.get_size).fold(
-            (Array::empty(counted.get_size), counted), |_, (ordered, left)|
-            let (best, _) = range(0, left.get_size).fold((0, -1), |i, (best, most)|
-                let (count, _) = left.@(i);
+            (Array::empty(counted.get_size), counted), |_, (ordered, rest)|
+            let (best, _) = range(0, rest.get_size).fold((0, -1), |i, (best, most)|
+                let (count, _) = rest.@(i);
                 if count <= most { (best, most) };
                 (i, count)
             );
-            let (_, run) = left.@(best);
-            (ordered.push_back(run), _without(best, left))
+            let (_, run) = rest.@(best);
+            (ordered.push_back(run), _without(best, rest))
         );
         ordered
     );

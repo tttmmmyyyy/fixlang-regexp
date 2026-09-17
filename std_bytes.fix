@@ -56,12 +56,12 @@ find_bytes = |wanted, from, bytes| (
     if from + wanted_length > length { none() };
     let head = wanted.@(0);
     // The last position a run of `wanted_length` bytes can begin at.
-    let last = length - wanted_length;
+    let last_begin = length - wanted_length;
     bytes.borrow_elements(|base|
         loop(from, |at|
-            if at > last { break $ none() };
+            if at > last_begin { break $ none() };
             let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
-                base.add_offset(at), head.c_int, (last + 1 - at).c_size_t];
+                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
             if found == nullptr { break $ none() };
             let begin = found.subtract_ptr(base);
             if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };
@@ -91,14 +91,14 @@ find_bytes_within = |wanted, from, limit, bytes| (
     // The last position a run of `wanted_length` bytes can begin at. `limit` bounds where a run
     // begins: a run beginning before `limit` stands earlier than one beginning at it, whatever it
     // reaches, and the earliest is what is being looked for.
-    let last = min(limit, length - wanted_length);
-    if from > last { none() };
+    let last_begin = min(limit, length - wanted_length);
+    if from > last_begin { none() };
     let head = wanted.@(0);
     bytes.borrow_elements(|base|
         loop(from, |at|
-            if at > last { break $ none() };
+            if at > last_begin { break $ none() };
             let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
-                base.add_offset(at), head.c_int, (last + 1 - at).c_size_t];
+                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
             if found == nullptr { break $ none() };
             let begin = found.subtract_ptr(base);
             if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };

@@ -605,10 +605,10 @@ _runs_after = |more, bits, runs| (
 _sets_together : Array (Array ForcedRun) -> Array (Array ForcedRun) -> Array (Array ForcedRun);
 _sets_together = |left, right| (
     if left.get_size == 0 || right.get_size == 0 { Array::empty(0) };
-    left.to_iter.fold(Array::empty(_MAX_FORCED_SETS), |l, out|
-        right.to_iter.fold(out, |r, out|
+    left.to_iter.fold(Array::empty(_MAX_FORCED_SETS), |left_set, out|
+        right.to_iter.fold(out, |right_set, out|
             if out.get_size >= _MAX_FORCED_SETS { out };
-            let both = l.append(r);
+            let both = left_set.append(right_set);
             if both.get_size > _MAX_FORCED_MEMBERS { out };
             out.push_back(both)
         )
@@ -627,8 +627,8 @@ _forced_of_sequence : Array Pattern -> Forced;
 _forced_of_sequence = |pats| (
     let empty_run = Array::empty(_MAX_FORCED_LENGTH);
     let start = (empty_run, 0, _no_bytes, 0, _no_bytes, Array::empty(_MAX_FORCED_SETS), true);
-    let (run, run_max, run_bits, total_max, total_bits, sets, whole) = pats.to_iter.fold(start,
-        |pat, (run, run_max, run_bits, pre_max, pre_bits, sets, whole)|
+    let (run, run_max, run_bits, total_max, total_bits, sets, is_exact) = pats.to_iter.fold(start,
+        |pat, (run, run_max, run_bits, pre_max, pre_bits, sets, is_exact)|
         let forced = forced_of(pat);
         let next_max = _read_sum(pre_max, forced.@max_read);
         let next_bits = _bytes_union(forced.@read_bytes, pre_bits);
@@ -641,7 +641,7 @@ _forced_of_sequence = |pats| (
                 let sets = _closed_run(run, run_max, run_bits, sets);
                 (more, pre_max, pre_bits, next_max, next_bits, sets, false)
             };
-            (run.append(more), run_max, run_bits, next_max, next_bits, sets, whole)
+            (run.append(more), run_max, run_bits, next_max, next_bits, sets, is_exact)
         };
         let sets = _closed_run(run, run_max, run_bits, sets);
         let sets = forced.@sets.to_iter.fold(sets, |set, sets|
@@ -651,7 +651,7 @@ _forced_of_sequence = |pats| (
         (empty_run, 0, _no_bytes, next_max, next_bits, sets, false)
     );
     Forced {
-        exact: if whole { some(run) } else { none() },
+        exact: if is_exact { some(run) } else { none() },
         sets: _closed_run(run, run_max, run_bits, sets),
         max_read: total_max,
         read_bytes: total_bits
@@ -690,39 +690,39 @@ forced_of : Pattern -> Forced;
 forced_of = |pat| (
     if pat.is_pclass {
         let (bits, lone) = _bytes_of_class(pat.as_pclass);
-        let held = if lone < 0 { _forces_nothing } else { _forces_bytes([lone.to_U8]) };
-        held.set_max_read(1).set_read_bytes(bits)
+        let forced = if lone < 0 { _forces_nothing } else { _forces_bytes([lone.to_U8]) };
+        forced.set_max_read(1).set_read_bytes(bits)
     };
     if pat.is_passert { _forces_bytes(Array::empty(0)) };
     if pat.is_pgroup { let (_, inner) = pat.as_pgroup; forced_of(inner) };
     if pat.is_psequence { _forced_of_sequence(pat.as_psequence) };
     if pat.is_peither {
         let (left, right) = pat.as_peither;
-        let (held_left, held_right) = (forced_of(left), forced_of(right));
+        let (forced_left, forced_right) = (forced_of(left), forced_of(right));
         Forced {
             exact: none(),
-            sets: _sets_together(held_left.@sets, held_right.@sets),
-            max_read: if held_left.@max_read >= held_right.@max_read {
-                held_left.@max_read
+            sets: _sets_together(forced_left.@sets, forced_right.@sets),
+            max_read: if forced_left.@max_read >= forced_right.@max_read {
+                forced_left.@max_read
             } else {
-                held_right.@max_read
+                forced_right.@max_read
             },
-            read_bytes: _bytes_union(held_left.@read_bytes, held_right.@read_bytes)
+            read_bytes: _bytes_union(forced_left.@read_bytes, forced_right.@read_bytes)
         }
     };
     if pat.is_pquant {
         let (inner, least, most) = pat.as_pquant;
-        let held = forced_of(inner);
-        let read_bytes = held.@read_bytes;
-        let max_read = _read_times(held.@max_read, most);
+        let forced = forced_of(inner);
+        let read_bytes = forced.@read_bytes;
+        let max_read = _read_times(forced.@max_read, most);
         // A round the pattern may do without forces nothing.
         if least == 0 {
             Forced {
                 exact: none(), sets: Array::empty(0), max_read: max_read, read_bytes: read_bytes
             }
         };
-        if held.@exact.is_some && held.@exact.as_some.get_size > 0 {
-            let once = held.@exact.as_some;
+        if forced.@exact.is_some && forced.@exact.as_some.get_size > 0 {
+            let once = forced.@exact.as_some;
             let rounds = if once.get_size * least > _MAX_FORCED_LENGTH {
                 _MAX_FORCED_LENGTH / once.get_size
             } else { least };
@@ -735,10 +735,10 @@ forced_of = |pat| (
             }
         };
         // What one round forces the whole forces, and the rounds before it may be backed over.
-        let before = _read_times(held.@max_read, _read_sum(most, -1));
+        let before_max = _read_times(forced.@max_read, _read_sum(most, -1));
         Forced {
             exact: none(),
-            sets: held.@sets.map(_runs_after(before, read_bytes)),
+            sets: forced.@sets.map(_runs_after(before_max, read_bytes)),
             max_read: max_read,
             read_bytes: read_bytes
         }
