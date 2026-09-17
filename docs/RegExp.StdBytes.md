@@ -53,8 +53,9 @@ commonest thing in the text.
 
 Type: `Std::Array Std::U8 -> Std::I64 -> Std::I64 -> Std::Array Std::U8 -> Std::Option Std::I64`
 
-The first position at or after `from` and before `limit` where `bytes` holds `wanted` entire, or
-`none` where it holds it nowhere between the two.
+The first position at or after `from` and at or before `limit` where `bytes` holds `wanted`
+entire, or `none` where it holds it nowhere between the two. `limit` bounds where the run begins,
+so a run beginning at `limit` and reaching past it is found.
 
 A search for several byte strings takes the earliest place any of them stands, so each string
 after the first needs looking for only as far as the earliest place found so far. That bound is
@@ -65,7 +66,7 @@ left, once for every position the search asks about.
 
 * `wanted` - The bytes to look for.
 * `from` - The position to look from.
-* `limit` - The position to stop looking at.
+* `limit` - The last position a run may begin at.
 * `bytes` - The bytes to read.
 
 ## Types and aliases

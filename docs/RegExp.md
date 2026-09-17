@@ -11,14 +11,18 @@ Currently it only supports patterns below:
 - Groups: `(x)`
 - Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`
 
-For details, see
+A search takes the leftmost match, and the longest of the matches beginning at that place. So
+`a|ab` matched against `ab` gives `ab`, which is the rule POSIX gives and which the `testregex`
+suite of Glenn Fowler holds this library to. JavaScript takes the first alternative that matches
+and would give `a`, so a pattern whose alternatives begin alike is read differently here.
+
+For what the pattern syntax above means, see
 [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 
 LIMITATION:
 
-Currently, only single byte characters (U+0001..U+007F) can be specified in character classes.
-Non-ASCII characters (U+0080..U+10FFFF) are encoded to two or more bytes in UTF-8, so they cannot be specified in character classes.
-And the null character (U+0000) cannot be used in Fix strings.
+A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
+U+0080 upward as two or more bytes, and a Fix string holds no null character (U+0000).
 
 ## Values
 
