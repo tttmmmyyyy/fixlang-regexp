@@ -1177,8 +1177,21 @@ namespace DFA {
     // * `nfa` - The automaton to walk.
     forced_beginning: NFA -> Array U8;
     forced_beginning = |nfa| (
+        if nfa._asks_many_rounds { Array::empty(0) };
         let (prefix, _) = DFA::_bare(nfa)._forced_prefix;
         prefix
+    );
+
+    // Whether the automaton holds a quantifier asking for more rounds than the walk that works out
+    // the forced beginning may take.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to read.
+    _asks_many_rounds: NFA -> Bool;
+    _asks_many_rounds = |nfa| (
+        nfa.@quant_bounds.to_iter.check_any(|(least, most)|
+            least > _MAX_PREFIX_ROUNDS || (most < I64::maximum && most > _MAX_PREFIX_ROUNDS)
+        )
     );
 
     // A scanner that has walked nothing yet.
@@ -1201,6 +1214,18 @@ namespace DFA {
     // so what bounds this is the states the walk interns rather than the searching.
     _MAX_PREFIX: I64;
     _MAX_PREFIX = 32;
+
+    // How many rounds a counted quantifier may ask for, for the walk that works out the forced
+    // beginning to be worth taking.
+    //
+    // The walk asks each state whether a match can end there, and the answer is worked out by
+    // following the automaton with the end of the input reached, which lets a counted quantifier
+    // run its rounds out. Every round stands for a thread, and a thread is read against the threads
+    // taken so far, so the walk costs the square of the rounds asked for: `(a*){100000,}` spends
+    // forty-five seconds on it. A pattern asking for that many rounds is one the forced beginning
+    // would not have paid for anyway.
+    _MAX_PREFIX_ROUNDS: I64;
+    _MAX_PREFIX_ROUNDS = 64;
 
     // The bytes every match begins with, taken as far as they are forced.
     //
