@@ -1,0 +1,124 @@
+// The byte operations `Std` does not offer, which the automaton reads text with.
+//
+// They are written to go into `Std::Array` as they stand, so this module is the whole of what moves
+// when they do, and no other file changes with them. Nothing outside this module reaches for a
+// foreign function.
+//
+// Each of them hands the reading to the C library, which reads many bytes at a time. Written in Fix
+// the same reading costs five instructions a byte against half an instruction, and no compiler
+// closes that gap: a search that reads several bytes at once reads past the byte it stops at, which
+// a C library may do because it reads inside page boundaries, and a Fix program may not.
+module RegExp.StdBytes;
+
+import Std::{
+    loop, Array, Bool, I64, Option, U8, Array::{borrow_elements, get_size, @}, LessThan::min, 
+    LoopState::{break, continue}, Option::{none, some}, Ptr::{add_offset, subtract_ptr}, 
+    ToCInt::c_int, ToCSizeT::c_size_t
+};
+
+// The first position at or after `from` where `bytes` holds `wanted`, or `none` where it holds it
+// nowhere at or after `from`.
+//
+// # Parameters
+// * `wanted` - The byte to look for.
+// * `from` - The position to look from.
+// * `bytes` - The bytes to read.
+find_byte : U8 -> I64 -> Array U8 -> Option I64;
+find_byte = |wanted, from, bytes| (
+    let length = bytes.get_size;
+    if from >= length { none() };
+    bytes.borrow_elements(|base|
+        let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
+            base.add_offset(from), wanted.c_int, (length - from).c_size_t];
+        if found == nullptr { none() };
+        some $ found.subtract_ptr(base)
+    )
+);
+
+// The first position at or after `from` where `bytes` holds `wanted` entire, or `none` where it
+// holds it nowhere at or after `from`. An empty `wanted` stands at every position, so the answer
+// there is `from` itself where the bytes reach that far.
+//
+// The C library is asked for the first byte of `wanted`, and the rest is read here. Asking it for
+// the whole of `wanted` with `memmem` reads far more slowly a byte than `memchr` does, so looking
+// for one byte and reading the rest is the cheaper way round wherever the first byte is not the
+// commonest thing in the text.
+//
+// # Parameters
+// * `wanted` - The bytes to look for.
+// * `from` - The position to look from.
+// * `bytes` - The bytes to read.
+find_bytes : Array U8 -> I64 -> Array U8 -> Option I64;
+find_bytes = |wanted, from, bytes| (
+    let length = bytes.get_size;
+    let wanted_length = wanted.get_size;
+    if wanted_length == 0 { if from <= length { some(from) } else { none() } };
+    if from + wanted_length > length { none() };
+    let head = wanted.@(0);
+    // The last position a run of `wanted_length` bytes can begin at.
+    let last_begin = length - wanted_length;
+    bytes.borrow_elements(|base|
+        loop(from, |at|
+            if at > last_begin { break $ none() };
+            let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
+                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
+            if found == nullptr { break $ none() };
+            let begin = found.subtract_ptr(base);
+            if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };
+            continue $ begin + 1
+        )
+    )
+);
+
+// The first position at or after `from` and before `limit` where `bytes` holds `wanted` entire, or
+// `none` where it holds it nowhere between the two.
+//
+// A search for several byte strings takes the earliest place any of them stands, so each string
+// after the first needs looking for only as far as the earliest place found so far. That bound is
+// what keeps a string the text holds nowhere ahead from being looked for over all the text that is
+// left, once for every position the search asks about.
+//
+// # Parameters
+// * `wanted` - The bytes to look for.
+// * `from` - The position to look from.
+// * `limit` - The position to stop looking at.
+// * `bytes` - The bytes to read.
+find_bytes_within : Array U8 -> I64 -> I64 -> Array U8 -> Option I64;
+find_bytes_within = |wanted, from, limit, bytes| (
+    let length = bytes.get_size;
+    let wanted_length = wanted.get_size;
+    if wanted_length == 0 { if from <= min(limit, length) { some(from) } else { none() } };
+    // The last position a run of `wanted_length` bytes can begin at. `limit` bounds where a run
+    // begins: a run beginning before `limit` stands earlier than one beginning at it, whatever it
+    // reaches, and the earliest is what is being looked for.
+    let last_begin = min(limit, length - wanted_length);
+    if from > last_begin { none() };
+    let head = wanted.@(0);
+    bytes.borrow_elements(|base|
+        loop(from, |at|
+            if at > last_begin { break $ none() };
+            let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
+                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
+            if found == nullptr { break $ none() };
+            let begin = found.subtract_ptr(base);
+            if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };
+            continue $ begin + 1
+        )
+    )
+);
+
+// Whether `bytes` holds `wanted` beginning at `begin`, the first byte taken as read.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `begin` - Where the run would begin.
+// * `wanted` - The bytes to look for.
+// * `wanted_length` - How many bytes `wanted` holds.
+_holds_run : Array U8 -> I64 -> Array U8 -> I64 -> Bool;
+_holds_run = |bytes, begin, wanted, wanted_length| (
+    loop(1, |k|
+        if k == wanted_length { break $ true };
+        if bytes.@(begin + k) != wanted.@(k) { break $ false };
+        continue $ k + 1
+    )
+);
