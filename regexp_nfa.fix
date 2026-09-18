@@ -1029,22 +1029,24 @@ namespace OneWayTable {
     // The one way on from a node that a byte takes, or `-1` where the byte takes none,
     // together with whether the node offered a second.
     //
+    // The table's fields are fields of a boxed value, so reading one raises and lowers a reference
+    // count. The walk reads them once and hands them here, rather than once for every byte.
+    //
     // # Parameters
+    // * `bounds` - Where each node's ways stand.
+    // * `classes` - The character classes the ways are guarded by.
     // * `node` - The node the walk stands at.
     // * `byte` - The byte to read.
     // * `at_begin` - Whether the walk stands where the input begins.
     // * `at_end` - Whether it stands where the input ends.
-    // * `nfa` - The automaton the classes belong to.
-    // * `table` - The ways to read.
-    _way_for: I64 -> U8 -> Bool -> Bool -> NFA -> OneWayTable -> (I64, Bool);
-    _way_for = |node, byte, at_begin, at_end, nfa, table| (
-        let to = table.@bounds.@(node + 1);
-        loop((table.@bounds.@(node), -1), |(i, found)|
+    // * `ways` - The ways to read.
+    _way_for: Array I64 -> Array U64 -> I64 -> U8 -> Bool -> Bool -> Array I64 -> (I64, Bool);
+    _way_for = |bounds, classes, node, byte, at_begin, at_end, ways| (
+        let to = bounds.@(node + 1);
+        loop((bounds.@(node), -1), |(i, found)|
             if i >= to { break $ (found, false) };
-            if !_flags_hold(table.@ways.@(5 * i + 2), at_begin, at_end) {
-                continue $ (i + 1, found)
-            };
-            if !nfa.class_holds(table.@ways.@(5 * i), byte) { continue $ (i + 1, found) };
+            if !_flags_hold(ways.@(5 * i + 2), at_begin, at_end) { continue $ (i + 1, found) };
+            if !classes._holds_byte(ways.@(5 * i), byte) { continue $ (i + 1, found) };
             if found >= 0 { break $ (found, true) };
             continue $ (i + 1, i)
         )
@@ -1057,12 +1059,12 @@ namespace OneWayTable {
     // * `to` - One past where it ends.
     // * `at` - The position the walk stands at, which a write records.
     // * `slots` - The slots to write in.
-    // * `table` - The writes to read.
-    _written: I64 -> I64 -> I64 -> Array I64 -> OneWayTable -> Array I64;
-    _written = |from, to, at, slots, table| (
+    // * `writes` - What the ways write down.
+    _written: I64 -> I64 -> I64 -> Array I64 -> Array I64 -> Array I64;
+    _written = |from, to, at, slots, writes| (
         loop((slots, from), |(slots, i)|
             if i >= to { break $ slots };
-            let write = table.@writes.@(i);
+            let write = writes.@(i);
             continue $ (slots.set(write / 2, if write % 2 == 0 { at } else { -1 }), i + 1)
         )
     );
@@ -1264,23 +1266,27 @@ namespace NFA {
         if table.@bounds.get_size == 0 { none() };
         let length = bytes.get_size;
         let slot_width = 2 * max(1, nfa.@group_count);
+        // Each of these is a field of a boxed value, so reading one raises and lowers a reference
+        // count. They are read once here and stand for every byte the walk reads.
+        let (ways, bounds, accepts) = (table.@ways, table.@bounds, table.@accepts);
+        let (writes, twice, classes) = (table.@writes, table.@twice, nfa.@classes);
         loop((nfa.@initial_node.@val, Array::fill(slot_width, -1), begin), |(node, slots, at)|
-            if table.@twice.@(node) { break $ none() };
+            if twice.@(node) { break $ none() };
             let (at_begin, at_end) = (at == 0, at == length);
             if at >= end {
-                let flags = table.@accepts.@(3 * node);
+                let flags = accepts.@(3 * node);
                 if flags < 0 || !_flags_hold(flags, at_begin, at_end) { break $ none() };
-                let slots = table._written(
-                    table.@accepts.@(3 * node + 1), table.@accepts.@(3 * node + 2), at, slots
+                let slots = writes._written(
+                    accepts.@(3 * node + 1), accepts.@(3 * node + 2), at, slots
                 );
                 break $ some $ _groups_of(0, slot_width, slots)
             };
-            let (way, forked) = table._way_for(node, bytes.@(at), at_begin, at_end, nfa);
-            if forked || way < 0 { break $ none() };
-            let slots = table._written(
-                table.@ways.@(5 * way + 3), table.@ways.@(5 * way + 4), at, slots
+            let (way, forked) = ways._way_for(
+                bounds, classes, node, bytes.@(at), at_begin, at_end
             );
-            continue $ (table.@ways.@(5 * way + 1), slots, at + 1)
+            if forked || way < 0 { break $ none() };
+            let slots = writes._written(ways.@(5 * way + 3), ways.@(5 * way + 4), at, slots);
+            continue $ (ways.@(5 * way + 1), slots, at + 1)
         )
     );
 
