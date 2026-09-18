@@ -7,14 +7,16 @@
 // - Groups: `(x)`
 // - Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`
 //
-// For details, see
+// This follows JavaScript but for one thing: where several alternatives match at one place, the
+// longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
+//
+// For what the pattern syntax above means, see
 // [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 //
 // LIMITATION:
 //
-// Currently, only single byte characters (U+0001..U+007F) can be specified in character classes.
-// Non-ASCII characters (U+0080..U+10FFFF) are encoded to two or more bytes in UTF-8, so they cannot be specified in character classes.
-// And the null character (U+0000) cannot be used in Fix strings.
+// A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
+// U+0080 upward as two or more bytes, and a Fix string holds no null character (U+0000).
 //
 module RegExp;
 
@@ -25,15 +27,15 @@ import RegExp.RegExpNFA::{
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
+    Array, Bool, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
     Functor::map, Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, 
     Result::{err, ok}, String::{concat_iter, get_bytes, get_size}
 };
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
-    flags: String, 
-    nfa: NFA
+    flags: String,   // the flags it was compiled with, of which `g` is read
+    nfa: NFA         // the automaton the pattern compiled to
 };
 
 namespace RegExp {
@@ -63,7 +65,9 @@ namespace RegExp {
     // let (second, matcher) = matcher.match_all("ghi jkl");
     // ```
     matcher: RegExp -> Matcher;
-    matcher = |regexp| Matcher { flags: regexp.@flags, dfa: DFA::make(regexp.@nfa) };
+    matcher = |regexp| Matcher {
+        global: regexp.@flags.find_byte('g').is_some, dfa: DFA::make(regexp.@nfa)
+    };
 
     // `regexp.match(target)` matches `target` against `regexp`.
     //
@@ -97,13 +101,6 @@ namespace RegExp {
         found
     );
 
-    _convert_groups_to_string: Array Group -> String -> Array String;
-    _convert_groups_to_string = |groups, target| (
-        groups.to_iter.map(|(begin, end)|
-            if begin < 0 || end < 0 { "" };
-            target.substring(begin, end)
-        ).to_array
-    );
 
     // `regexp.match_all(target)` matches `target` against `regexp`.
     // All matching results will be returned including captured groups.
@@ -142,11 +139,25 @@ namespace RegExp {
     );
 }
 
+// The stretches of a string the groups of a match cover, a group that captured nothing giving the
+// empty string.
+//
+// # Parameters
+// * `groups` - Where each group of the match runs from and to.
+// * `target` - The string the match was found in.
+_groups_to_strings: Array Group -> String -> Array String;
+_groups_to_strings = |groups, target| (
+    groups.to_iter.map(|(begin, end)|
+        if begin < 0 || end < 0 { "" };
+        target.substring(begin, end)
+    ).to_array
+);
+
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
-    flags: String,   // the flags the regular expression was compiled with
-    dfa: DFA         // the automaton, and what the scanner has worked out of it so far
+    global: Bool,   // whether the global flag was given, which `match_one` reads
+    dfa: DFA        // the automaton, and what the scanner has worked out of it so far
 };
 
 namespace Matcher {
@@ -162,20 +173,20 @@ namespace Matcher {
     match_one: String -> Matcher -> (Result ErrMsg (Array String), Matcher);
     match_one = |target, matcher| (
         let bytes = target.get_bytes.pop_back;
-        if matcher.@flags.find_byte('g').is_some {
+        if matcher.@global {
             let (matches, dfa) = matcher.@dfa.search_every(bytes);
             let matcher = matcher.set_dfa(dfa);
             if matches.is_empty {
                 (err $ "NotMatch", matcher)
             };
-            (ok $ target._convert_groups_to_string(matches.map(|groups| groups.@(0))), matcher)
+            (ok $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
         } else {
             let (opt, dfa) = matcher.@dfa.search_from(bytes, 0);
             let matcher = matcher.set_dfa(dfa);
             if opt.is_none {
                 (err $ "NotMatch", matcher)
             };
-            (ok $ target._convert_groups_to_string(opt.as_some), matcher)
+            (ok $ target._groups_to_strings(opt.as_some), matcher)
         }
     );
 
@@ -191,7 +202,7 @@ namespace Matcher {
     match_all = |target, matcher| (
         let bytes = target.get_bytes.pop_back;
         let (matches, dfa) = matcher.@dfa.search_every(bytes);
-        (matches.map(|groups| target._convert_groups_to_string(groups)), matcher.set_dfa(dfa))
+        (matches.map(|groups| target._groups_to_strings(groups)), matcher.set_dfa(dfa))
     );
 
     // `matcher.replace_all(target, replacement)` replaces every stretch of `target` the regular

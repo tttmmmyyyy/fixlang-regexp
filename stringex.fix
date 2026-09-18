@@ -7,6 +7,7 @@
 module RegExp.StringEx;
 
 import Character::{to_lower, to_upper};
+import RegExp.StdBytes::find_bytes_within;
 import Std::{
     loop, Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, ToString, U64, U8,
     Array::{empty, get_size, pop_back, push_back, to_iter, @}, Functor::map, 
@@ -56,18 +57,9 @@ byte_to_string = |c| (
 // If found, returns the index of that byte.
 find_byte: U8 -> String -> Option I64;
 find_byte = |c, str| (
-    let array = str.get_bytes;
-    let n = str.get_size;
-    loop(
-        0, |i|
-        if i >= n {
-            break $ none()
-        };
-        if array.@(i) == c {
-            break $ some $ i
-        };
-        continue $ i + 1
-    )
+    // The bytes of a string end in a terminating zero that the string's own size leaves out, so the
+    // reading stops at the size.
+    str.get_bytes.find_bytes_within([c], 0, str.get_size)
 );
 
 // Searches for the specified byte from the end of a string.
