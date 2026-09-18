@@ -509,6 +509,20 @@ _test_posix_suite = (
 _random_cases: I64;
 _random_cases = 4000;
 
+// A pattern asking for more rounds than the walk that works out the forced beginning may take
+// compiles in the time the rest of this suite takes.
+//
+// The walk asks each state whether a match can end there, and the answer is worked out with the end
+// of the input reached, which lets a counted quantifier run its rounds out: one thread per round,
+// each read against the threads taken so far. Asking for a hundred thousand rounds cost forty-five
+// seconds of compiling. What says the bound is gone is this test's own running time, so it asks for
+// ten times that many. Searching with such a pattern costs the same square and is left alone here.
+_test_many_rounds: IO ();
+_test_many_rounds = (
+    assert(|_| "a pattern asking for a million rounds compiles",
+        RegExp::compile("(a*){1000000,}", "").is_ok)
+);
+
 // Draws patterns and strings, and holds the scanner to what the automaton finds: every match of
 // `search_all`, and the match `search` finds from each position of the string.
 _test_against_threads: IO ();
@@ -818,6 +832,7 @@ test = (
     _test_forced_shapes;;
     _test_forced_beginning;;
     _test_kept_scanner;;
+    _test_many_rounds;;
     _test_beyond_bounds;;
     _test_ordered_insertion;;
     pure()
