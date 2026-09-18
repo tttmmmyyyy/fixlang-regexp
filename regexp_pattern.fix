@@ -731,9 +731,11 @@ forced_of = |pat| (
         };
         if forced.@exact.is_some && forced.@exact.as_some.get_size > 0 {
             let once = forced.@exact.as_some;
-            let rounds = if once.get_size * least > _MAX_FORCED_LENGTH {
-                _MAX_FORCED_LENGTH / once.get_size
-            } else { least };
+            // How many rounds the room kept for a forced byte string holds. The count is read off a
+            // division, so that it stands whatever number of rounds the quantifier asks for: a
+            // pattern names that number, and multiplying by it leaves `I64`.
+            let room = _MAX_FORCED_LENGTH / once.get_size;
+            let rounds = if least > room { room } else { least };
             let run = _repeated(once, rounds);
             Forced {
                 exact: if least == most && rounds == least { some(run) } else { none() },

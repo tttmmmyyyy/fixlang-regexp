@@ -5,16 +5,20 @@ import RegExp::{
     RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa}
 };
 import RegExp.RegExpNFA::{
-    DFA, Groups, NFA, DFA::{make, _every_match, _insert_at, _with_forced_set}, 
-    NFA::{search, search_all, @forced_sets, @prefix, _search_threads}
+    DFA, Groups, NFA, 
+    DFA::{make, _decided_by, _every_match, _insert_at, _next, _with_forced_set, @first_bytes, @interior}, 
+    NFA::{search, search_all, @forced_sets, @prefix, _search_threads}, _holds_byte
+};
+import RegExp.RegExpPattern::{
+    ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}, _bytes_union, _no_bytes
 };
 import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
-    loop, Array, Bool, I64, IO, Option, String, U8, 
+    loop, Array, Bool, I64, IO, Option, String, U8, U64, 
     Array::{empty, pop_back, push_back, to_iter, @, @size}, 
-    Debug::{assert, assert_eq}, Iterator::{fold, fold_m, range}, LoopState::{break, continue}, 
+    Debug::{assert, assert_eq}, I64::to_U8, Iterator::{fold, fold_m, range}, LessThan::max, LoopState::{break, continue}, 
     Monad::pure, Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, 
-    String::get_bytes, ToString::to_string
+    String::get_bytes, ToString::to_string, U8::to_I64
 };
 
 // A case for `match_one` and `match_all`.
@@ -458,6 +462,37 @@ _forced_shape_cases = [
     ("a{20}", "aaaa aaaaaaaaaaaaaaaaaaaaaa")
 ];
 
+// The patterns whose quantifier asks for so many rounds that the bytes it would write out are more
+// than an `I64` counts, together with how many bytes the string kept for each holds. The value
+// beside each is the largest count that does not reach that far.
+_repeat_bound_cases: Array (String, I64);
+_repeat_bound_cases = [
+    ("(ab){4611686018427387903}", 16),
+    ("(ab){4611686018427387904}", 16),
+    ("(abc){3074457345618258602}", 15),
+    ("(abc){3074457345618258603}", 15),
+    ("(abc){6148914691236517206}", 15),
+    ("(abcdefghijklmnop){576460752303423487}", 16),
+    ("(abcdefghijklmnop){576460752303423488}", 16)
+];
+
+// The room kept for a forced byte string bounds the string a quantifier writes out, whatever number
+// of rounds it asks for.
+_test_repeat_bound: IO ();
+_test_repeat_bound = (
+    _repeat_bound_cases.to_iter.fold_m((), |(pattern, longest), _|
+        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        nfa.@forced_sets.to_iter.fold_m((), |set, _|
+            set.to_iter.fold_m((), |run, _|
+                assert_eq(
+                    |_| "/" + pattern + "/ forces a byte string of " + longest.to_string + " bytes",
+                    run.@bytes.@size, longest
+                )
+            )
+        )
+    )
+);
+
 // Holds the scanner to the automaton over the patterns whose forced byte strings take shapes a
 // drawn pattern does not reach.
 _test_forced_shapes: IO ();
@@ -471,6 +506,210 @@ _test_forced_shapes = (
         pure $ next
     );;
     pure()
+);
+
+// Which bytes the scan takes as carrying the state a match begins in forward whole, weighed the way
+// `_learn_absorbing` weighs them.
+//
+// # Parameters
+// * `nfa` - The automaton to weigh them against.
+_carrying_bytes: NFA -> Array Bool;
+_carrying_bytes = |nfa| (
+    let (carrying, _) = range(0, 256).fold(
+        (Array::empty(256), DFA::make(nfa)), |byte, (carrying, dfa)|
+        let (next, dfa) = dfa._next(dfa.@interior, byte.to_U8);
+        let carries = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
+        (carrying.push_back(carries), dfa)
+    );
+    carrying
+);
+
+// Whether a match begins at a position, worked out by walking every thread.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `at` - The position to ask about.
+// * `nfa` - The automaton to run.
+_begins_at: Array U8 -> I64 -> NFA -> Bool;
+_begins_at = |bytes, at, nfa| (
+    let opt = NFA::_search_threads(bytes, at, nfa);
+    if opt.is_none { false };
+    let (begin, _) = opt.as_some.@(0);
+    begin == at
+);
+
+// A byte taken as carrying the state a match begins in forward passes over the position behind it,
+// so a match beginning there where none begins before it is one the search never finds.
+//
+// The bytes are weighed here as the scan weighs them and held to the matches the automaton finds,
+// which says so wherever a drawn text holds such a byte, rather than only where the search, reading
+// that text, would have been led past a match.
+_test_carrying_bytes: IO ();
+_test_carrying_bytes = (
+    let (_, weighed) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260919 }, 0), |_, (draws, weighed)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let (target, draws) = _draw_target(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, weighed) };
+        let nfa = result.as_ok.@nfa;
+        let bytes = target.get_bytes.pop_back;
+        let name = _named(pattern, "g", target);
+        let carrying = _carrying_bytes(nfa);
+        // The position where the input ends is never passed over, so the run stops one short of it.
+        let weighed = *range(1, max(1, bytes.@size - 1)).fold_m(weighed, |at, weighed|
+            if !carrying.@(bytes.@(at).to_I64) { pure $ weighed };
+            if _begins_at(bytes, at, nfa) { pure $ weighed };
+            assert(
+                |_| name + " no match begins at " + (at + 1).to_string + ", behind the byte at "
+                    + at.to_string + " that carries the start state on",
+                !_begins_at(bytes, at + 1, nfa)
+            );;
+            pure $ weighed + 1
+        );
+        pure $ (draws, weighed)
+    );
+    // The draws are held to producing work. A generator that stopped producing bytes that carry the
+    // start state on would let every case agree with no position having been weighed.
+    assert(
+        |_| "the drawn strings hold bytes that carry the start state on",
+        weighed >= _random_cases / 8
+    )
+);
+
+// Whether a byte string stands at a position.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `at` - The position it would stand at.
+// * `wanted` - The byte string to look for.
+_stands_at: Array U8 -> I64 -> Array U8 -> Bool;
+_stands_at = |bytes, at, wanted| (
+    if at + wanted.@size > bytes.@size { false };
+    loop(0, |k|
+        if k == wanted.@size { break $ true };
+        if bytes.@(at + k) != wanted.@(k) { break $ false };
+        continue $ k + 1
+    )
+);
+
+// Whether every byte of a stretch stands among a set of byte values.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `from` - Where the stretch begins.
+// * `to` - Where it ends.
+// * `bits` - The byte values, one bit each.
+_all_among: Array U8 -> I64 -> I64 -> Array U64 -> Bool;
+_all_among = |bytes, from, to, bits| (
+    loop(from, |at|
+        if at >= to { break $ true };
+        if !bits._holds_byte(0, bytes.@(at)) { break $ false };
+        continue $ at + 1
+    )
+);
+
+// Whether a stretch of the text holds a member of a set where the skip needs one to stand: inside
+// the stretch, no further into it than the set's `back_max`, with only bytes of the set's
+// `back_class` before it.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `begin` - Where the stretch begins.
+// * `end` - Where it ends.
+// * `runs` - The set to look for.
+_set_stands_in: Array U8 -> I64 -> I64 -> Array ForcedRun -> Bool;
+_set_stands_in = |bytes, begin, end, runs| (
+    let back_max = runs.to_iter.fold(0, |run, most| max(most, run.@back_max));
+    let bits = runs.to_iter.fold(_no_bytes, |run, bits| _bytes_union(run.@back_class, bits));
+    range(0, runs.@size).fold(false, |i, found|
+        if found { true };
+        let wanted = runs.@(i).@bytes;
+        range(begin, end + 1).fold(false, |at, stood|
+            if stood { true };
+            if at + wanted.@size > end { false };
+            if !_stands_at(bytes, at, wanted) { false };
+            if at - begin > back_max { false };
+            _all_among(bytes, begin, at, bits)
+        )
+    )
+);
+
+// Every match holds a member of every set of forced byte strings, standing inside the match no
+// further in than what the pattern may read before that member and behind only bytes the pattern
+// may read before it.
+//
+// That is what `_skip_to_forced` leans on: it takes the earliest place a member stands and backs up
+// from there over the bytes the pattern may read, so a match holding its member later than the
+// backing up reaches, or behind a byte the backing up stops at, is one the search passes over.
+// Holding each set to the matches says so wherever a drawn text holds one, rather than only where
+// the search, left to choose a set, would have been led past a match.
+_test_forced_sets_stand_in_matches: IO ();
+_test_forced_sets_stand_in_matches = (
+    let (_, held) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260920 }, 0), |_, (draws, held)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let (target, draws) = _draw_target(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, held) };
+        let nfa = result.as_ok.@nfa;
+        let bytes = target.get_bytes.pop_back;
+        let name = _named(pattern, "g", target);
+        let sets = nfa.@forced_sets;
+        let held = *_search_all_threads(bytes, nfa).to_iter.fold_m(held, |groups, held|
+            let (begin, end) = groups.@(0);
+            range(0, sets.@size).fold_m(held, |i, held|
+                assert(
+                    |_| name + " the match at " + begin.to_string + " holds a member of forced set "
+                        + i.to_string + " where the skip needs one",
+                    _set_stands_in(bytes, begin, end, sets.@(i))
+                );;
+                pure $ held + 1
+            )
+        );
+        pure $ (draws, held)
+    );
+    // The draws are held to producing work. A generator that stopped producing patterns that force
+    // byte strings, or strings the patterns are met by, would let every case agree with no set
+    // having been held to anything.
+    assert(
+        |_| "the drawn patterns force byte strings the drawn strings hold",
+        held >= _random_cases / 4
+    )
+);
+
+// Every match away from either end of the input begins with a byte the scan takes a match to begin
+// with, so that the positions `_skip_bytes` reads past hold no match.
+_test_first_bytes: IO ();
+_test_first_bytes = (
+    let (_, held) = *range(0, _random_cases).fold_m(
+        (Draws { state: 20260921 }, 0), |_, (draws, held)|
+        let (pattern, draws) = _draw_pattern(draws);
+        let (target, draws) = _draw_target(draws);
+        let result = RegExp::compile(pattern, "g");
+        if result.is_err { pure $ (draws, held) };
+        let nfa = result.as_ok.@nfa;
+        let bytes = target.get_bytes.pop_back;
+        let name = _named(pattern, "g", target);
+        let first_bytes = DFA::make(nfa).@first_bytes;
+        let held = *_search_all_threads(bytes, nfa).to_iter.fold_m(held, |groups, held|
+            let (begin, _) = groups.@(0);
+            // The ends of the input are where an assertion may hold, so a match beginning at either
+            // is looked for from a state of its own and is never passed over.
+            if begin == 0 || begin == bytes.@size { pure $ held };
+            assert(
+                |_| name + " the match at " + begin.to_string
+                    + " begins with a byte a match may begin with",
+                first_bytes._holds_byte(0, bytes.@(begin))
+            );;
+            pure $ held + 1
+        );
+        pure $ (draws, held)
+    );
+    // The draws are held to producing work. A generator that stopped producing strings the patterns
+    // are met by away from either end would let every case agree with no match having been held to
+    // anything.
+    assert(|_| "the drawn strings meet the patterns away from either end", held >= _random_cases / 4)
 );
 
 // The bytes `NFA::compile` works out as the beginning of every match are the beginning of every
@@ -674,7 +913,11 @@ test = (
     _test_byte_searches;;
     _test_against_threads;;
     _test_forced_sets;;
+    _test_repeat_bound;;
     _test_forced_shapes;;
+    _test_carrying_bytes;;
+    _test_forced_sets_stand_in_matches;;
+    _test_first_bytes;;
     _test_forced_beginning;;
     _test_kept_scanner;;
     _test_many_rounds;;
