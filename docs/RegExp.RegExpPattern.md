@@ -6,6 +6,18 @@ Character class and Pattern parser. This is internal module of `RegExp`.
 
 ## Values
 
+### namespace RegExp.RegExpPattern
+
+#### forced_of
+
+Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpPattern::Forced`
+
+What a pattern forces the text it matches to hold.
+
+##### Parameters
+
+* `pat` - The pattern to read.
+
 ### namespace RegExp.RegExpPattern::CharClass
 
 #### add
@@ -145,7 +157,66 @@ A label that describes this class (for debugging only)
 
 Type: `Std::U8 -> Std::Bool`
 
-A member function that judges whether a character is contained in this class or not
+A function that judges whether a character is a member of this class
+
+#### Forced
+
+Defined as: `type Forced = unbox struct { ...fields... }`
+
+What a pattern forces the text it matches to hold, and what it may read.
+
+What it may read is carried along because a string forced by one stretch of a pattern has
+whatever the stretches before it read standing ahead of it, which is what says how far back a
+match holding that string may begin. Working it out on its own would walk the pattern again for
+every stretch of it.
+
+##### field `exact`
+
+Type: `Std::Option (Std::Array Std::U8)`
+
+The one byte string the pattern matches, where it matches that one and no other.
+
+##### field `sets`
+
+Type: `Std::Array (Std::Array RegExp.RegExpPattern::ForcedRun)`
+
+Sets of forced byte strings. Every text the pattern matches holds a member of each of these
+sets, so a search is free to take whichever set it likes and look for that set alone.
+
+##### field `max_read`
+
+Type: `Std::I64`
+
+The most bytes the pattern may read, or `_UNBOUNDED_READ` where it may read any number.
+
+##### field `read_bytes`
+
+Type: `Std::Array Std::U64`
+
+The byte values the pattern may read, one bit each.
+
+#### ForcedRun
+
+Defined as: `type ForcedRun = unbox struct { ...fields... }`
+
+A byte string every text a pattern matches holds, together with what the pattern may read before
+it.
+
+A search that finds the string standing at a position knows a match holding that string begins
+no earlier than `back_max` bytes before it, and no earlier than the run of bytes drawn from
+`back_class` that ends there.
+
+##### field `bytes`
+
+Type: `Std::Array Std::U8`
+
+##### field `back_max`
+
+Type: `Std::I64`
+
+##### field `back_class`
+
+Type: `Std::Array Std::U64`
 
 #### PAssertion
 

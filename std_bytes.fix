@@ -49,29 +49,11 @@ find_byte = |wanted, from, bytes| (
 // * `from` - The position to look from.
 // * `bytes` - The bytes to read.
 find_bytes : Array U8 -> I64 -> Array U8 -> Option I64;
-find_bytes = |wanted, from, bytes| (
-    let length = bytes.get_size;
-    let wanted_length = wanted.get_size;
-    if wanted_length == 0 { if from <= length { some(from) } else { none() } };
-    if from + wanted_length > length { none() };
-    let head = wanted.@(0);
-    // The last position a run of `wanted_length` bytes can begin at.
-    let last_begin = length - wanted_length;
-    bytes.borrow_elements(|base|
-        loop(from, |at|
-            if at > last_begin { break $ none() };
-            let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
-                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
-            if found == nullptr { break $ none() };
-            let begin = found.subtract_ptr(base);
-            if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };
-            continue $ begin + 1
-        )
-    )
-);
+find_bytes = |wanted, from, bytes| bytes.find_bytes_within(wanted, from, bytes.get_size);
 
-// The first position at or after `from` and before `limit` where `bytes` holds `wanted` entire, or
-// `none` where it holds it nowhere between the two.
+// The first position at or after `from` and at or before `limit` where `bytes` holds `wanted`
+// entire, or `none` where it holds it nowhere between the two. `limit` bounds where the run begins,
+// so a run beginning at `limit` and reaching past it is found.
 //
 // A search for several byte strings takes the earliest place any of them stands, so each string
 // after the first needs looking for only as far as the earliest place found so far. That bound is
@@ -81,7 +63,7 @@ find_bytes = |wanted, from, bytes| (
 // # Parameters
 // * `wanted` - The bytes to look for.
 // * `from` - The position to look from.
-// * `limit` - The position to stop looking at.
+// * `limit` - The last position a run may begin at.
 // * `bytes` - The bytes to read.
 find_bytes_within : Array U8 -> I64 -> I64 -> Array U8 -> Option I64;
 find_bytes_within = |wanted, from, limit, bytes| (
