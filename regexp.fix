@@ -7,10 +7,8 @@
 // - Groups: `(x)`
 // - Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`
 //
-// A search takes the leftmost match, and the longest of the matches beginning at that place. So
-// `a|ab` matched against `ab` gives `ab`, which is the rule POSIX gives and which the `testregex`
-// suite of Glenn Fowler holds this library to. JavaScript takes the first alternative that matches
-// and would give `a`, so a pattern whose alternatives begin alike is read differently here.
+// This follows JavaScript but for one thing: where several alternatives match at one place, the
+// longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
 //
 // For what the pattern syntax above means, see
 // [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
