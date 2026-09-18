@@ -8,6 +8,7 @@ import RegExp.RegExpNFA::{
     DFA, Groups, NFA, DFA::{find, make, _insert_at, _with_forced_set}, 
     NFA::{search, search_all, @forced_sets, @prefix, _search_threads}
 };
+import RegExp.RegExpPattern::ForcedRun::@bytes;
 import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U8, 
@@ -455,6 +456,37 @@ _forced_shape_cases = [
     ("a{20}", "aaaa aaaaaaaaaaaaaaaaaaaaaa")
 ];
 
+// The patterns whose quantifier asks for so many rounds that the bytes it would write out are more
+// than an `I64` counts, together with how many bytes the string kept for each holds. The value
+// beside each is the largest count that does not reach that far.
+_repeat_bound_cases: Array (String, I64);
+_repeat_bound_cases = [
+    ("(ab){4611686018427387903}", 16),
+    ("(ab){4611686018427387904}", 16),
+    ("(abc){3074457345618258602}", 15),
+    ("(abc){3074457345618258603}", 15),
+    ("(abc){6148914691236517206}", 15),
+    ("(abcdefghijklmnop){576460752303423487}", 16),
+    ("(abcdefghijklmnop){576460752303423488}", 16)
+];
+
+// The room kept for a forced byte string bounds the string a quantifier writes out, whatever number
+// of rounds it asks for.
+_test_repeat_bound: IO ();
+_test_repeat_bound = (
+    _repeat_bound_cases.to_iter.fold_m((), |(pattern, longest), _|
+        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        nfa.@forced_sets.to_iter.fold_m((), |set, _|
+            set.to_iter.fold_m((), |run, _|
+                assert_eq(
+                    |_| "/" + pattern + "/ forces a byte string of " + longest.to_string + " bytes",
+                    run.@bytes.@size, longest
+                )
+            )
+        )
+    )
+);
+
 // Holds the scanner to the automaton over the patterns whose forced byte strings take shapes a
 // drawn pattern does not reach.
 _test_forced_shapes: IO ();
@@ -678,6 +710,7 @@ test = (
     _test_byte_searches;;
     _test_against_threads;;
     _test_forced_sets;;
+    _test_repeat_bound;;
     _test_forced_shapes;;
     _test_forced_beginning;;
     _test_kept_scanner;;
