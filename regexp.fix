@@ -7,14 +7,16 @@
 // - Groups: `(x)`
 // - Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`
 //
-// For details, see
+// This follows JavaScript but for one thing: where several alternatives match at one place, the
+// longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
+//
+// For what the pattern syntax above means, see
 // [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 //
 // LIMITATION:
 //
-// Currently, only single byte characters (U+0001..U+007F) can be specified in character classes.
-// Non-ASCII characters (U+0080..U+10FFFF) are encoded to two or more bytes in UTF-8, so they cannot be specified in character classes.
-// And the null character (U+0000) cannot be used in Fix strings.
+// A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
+// U+0080 upward as two or more bytes, and a Fix string holds no null character (U+0000).
 //
 module RegExp;
 

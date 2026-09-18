@@ -16,9 +16,9 @@ import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U8, U64, 
     Array::{empty, pop_back, push_back, to_iter, @, @size}, 
-    Debug::{assert, assert_eq}, I64::to_U8, Iterator::{fold, fold_m, range}, LessThan::max, LoopState::{break, continue}, 
-    Monad::pure, Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, 
-    String::get_bytes, ToString::to_string, U8::to_I64
+    Debug::{assert, assert_eq}, I64::to_U8, Iterator::{fold, fold_m, range}, LessThan::max, 
+    LoopState::{break, continue}, Monad::{bind, pure}, Option::{as_some, is_none, none, some}, 
+    Result::{as_ok, is_err, is_ok}, String::get_bytes, ToString::to_string, U8::to_I64
 };
 
 // A case for `match_one` and `match_all`.
@@ -353,6 +353,160 @@ _search_all_threads = |bytes, nfa| (
         continue $ (matches.push_back(groups), if end > begin { end } else { begin + 1 })
     );
     matches
+);
+
+// The cases of the POSIX test suite this library's syntax reaches: the pattern, the text, and where
+// the match runs from and to, `-1` standing for a text the pattern is met by nowhere.
+//
+// They come from `basic.dat`, `nullsubexpr.dat` and `repetition.dat` of Glenn Fowler's `testregex`
+// suite (AT&T Research), as the Go project holds them at
+// `https://github.com/golang/go/tree/master/src/regexp/testdata`. Their licence, from the header of
+// `testregex.c`, covers the test data as well:
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy of THIS SOFTWARE
+//   FILE (the "Software"), to deal in the Software without restriction, including without
+//   limitation the rights to use, copy, modify, merge, publish, distribute, and/or sell copies of
+//   the Software, and to permit persons to whom the Software is furnished to do so, subject to the
+//   following disclaimer:
+//
+//   THIS SOFTWARE IS PROVIDED BY AT&T ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+//   BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+//   PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL AT&T BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+//   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+//   CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+//   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+//   ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// The rows kept are those the suite marks as extended regular expressions and whose syntax this
+// library reads, less the rows over a bracket expression whose first member is `]`: POSIX reads
+// that `]` as a member and JavaScript reads the brackets as a class holding nothing, so the answer
+// the suite names is the answer to a different question. Each row names where the match runs, and the ones naming where the groups run are
+// read for the match alone: which stretch each group captured is a rule of its own, and the suite
+// answers it by the POSIX rule.
+_posix_cases: Array (String, String, I64, I64);
+_posix_cases = [
+    ("abracadabra$", "abracadabracadabra", 7, 18),
+    ("a...b", "abababbb", 2, 7),
+    ("XXXXXX", "..XXXXXX", 2, 8),
+    ("\\)", "()", 1, 2),
+    ("a]", "a]a", 0, 2),
+    ("\\}", "}", 0, 1),
+    ("\\]", "]", 0, 1),
+    ("]", "]", 0, 1),
+    ("^a", "ax", 0, 1),
+    ("\\^a", "a^a", 1, 3),
+    ("a\\^", "a^", 0, 2),
+    ("a$", "aa", 1, 2),
+    ("a\\$", "a$", 0, 2),
+    ("^$", "", 0, 0),
+    ("$^", "", 0, 0),
+    ("(..)*(...)*", "a", 0, 0),
+    ("a{0}b", "ab", 1, 2),
+    ("(a|b)*c|(a|ab)*c", "xc", 1, 2),
+    ("ab|abab", "abbabab", 0, 2),
+    ("aba|bab|bba", "baaabbbaba", 5, 8),
+    ("aba|bab", "baaabbbaba", 6, 9),
+    ("ab|a", "xabc", 1, 3),
+    ("ab|a", "xxabc", 2, 4),
+    ("[^-]", "--a", 2, 3),
+    ("[a-]*", "--a", 0, 3),
+    ("[a-m-]*", "--amoma--", 0, 4),
+    (":::1:::0:|:::1:1:0:", ":::0:::1:::1:::0:", 8, 17),
+    (":::1:::0:|:::1:1:1:", ":::0:::1:::1:::0:", 8, 17),
+    ("xxx", "xxx", 0, 3),
+    ("abaa|abbaa|abbbaa|abbbbaa", "ababbabbbabbbabbbbabbbbaa", 18, 25),
+    ("abaa|abbaa|abbbaa|abbbbaa", "ababbabbbabbbabbbbabaa", 18, 22),
+    ("aaac|aabc|abac|abbc|baac|babc|bbac|bbbc", "baaabbbabac", 7, 11),
+    ("aaaa|bbbb|cccc|ddddd|eeeeee|fffffff|gggg|hhhh|iiiii|jjjjj|kkkkk|llll", "XaaaXbbbXcccXdddXeeeXfffXgggXhhhXiiiXjjjXkkkXlllXcbaXaaaa", 53, 57),
+    ("a*a*a*a*a*b", "aaaaaaaaab", 0, 10),
+    ("^", "", 0, 0),
+    ("$", "", 0, 0),
+    ("^$", "", 0, 0),
+    ("^a$", "a", 0, 1),
+    ("abc", "abc", 0, 3),
+    ("abc", "xabcy", 1, 4),
+    ("abc", "ababc", 2, 5),
+    ("ab*c", "abc", 0, 3),
+    ("ab*bc", "abc", 0, 3),
+    ("ab*bc", "abbc", 0, 4),
+    ("ab*bc", "abbbbc", 0, 6),
+    ("ab+bc", "abbc", 0, 4),
+    ("ab+bc", "abbbbc", 0, 6),
+    ("ab?bc", "abbc", 0, 4),
+    ("ab?bc", "abc", 0, 3),
+    ("ab?c", "abc", 0, 3),
+    ("^abc$", "abc", 0, 3),
+    ("^abc", "abcc", 0, 3),
+    ("abc$", "aabc", 1, 4),
+    ("^", "abc", 0, 0),
+    ("$", "abc", 3, 3),
+    ("a.c", "abc", 0, 3),
+    ("a.c", "axc", 0, 3),
+    ("a.*c", "axyzc", 0, 5),
+    ("a[bc]d", "abd", 0, 3),
+    ("a[b-d]e", "ace", 0, 3),
+    ("a[b-d]", "aac", 1, 3),
+    ("a[-b]", "a-", 0, 2),
+    ("a[b-]", "a-", 0, 2),
+    ("a]", "a]", 0, 2),
+    ("a[^bc]d", "aed", 0, 3),
+    ("a[^-b]c", "adc", 0, 3),
+    ("ab|cd", "abc", 0, 2),
+    ("ab|cd", "abcd", 0, 2),
+    ("a+b+c", "aabbabc", 4, 7),
+    ("a*", "aaa", 0, 3),
+    ("[^ab]*", "cde", 0, 3),
+    ("a*", "", 0, 0),
+    ("a|b|c|d|e", "e", 0, 1),
+    ("abcd*efg", "abcdefg", 0, 7),
+    ("ab*", "xabyabbbz", 1, 3),
+    ("ab*", "xayabbbz", 1, 2),
+    ("[abhgefdc]ij", "hij", 0, 3),
+    ("a[bcd]*dcdcde", "adcdcde", 0, 7),
+    ("[A-Za-z_][A-Za-z0-9_]*", "alpha", 0, 5),
+    ("^a(bc+|b[eh])g|.h$", "abh", 1, 3),
+    ("multiple words", "multiple words yeah", 0, 14),
+    ("abcd", "abcd", 0, 4),
+    ("^.+$", "vivi", 0, 4),
+    ("\\\\XXX", "\\XXX", 0, 4),
+    ("(a+)*", "x", 0, 0),
+    ("(a+)+", "x", -1, -1),
+    ("((..)|(.))", "", -1, -1),
+    ("((..)|(.))((..)|(.))", "", -1, -1),
+    ("((..)|(.))((..)|(.))((..)|(.))", "", -1, -1),
+    ("((..)|(.)){1}", "", -1, -1),
+    ("((..)|(.)){2}", "", -1, -1),
+    ("((..)|(.)){3}", "", -1, -1),
+    ("((..)|(.))*", "", 0, 0),
+    ("((..)|(.))((..)|(.))", "a", -1, -1),
+    ("((..)|(.))((..)|(.))((..)|(.))", "a", -1, -1),
+    ("((..)|(.)){2}", "a", -1, -1),
+    ("((..)|(.)){3}", "a", -1, -1),
+    ("((..)|(.))((..)|(.))((..)|(.))", "aa", -1, -1),
+    ("((..)|(.)){3}", "aa", -1, -1)
+];
+
+// The match this library finds is the match the POSIX suite names.
+//
+// The suite takes the leftmost match, and the longest of those beginning at the same place, which is
+// what `DFA::find` reports. A pattern the suite writes that this library does not read is one the
+// rows leave out, so a row that stops compiling says the reading of a pattern has changed.
+_test_posix_suite: IO ();
+_test_posix_suite = (
+    _posix_cases.to_iter.fold_m(0, |(pattern, text, begin, end), met|
+        let result = RegExp::compile(pattern, "");
+        assert(|_| "/" + pattern + "/ compiles", result.is_ok);;
+        let bytes = text.get_bytes.pop_back;
+        let found = result.as_ok.@nfa.search(bytes, 0);
+        let where = if found.is_none { (-1, -1) } else { found.as_some.@(0) };
+        assert_eq(|_| _named(pattern, "", text) + " POSIX suite", where, (begin, end));;
+        pure $ met + (if found.is_none { 0 } else { 1 })
+    ).bind(|met|
+        // The rows are held to meeting the texts they are written over. A reading that stopped
+        // finding matches would otherwise agree with every row naming no match.
+        assert(|_| "the POSIX suite rows are met", met >= _posix_cases.@size / 2)
+    )
 );
 
 // How many random cases to draw.
@@ -911,6 +1065,7 @@ test = (
         )
     );;
     _test_byte_searches;;
+    _test_posix_suite;;
     _test_against_threads;;
     _test_forced_sets;;
     _test_repeat_bound;;

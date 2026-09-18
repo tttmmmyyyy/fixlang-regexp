@@ -329,11 +329,12 @@ namespace Pattern {
         pure $ pgroup $ (group_idx, pat)
     };
 
-    // A table of normal characters, ie. not a meta character.
+    // The characters that stand for themselves where a pattern reads a character class. A `]` is
+    // among them: it closes a bracket expression, and outside one it is the character itself.
     _normal_chars: CharClass;
     _normal_chars = (
         CharClass::consists_of(
-            ".?*+^$|[](){}\\"
+            ".?*+^$|[(){}\\"
         ).negate.to_table
     );
 
