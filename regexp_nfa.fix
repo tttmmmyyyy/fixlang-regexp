@@ -30,7 +30,8 @@ import Std::{
         append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, sort_by, 
         to_iter, truncate, @
     }, 
-    Functor::map, I64::{maximum, to_U64, to_U8}, Iterator::{check_any, fold, map, range}, 
+    Functor::map, I64::{bit_and, bit_or, maximum, to_U64, to_U8}, 
+    Iterator::{check_any, fold, map, range}, 
     LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
     Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
     String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
@@ -75,7 +76,10 @@ type NFA = box struct {
     forced_sets: Array (Array ForcedRun),
     // The bytes every match begins with. Working them out means walking the automaton, and doing
     // it here leaves every scanner made from this automaton with nothing to walk.
-    prefix: Array U8
+    prefix: Array U8,
+    // What the automaton does between one byte and the next where it offers one way on, which is
+    // how a match's groups are read without running the threads over it again.
+    one_way: OneWayTable
 };
 
 namespace NFA {
@@ -89,7 +93,8 @@ namespace NFA {
         quant_bounds: Array::empty(0),
         classes: Array::empty(0),
         forced_sets: Array::empty(0),
-        prefix: Array::empty(0)
+        prefix: Array::empty(0),
+        one_way: OneWayTable::empty
     };
 
     // Adds a node that guards nothing and leads nowhere, and reports its id.
@@ -258,7 +263,8 @@ namespace NFA {
         let nfa = nfa.set_accepting_node(accept_id);
         let nfa = nfa.set_frag_output(frag, accept_id);
         let nfa = nfa.set_forced_sets(forced_of(pattern).@sets);
-        nfa.set_prefix(DFA::forced_beginning(nfa))
+        let nfa = nfa.set_prefix(DFA::forced_beginning(nfa));
+        nfa.set_one_way(_one_way_table(nfa))
     );
 
 }
@@ -948,8 +954,7 @@ namespace Walk {
     _captured: I64 -> Walk -> Groups;
     _captured = |thread, walk| (
         let slot_width = walk.@slot_width;
-        let base = thread * slot_width;
-        Array::from_map(slot_width / 2, |k| (walk.@slots.@(base + 2 * k), walk.@slots.@(base + 2 * k + 1)))
+        _groups_of(thread * slot_width, slot_width, walk.@slots)
     );
 
     // The better of the match found so far and any match the threads standing here have reached:
@@ -976,6 +981,103 @@ namespace Walk {
         )
     );
 }
+
+// The ways on from a node that carry one thread: what the automaton does between one byte and
+// the next, worked out once for the automaton rather than once for every byte of every match.
+type OneWayTable = box struct {
+    // Five numbers to a way: where its class's words begin, the node the byte leads to, which
+    // assertions the way stands on (one for the beginning of the input, two for its end), and
+    // the stretch of `writes` it performs.
+    ways: Array I64,
+    // Node `n` offers the ways from `bounds.@(n)` to `bounds.@(n + 1)`, counted in ways. It
+    // holds nothing where the automaton is walked by its threads.
+    bounds: Array I64,
+    // Three numbers to a node: which assertions the way from it to the accepting node stands
+    // on, and the stretch of `writes` that way performs. The assertions read `-1` where no
+    // empty-string way leads from the node to the accepting node.
+    accepts: Array I64,
+    // What a way writes down: a slot doubled, and one more where the slot takes `-1` rather
+    // than the position the walk stands at.
+    writes: Array I64,
+    // Per node, whether its empty-string transitions reach some node two ways. One thread
+    // stands for the automaton only where they reach each node one way.
+    twice: Array Bool
+};
+
+namespace OneWayTable {
+    // A table offering no way, which sends every walk to the threads.
+    empty: OneWayTable;
+    empty = OneWayTable {
+        ways: Array::empty(0),
+        bounds: Array::empty(0),
+        accepts: Array::empty(0),
+        writes: Array::empty(0),
+        twice: Array::empty(0)
+    };
+
+    // Whether the assertions a way stands on hold where the walk stands.
+    //
+    // # Parameters
+    // * `flags` - The assertions the way stands on.
+    // * `at_begin` - Whether the walk stands where the input begins.
+    // * `at_end` - Whether it stands where the input ends.
+    _flags_hold: I64 -> Bool -> Bool -> Bool;
+    _flags_hold = |flags, at_begin, at_end| (
+        (Std::I64::bit_and(1, flags) == 0 || at_begin) && (Std::I64::bit_and(2, flags) == 0 || at_end)
+    );
+
+    // The one way on from a node that a byte takes, or `-1` where the byte takes none,
+    // together with whether the node offered a second.
+    //
+    // The table's fields are fields of a boxed value, so reading one raises and lowers a reference
+    // count. The walk reads them once and hands them here, rather than once for every byte.
+    //
+    // # Parameters
+    // * `bounds` - Where each node's ways stand.
+    // * `classes` - The character classes the ways are guarded by.
+    // * `node` - The node the walk stands at.
+    // * `byte` - The byte to read.
+    // * `at_begin` - Whether the walk stands where the input begins.
+    // * `at_end` - Whether it stands where the input ends.
+    // * `ways` - The ways to read.
+    _way_for: Array I64 -> Array U64 -> I64 -> U8 -> Bool -> Bool -> Array I64 -> (I64, Bool);
+    _way_for = |bounds, classes, node, byte, at_begin, at_end, ways| (
+        let to = bounds.@(node + 1);
+        loop((bounds.@(node), -1), |(i, found)|
+            if i >= to { break $ (found, false) };
+            if !_flags_hold(ways.@(5 * i + 2), at_begin, at_end) { continue $ (i + 1, found) };
+            if !classes._holds_byte(ways.@(5 * i), byte) { continue $ (i + 1, found) };
+            if found >= 0 { break $ (found, true) };
+            continue $ (i + 1, i)
+        )
+    );
+
+    // The slots a stretch of writes leaves behind.
+    //
+    // # Parameters
+    // * `from` - Where the stretch begins.
+    // * `to` - One past where it ends.
+    // * `at` - The position the walk stands at, which a write records.
+    // * `slots` - The slots to write in.
+    // * `writes` - What the ways write down.
+    _written: I64 -> I64 -> I64 -> Array I64 -> Array I64 -> Array I64;
+    _written = |from, to, at, slots, writes| (
+        loop((slots, from), |(slots, i)|
+            if i >= to { break $ slots };
+            let write = writes.@(i);
+            continue $ (slots.set(write / 2, if write % 2 == 0 { at } else { -1 }), i + 1)
+        )
+    );
+}
+
+// What the ways on from one node come to while they are worked out.
+type WayBuild = box struct {
+    ways: Array I64,     // the ways worked out so far, for this node and the ones before it
+    writes: Array I64,   // what they write down, laid end to end
+    accept: Array I64,   // the three numbers this node's way to the accepting node takes
+    seen: Array I64,     // per node, the node whose ways were being worked out when it was passed
+    twice: Bool          // whether a node was passed twice while this node's ways were worked out
+};
 
 namespace NFA {
     // Runs the automaton over the bytes and reports the match beginning earliest, taking the one
@@ -1047,6 +1149,158 @@ namespace NFA {
         _walk_threads(bytes, from, bytes.get_size, false, nfa)
     );
 
+    // Follows the empty-string transitions from a node, gathering the ways on that the node the
+    // walk began at offers.
+    //
+    // # Parameters
+    // * `start` - The node whose ways are being worked out, which marks the nodes passed.
+    // * `node` - The node to walk from.
+    // * `flags` - The assertions the way to `node` stands on.
+    // * `path` - What the way to `node` writes down.
+    // * `build` - What the ways come to so far.
+    // * `nfa` - The automaton to walk.
+    _gather_ways: I64 -> I64 -> I64 -> Array I64 -> WayBuild -> NFA -> WayBuild;
+    _gather_ways = |start, node, flags, path, build, nfa| (
+        if node < 0 { build };
+        if build.@seen.@(node) == start { build.set_twice(true) };
+        let build = build.mod_seen(set(node, start));
+        let build = if node == nfa.@accepting_node.@val {
+            let from = build.@writes.get_size;
+            build.mod_writes(append(path)).set_accept([flags, from, from + path.get_size])
+        } else { build };
+        let node_val = nfa.get_node(NodeID { val: node });
+        let action = node_val.@action;
+        let build = if action.is_sa_char_match {
+            // A way is where the byte carries the walk on, so a class leading to no node offers
+            // none.
+            if node_val.@output_on_action.@val < 0 { build };
+            let from = build.@writes.get_size;
+            let build = build.mod_writes(append(path));
+            build.mod_ways(|ways| ways
+                .push_back(action.as_sa_char_match)
+                .push_back(node_val.@output_on_action.@val)
+                .push_back(flags)
+                .push_back(from)
+                .push_back(from + path.get_size)
+            )
+        } else {
+            let next = node_val.@output_on_action.@val;
+            if action.is_sa_assert {
+                let bit = if action.as_sa_assert.is_pa_begin { 1 } else { 2 };
+                nfa._gather_ways(start, next, Std::I64::bit_or(bit, flags), path, build)
+            };
+            if action.is_sa_group_begin {
+                let group = action.as_sa_group_begin;
+                nfa._gather_ways(
+                    start, next, flags, path.push_back(4 * group).push_back(4 * group + 3), build
+                )
+            };
+            if action.is_sa_group_end {
+                let group = action.as_sa_group_end;
+                nfa._gather_ways(start, next, flags, path.push_back(4 * group + 2), build)
+            };
+            build
+        };
+        let build = nfa._gather_ways(start, node_val.@output2.@val, flags, path, build);
+        nfa._gather_ways(start, node_val.@output.@val, flags, path, build)
+    );
+
+    // The ways on the automaton offers from each of its nodes.
+    //
+    // A pattern that counts rounds is walked by its threads, which carry the counts one way on does
+    // not, so the table such a pattern gets offers no way.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to read.
+    _one_way_table: NFA -> OneWayTable;
+    _one_way_table = |nfa| (
+        if nfa.@quant_bounds.get_size > 0 { OneWayTable::empty };
+        let node_count = nfa.@nodes.get_size;
+        let build = WayBuild {
+            ways: Array::empty(node_count * 5),
+            writes: Array::empty(node_count * 4),
+            accept: [-1, 0, 0],
+            seen: Array::fill(node_count, -1),
+            twice: false
+        };
+        let (build, bounds, accepts, twice) = range(0, node_count).fold(
+            (
+                build,
+                Array::empty(node_count + 1).push_back(0),
+                Array::empty(node_count * 3),
+                Array::empty(node_count)
+            ),
+            |node, (build, bounds, accepts, twice)|
+            let build = build.set_accept([-1, 0, 0]).set_twice(false);
+            let build = nfa._gather_ways(node, node, 0, Array::empty(4), build);
+            (
+                build,
+                bounds.push_back(build.@ways.get_size / 5),
+                accepts.append(build.@accept),
+                twice.push_back(build.@twice)
+            )
+        );
+        OneWayTable {
+            ways: build.@ways,
+            bounds: bounds,
+            accepts: accepts,
+            writes: build.@writes,
+            twice: twice
+        }
+    );
+
+    // The groups a match captured, read by carrying one thread over the stretch the match covers.
+    //
+    // Where the automaton offers a second way on, one thread stands for less than the automaton
+    // does, and the walk reports `none` rather than the groups of a reading it cannot know is the
+    // one to report.
+    //
+    // # Parameters
+    // * `bytes` - The bytes the match was found in.
+    // * `begin` - Where the match begins.
+    // * `end` - Where it ends.
+    // * `nfa` - The automaton the match was found with.
+    _one_way_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
+    _one_way_groups = |bytes, begin, end, nfa| (
+        let table = nfa.@one_way;
+        if table.@bounds.get_size == 0 { none() };
+        let length = bytes.get_size;
+        let slot_width = 2 * max(1, nfa.@group_count);
+        // Each of these is a field of a boxed value, so reading one raises and lowers a reference
+        // count. They are read once here and stand for every byte the walk reads.
+        let (ways, bounds, accepts) = (table.@ways, table.@bounds, table.@accepts);
+        let (writes, twice, classes) = (table.@writes, table.@twice, nfa.@classes);
+        loop((nfa.@initial_node.@val, Array::fill(slot_width, -1), begin), |(node, slots, at)|
+            if twice.@(node) { break $ none() };
+            let (at_begin, at_end) = (at == 0, at == length);
+            if at >= end {
+                let flags = accepts.@(3 * node);
+                if flags < 0 || !_flags_hold(flags, at_begin, at_end) { break $ none() };
+                let slots = writes._written(
+                    accepts.@(3 * node + 1), accepts.@(3 * node + 2), at, slots
+                );
+                break $ some $ _groups_of(0, slot_width, slots)
+            };
+            let (way, forked) = ways._way_for(
+                bounds, classes, node, bytes.@(at), at_begin, at_end
+            );
+            if forked || way < 0 { break $ none() };
+            let slots = writes._written(ways.@(5 * way + 3), ways.@(5 * way + 4), at, slots);
+            continue $ (ways.@(5 * way + 1), slots, at + 1)
+        )
+    );
+
+    // The groups a stretch of slots holds, as pairs.
+    //
+    // # Parameters
+    // * `base` - Where the stretch begins.
+    // * `slot_width` - How many slots it holds, two to a group.
+    // * `slots` - The slots to read.
+    _groups_of: I64 -> I64 -> Array I64 -> Groups;
+    _groups_of = |base, slot_width, slots| (
+        Array::from_map(slot_width / 2, |k| (slots.@(base + 2 * k), slots.@(base + 2 * k + 1)))
+    );
+
     // The groups a match captured, read off by walking the automaton over the stretch it covers.
     //
     // # Parameters
@@ -1055,7 +1309,11 @@ namespace NFA {
     // * `end` - Where it ends.
     // * `nfa` - The automaton the match was found with.
     _capture_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
-    _capture_groups = |bytes, begin, end, nfa| _walk_threads(bytes, begin, end, true, nfa);
+    _capture_groups = |bytes, begin, end, nfa| (
+        let one_way = nfa._one_way_groups(bytes, begin, end);
+        if one_way.is_some { one_way };
+        _walk_threads(bytes, begin, end, true, nfa)
+    );
 }
 
 // How many states the scanner may take before it gives the search back to the automaton. Each state
