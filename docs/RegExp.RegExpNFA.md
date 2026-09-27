@@ -1,6 +1,6 @@
 # RegExp.RegExpNFA
 
-Defined in regexp@1.1.6
+Defined in regexp@1.2.0
 
 NFA (Nondeterministic Finite Automaton). This is internal module of `RegExp`.
 
@@ -269,6 +269,14 @@ Type: `RegExp.RegExpNFA::NFANode`
 
 A node that has no id, guards nothing and leads nowhere.
 
+### namespace RegExp.RegExpNFA::OneWayTable
+
+#### empty
+
+Type: `RegExp.RegExpNFA::OneWayTable`
+
+A table offering no way, which sends every walk to the threads.
+
 ### namespace RegExp.RegExpNFA::Replacement
 
 #### calc_replacement
@@ -512,6 +520,13 @@ Type: `Std::Array Std::U8`
 The bytes every match begins with. Working them out means walking the automaton, and doing
 it here leaves every scanner made from this automaton with nothing to walk.
 
+##### field `one_way`
+
+Type: `RegExp.RegExpNFA::OneWayTable`
+
+What the automaton does between one byte and the next where it offers one way on, which is
+how a match's groups are read without running the threads over it again.
+
 #### NFAFrag
 
 Defined as: `type NFAFrag = unbox struct { ...fields... }`
@@ -603,6 +618,50 @@ A node's name: its place in the automaton's `nodes`.
 
 Type: `Std::I64`
 
+#### OneWayTable
+
+Defined as: `type OneWayTable = box struct { ...fields... }`
+
+The ways on from a node that carry one thread: what the automaton does between one byte and
+the next, worked out once for the automaton rather than once for every byte of every match.
+
+##### field `ways`
+
+Type: `Std::Array Std::I64`
+
+Five numbers to a way: where its class's words begin, the node the byte leads to, which
+assertions the way stands on (one for the beginning of the input, two for its end), and
+the stretch of `writes` it performs.
+
+##### field `bounds`
+
+Type: `Std::Array Std::I64`
+
+Node `n` offers the ways from `bounds.@(n)` to `bounds.@(n + 1)`, counted in ways. It
+holds nothing where the automaton is walked by its threads.
+
+##### field `accepts`
+
+Type: `Std::Array Std::I64`
+
+Three numbers to a node: which assertions the way from it to the accepting node stands
+on, and the stretch of `writes` that way performs. The assertions read `-1` where no
+empty-string way leads from the node to the accepting node.
+
+##### field `writes`
+
+Type: `Std::Array Std::I64`
+
+What a way writes down: a slot doubled, and one more where the slot takes `-1` rather
+than the position the walk stands at.
+
+##### field `twice`
+
+Type: `Std::Array Std::Bool`
+
+Per node, whether its empty-string transitions reach some node two ways. One thread
+stands for the automaton only where they reach each node one way.
+
 #### QuantID
 
 Defined as: `type QuantID = Std::I64`
@@ -689,6 +748,32 @@ Type: `Std::I64`
 
 How many bytes the walk has read, which tells the marks left at one position from those left
 at another.
+
+#### WayBuild
+
+Defined as: `type WayBuild = box struct { ...fields... }`
+
+What the ways on from one node come to while they are worked out.
+
+##### field `ways`
+
+Type: `Std::Array Std::I64`
+
+##### field `writes`
+
+Type: `Std::Array Std::I64`
+
+##### field `accept`
+
+Type: `Std::Array Std::I64`
+
+##### field `seen`
+
+Type: `Std::Array Std::I64`
+
+##### field `twice`
+
+Type: `Std::Bool`
 
 ## Traits and aliases
 

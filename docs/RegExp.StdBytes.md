@@ -1,6 +1,6 @@
 # RegExp.StdBytes
 
-Defined in regexp@1.1.6
+Defined in regexp@1.2.0
 
 The byte operations `Std` does not offer, which the automaton reads text with.
 
