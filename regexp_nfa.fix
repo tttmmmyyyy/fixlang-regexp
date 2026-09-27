@@ -7,12 +7,12 @@
 module RegExp.RegExpNFA;
 
 import RegExp.RegExpPattern::{
-    CharClass, ForcedRun, PAssertion, Pattern, CharClass::contains, 
-    ForcedRun::{@back_class, @back_max, @bytes}, PAssertion::{is_pa_begin, is_pa_end}, 
-    forced_of, _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, Forced::@sets, 
+    _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
+    Pattern, Forced::@sets, ForcedRun::{@back_class, @back_max, @bytes}, 
+    PAssertion::{is_pa_begin, is_pa_end}, 
     Pattern::{
-        as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, is_passert, is_pclass, 
-        is_peither, is_pgroup, is_pquant, is_psequence, psequence, _assign_group_number
+        _assign_group_number, as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, 
+        is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, psequence
     }
 };
 import RegExp.SimpleParser::{
@@ -23,19 +23,18 @@ import RegExp.SimpleParser::{
     }
 };
 import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
-import RegExp.StringEx::{substring, _unsafe_to_string};
+import RegExp.StringEx::{_unsafe_to_string, substring};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
     Array::{
-        append, empty, fill, from_map, get_last, get_size, mod, pop_back, push_back, set, sort_by, 
-        to_iter, truncate, @
+        @, @size, append, empty, fill, from_map, get_last, mod, pop_back, push_back, set, sort_by, to_iter, 
+        truncate
     }, 
-    Functor::map, I64::{bit_and, bit_or, maximum, to_U64, to_U8}, 
-    Iterator::{check_any, fold, map, range}, 
+    Functor::map, I64::{bit_and, bit_or, maximum}, Iterator::{check_any, fold, map, range}, 
     LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
     Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
-    String::{concat_iter, get_bytes, get_size}, ToString::to_string, 
-    U64::{bit_and, bit_or, maximum, shift_left, shift_right}, U8::to_I64
+    String::{@size, concat_iter, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
+    U64::{bit_and, bit_or, shift_right}
 };
 
 // Where a group was matched: the two stream positions `(begin, end)`. `-1` stands for a position
@@ -100,7 +99,7 @@ namespace NFA {
     // Adds a node that guards nothing and leads nowhere, and reports its id.
     new_node: NFA -> (NFA, NodeID);
     new_node = |nfa| (
-        let id = NodeID { val: nfa.@nodes.get_size };
+        let id = NodeID { val: nfa.@nodes.@size };
         let node = NFANode::empty;
         let node = node.set_id(id);
         let nfa = nfa.mod_nodes(push_back(node));
@@ -114,7 +113,7 @@ namespace NFA {
     // * `nfa` - The automaton to store it in.
     new_class: CharClass -> NFA -> (NFA, I64);
     new_class = |cls, nfa| (
-        let base = nfa.@classes.get_size;
+        let base = nfa.@classes.@size;
         let (bits, _) = _bytes_of_class(cls);
         (nfa.mod_classes(append(bits)), base)
     );
@@ -161,7 +160,7 @@ namespace NFA {
     // * `nfa` - The automaton to add the quantifier to.
     new_quant: I64 -> I64 -> NFA -> (NFA, QuantID);
     new_quant = |least, most, nfa| (
-        let id = nfa.@quant_bounds.get_size;
+        let id = nfa.@quant_bounds.@size;
         (nfa.mod_quant_bounds(push_back((least, most))), id)
     );
 
@@ -272,7 +271,7 @@ namespace NFA {
 impl NFA: ToString {
     to_string = |nfa| (
         "NFA { nodes=\n"
-        + range(0, nfa.@nodes.get_size).map(|i|
+        + range(0, nfa.@nodes.@size).map(|i|
             "  " + nfa.@nodes.@(i).to_string + "\n"
         ).concat_iter
         + "  initial_node=" + nfa.@initial_node.to_string + "\n"
@@ -389,10 +388,10 @@ namespace NFAFrag {
         };
         if pat.is_psequence {
             let patterns = pat.as_psequence;
-            if patterns.get_size == 0 {
+            if patterns.@size == 0 {
                 nfa._compile_null_sequence
             };
-            if patterns.get_size == 1 {
+            if patterns.@size == 1 {
                 nfa.compile_pattern(patterns.@(0))
             };
             let (nfa, frag1) = nfa.compile_pattern(
@@ -589,7 +588,7 @@ namespace NFAFrag {
 // * `groups` - The captured groups.
 group_at: I64 -> Groups -> Group;
 group_at = |group_idx, groups| (
-    if group_idx < 0 || groups.get_size <= group_idx {
+    if group_idx < 0 || groups.@size <= group_idx {
         (-1, -1)
     };
     groups.@(group_idx)
@@ -604,8 +603,8 @@ group_at = |group_idx, groups| (
 // * `words` - The words the set stands in.
 _holds_byte: I64 -> U8 -> Array U64 -> Bool;
 _holds_byte = |base, byte, words| (
-    let index = byte.to_I64;
-    words.@(base + index / 64).shift_right((index % 64).to_U64).bit_and(1_U64) == 1_U64
+    let index = byte.i64;
+    words.@(base + index / 64).shift_right((index % 64).u64).bit_and(1_U64) == 1_U64
 );
 
 // The one byte a set of bytes holds, or `-1` where it holds any other number of them.
@@ -619,7 +618,7 @@ _lone_byte_of: Array U64 -> I64;
 _lone_byte_of = |words| (
     // `-1` stands for no byte seen yet, `-2` for more than one seen.
     let found = range(0, 256).fold(-1, |byte, found|
-        if !words._holds_byte(0, byte.to_U8) { found };
+        if !words._holds_byte(0, byte.u8) { found };
         if found == -1 { byte } else { -2 }
     );
     if found == -2 { -1 };
@@ -634,8 +633,8 @@ _lone_byte_of = |words| (
 // * `held` - The rounds already counted there, one thread after another.
 _holds_counts: Array I64 -> Array I64 -> Bool;
 _holds_counts = |counts, held| (
-    let width = counts.get_size;
-    range(0, held.get_size / width).check_any(|k|
+    let width = counts.@size;
+    range(0, held.@size / width).check_any(|k|
         range(0, width).fold(true, |j, same| same && held.@(k * width + j) == counts.@(j))
     )
 );
@@ -677,8 +676,8 @@ namespace Walk {
     // * `nfa` - The automaton to walk.
     make: NFA -> Walk;
     make = |nfa| (
-        let node_count = nfa.@nodes.get_size;
-        let count_width = nfa.@quant_bounds.get_size;
+        let node_count = nfa.@nodes.@size;
+        let count_width = nfa.@quant_bounds.@size;
         let slot_width = 2 * max(1, nfa.@group_count);
         Walk {
             slot_width: slot_width,
@@ -753,7 +752,7 @@ namespace Walk {
         };
         if !fresh { (-1, walk) };
         let slot_width = walk.@slot_width;
-        let placed = walk.@nodes.get_size;
+        let placed = walk.@nodes.@size;
         let walk = walk.mod_nodes(push_back(node));
         let walk = walk.mod_slots(|slots|
             range(0, slot_width).fold(slots, |j, slots|
@@ -806,7 +805,7 @@ namespace Walk {
         };
         if !fresh { (-1, walk) };
         let slot_width = walk.@slot_width;
-        let placed = walk.@nodes.get_size;
+        let placed = walk.@nodes.@size;
         let walk = walk.mod_nodes(push_back(node));
         let walk = walk.mod_slots(|slots|
             range(0, slot_width).fold(slots, |j, slots|
@@ -837,7 +836,7 @@ namespace Walk {
         };
         if !fresh { walk };
         let slot_width = walk.@slot_width;
-        let placed = walk.@nodes.get_size;
+        let placed = walk.@nodes.@size;
         let walk = walk.mod_nodes(push_back(initial));
         let walk = walk.mod_slots(|slots|
             range(0, slot_width).fold(slots, |_, slots| slots.push_back(-1))
@@ -908,7 +907,7 @@ namespace Walk {
     _close: NFA -> I64 -> I64 -> Walk -> Walk;
     _close = |nfa, at, length, walk| (
         loop(walk, |walk|
-            let waiting = walk.@pending.get_size;
+            let waiting = walk.@pending.@size;
             if waiting == 0 { break $ walk };
             let thread = walk.@pending.@(waiting - 1);
             let walk = walk.mod_pending(pop_back);
@@ -936,7 +935,7 @@ namespace Walk {
     // * `walk` - The walk they move into, holding no thread yet.
     _step: NFA -> I64 -> I64 -> U8 -> Array I64 -> Array I64 -> Array I64 -> Walk -> Walk;
     _step = |nfa, at, length, byte, read_nodes, read_slots, read_counts, walk| (
-        range(0, read_nodes.get_size).fold(walk, |thread, walk|
+        range(0, read_nodes.@size).fold(walk, |thread, walk|
             let node = nfa.get_node(NodeID { val: read_nodes.@(thread) });
             let action = node.@action;
             if !action.is_sa_char_match { walk };
@@ -968,7 +967,7 @@ namespace Walk {
     _better = |accepting, best, walk| (
         if walk.@at_step.@(accepting) != walk.@step { best };
         let slot_width = walk.@slot_width;
-        range(0, walk.@nodes.get_size).fold(best, |thread, best|
+        range(0, walk.@nodes.@size).fold(best, |thread, best|
             if walk.@nodes.@(thread) != accepting { best };
             let begin = walk.@slots.@(thread * slot_width);
             let end = walk.@slots.@(thread * slot_width + 1);
@@ -1101,10 +1100,10 @@ namespace NFA {
     // * `nfa` - The automaton to run.
     _walk_threads: Array U8 -> I64 -> I64 -> Bool -> NFA -> Option Groups;
     _walk_threads = |bytes, from, stop, anchored, nfa| (
-        let node_count = nfa.@nodes.get_size;
+        let node_count = nfa.@nodes.@size;
         let initial = nfa.@initial_node.@val;
         let accepting = nfa.@accepting_node.@val;
-        let length = bytes.get_size;
+        let length = bytes.@size;
         let walk = Walk::make(nfa);
         let (spare_nodes, spare_slots, spare_counts) = (
             Array::empty(node_count),
@@ -1118,7 +1117,7 @@ namespace NFA {
             let walk = if starts_here { walk._offer_start(initial) } else { walk };
             let walk = walk._close(nfa, at, length);
             let best = walk._better(accepting, best);
-            let done = at >= stop || (walk.@nodes.get_size == 0 && (anchored || best.is_some));
+            let done = at >= stop || (walk.@nodes.@size == 0 && (anchored || best.is_some));
             if done { break $ (best, walk, spare_nodes, spare_slots, spare_counts, at) };
             // The threads move into the buffers the position before them left behind, and leave
             // theirs to be moved into next.
@@ -1145,8 +1144,8 @@ namespace NFA {
     // * `nfa` - The automaton to run.
     _search_threads: Array U8 -> I64 -> NFA -> Option Groups;
     _search_threads = |bytes, from, nfa| (
-        if from > bytes.get_size { none() };
-        _walk_threads(bytes, from, bytes.get_size, false, nfa)
+        if from > bytes.@size { none() };
+        _walk_threads(bytes, from, bytes.@size, false, nfa)
     );
 
     // Follows the empty-string transitions from a node, gathering the ways on that the node the
@@ -1165,8 +1164,8 @@ namespace NFA {
         if build.@seen.@(node) == start { build.set_twice(true) };
         let build = build.mod_seen(set(node, start));
         let build = if node == nfa.@accepting_node.@val {
-            let from = build.@writes.get_size;
-            build.mod_writes(append(path)).set_accept([flags, from, from + path.get_size])
+            let from = build.@writes.@size;
+            build.mod_writes(append(path)).set_accept([flags, from, from + path.@size])
         } else { build };
         let node_val = nfa.get_node(NodeID { val: node });
         let action = node_val.@action;
@@ -1174,14 +1173,14 @@ namespace NFA {
             // A way is where the byte carries the walk on, so a class leading to no node offers
             // none.
             if node_val.@output_on_action.@val < 0 { build };
-            let from = build.@writes.get_size;
+            let from = build.@writes.@size;
             let build = build.mod_writes(append(path));
             build.mod_ways(|ways| ways
                 .push_back(action.as_sa_char_match)
                 .push_back(node_val.@output_on_action.@val)
                 .push_back(flags)
                 .push_back(from)
-                .push_back(from + path.get_size)
+                .push_back(from + path.@size)
             )
         } else {
             let next = node_val.@output_on_action.@val;
@@ -1214,8 +1213,8 @@ namespace NFA {
     // * `nfa` - The automaton to read.
     _one_way_table: NFA -> OneWayTable;
     _one_way_table = |nfa| (
-        if nfa.@quant_bounds.get_size > 0 { OneWayTable::empty };
-        let node_count = nfa.@nodes.get_size;
+        if nfa.@quant_bounds.@size > 0 { OneWayTable::empty };
+        let node_count = nfa.@nodes.@size;
         let build = WayBuild {
             ways: Array::empty(node_count * 5),
             writes: Array::empty(node_count * 4),
@@ -1235,7 +1234,7 @@ namespace NFA {
             let build = nfa._gather_ways(node, node, 0, Array::empty(4), build);
             (
                 build,
-                bounds.push_back(build.@ways.get_size / 5),
+                bounds.push_back(build.@ways.@size / 5),
                 accepts.append(build.@accept),
                 twice.push_back(build.@twice)
             )
@@ -1263,8 +1262,8 @@ namespace NFA {
     _one_way_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
     _one_way_groups = |bytes, begin, end, nfa| (
         let table = nfa.@one_way;
-        if table.@bounds.get_size == 0 { none() };
-        let length = bytes.get_size;
+        if table.@bounds.@size == 0 { none() };
+        let length = bytes.@size;
         let slot_width = 2 * max(1, nfa.@group_count);
         // Each of these is a field of a boxed value, so reading one raises and lowers a reference
         // count. They are read once here and stand for every byte the walk reads.
@@ -1400,7 +1399,7 @@ namespace DFA {
     _bare = |nfa| (
         let dfa = DFA {
             nfa: nfa,
-            width: 1 + nfa.@quant_bounds.get_size,
+            width: 1 + nfa.@quant_bounds.@size,
             threads: Array::empty(64),
             bounds: [0],
             ordered_states: Array::empty(16),
@@ -1463,7 +1462,7 @@ namespace DFA {
         let first_bytes = dfa._first_bytes_of(dfa.@interior);
         dfa.set_first_bytes(first_bytes)
             .set_first_byte(_lone_byte_of(first_bytes))
-            .set_prefix_size(prefix.get_size)
+            .set_prefix_size(prefix.@size)
             .set_prefix(prefix)
     );
 
@@ -1498,14 +1497,14 @@ namespace DFA {
     _forced_prefix: DFA -> (Array U8, DFA);
     _forced_prefix = |dfa| (
         loop((Array::empty(_MAX_PREFIX), dfa.@interior, dfa), |(prefix, state, dfa)|
-            if prefix.get_size == _MAX_PREFIX { break $ (prefix, dfa) };
+            if prefix.@size == _MAX_PREFIX { break $ (prefix, dfa) };
             let (ends_here, dfa) = dfa._accepts_at_end(state);
             if ends_here { break $ (prefix, dfa) };
             let byte = _lone_byte_of(dfa._first_bytes_of(state));
             if byte < 0 { break $ (prefix, dfa) };
-            let (next, dfa) = dfa._next(state, byte.to_U8);
+            let (next, dfa) = dfa._next(state, byte.u8);
             if dfa.@full || next < 0 { break $ (prefix, dfa) };
-            continue $ (prefix.push_back(byte.to_U8), next, dfa)
+            continue $ (prefix.push_back(byte.u8), next, dfa)
         )
     );
 
@@ -1563,7 +1562,7 @@ namespace DFA {
     // * `threads` - The threads to look through.
     _holds_node: I64 -> I64 -> Array I64 -> Bool;
     _holds_node = |node, width, threads| (
-        range(0, threads.get_size / width).check_any(|k| threads.@(k * width) == node)
+        range(0, threads.@size / width).check_any(|k| threads.@(k * width) == node)
     );
 
     // The state a set of threads stands for, taking it as a new state when it is one.
@@ -1578,13 +1577,13 @@ namespace DFA {
     _intern = |wanted, dfa| (
         let (existing, place) = dfa._locate(wanted);
         if existing >= 0 { (existing, dfa) };
-        let id = dfa.@bounds.get_size - 1;
+        let id = dfa.@bounds.@size - 1;
         if id >= _DFA_MAX_STATES { (-1, dfa.set_full(true)) };
         let width = dfa.@width;
         let accepting = dfa.@nfa.@accepting_node.@val;
         let accepts = _holds_node(accepting, width, wanted);
         let dfa = dfa
-            .mod_bounds(|bounds| bounds.push_back(bounds.get_last.as_some + wanted.get_size))
+            .mod_bounds(|bounds| bounds.push_back(bounds.get_last.as_some + wanted.@size))
             .mod_threads(append(wanted))
             .mod_accepts(push_back(accepts))
             .mod_accepts_at_end(push_back(if accepts { 1 } else { -1 }))
@@ -1602,7 +1601,7 @@ namespace DFA {
     _insert_at: I64 -> I64 -> Array I64 -> Array I64;
     _insert_at = |place, state, ordered| (
         let ordered = ordered.push_back(state);
-        loop((ordered.get_size - 1, ordered), |(i, ordered)|
+        loop((ordered.@size - 1, ordered), |(i, ordered)|
             if i == place { break $ ordered.set(place, state) };
             let earlier = ordered.@(i - 1);
             continue $ (i - 1, ordered.set(i, earlier))
@@ -1617,7 +1616,7 @@ namespace DFA {
     // * `dfa` - The scanner.
     _locate: Array I64 -> DFA -> (I64, I64);
     _locate = |wanted, dfa| (
-        loop((0, dfa.@ordered_states.get_size), |(low, high)|
+        loop((0, dfa.@ordered_states.@size), |(low, high)|
             if low == high { break $ (-1, low) };
             let middle = (low + high) / 2;
             let state = dfa.@ordered_states.@(middle);
@@ -1641,7 +1640,7 @@ namespace DFA {
         let begin = dfa.@bounds.@(state);
         let end = dfa.@bounds.@(state + 1);
         let held_size = end - begin;
-        let offered_size = wanted.get_size;
+        let offered_size = wanted.@size;
         loop(0, |i|
             if i == held_size || i == offered_size { break $ held_size - offered_size };
             let difference = dfa.@threads.@(begin + i) - wanted.@(i);
@@ -1664,7 +1663,7 @@ namespace DFA {
         let (next, dfa) = dfa._intern(closed);
         if next < 0 { (-1, dfa) };
         let accepting = if dfa.@accepts.@(next) { 1 } else { 0 };
-        let dfa = dfa.mod_transitions(set(state * 256 + byte.to_I64, 2 * next + accepting));
+        let dfa = dfa.mod_transitions(set(state * 256 + byte.i64, 2 * next + accepting));
         (next, dfa)
     );
 
@@ -1704,14 +1703,14 @@ namespace DFA {
         if dfa.@width == 1 { _closure_nodes(at_begin, at_end, seeds, dfa) };
         let nfa = dfa.@nfa;
         let width = dfa.@width;
-        let node_count = nfa.@nodes.get_size;
-        let reached = range(0, seeds.get_size / width).fold(
+        let node_count = nfa.@nodes.@size;
+        let reached = range(0, seeds.@size / width).fold(
             (Array::fill(node_count, Array::empty(0)), Array::empty(node_count * width)),
             |k, reached| _offer_thread(width, _thread_at(k * width, width, seeds), reached)
         );
         let (taken, _) = loop(reached, |(taken, pending)|
-            if pending.get_size == 0 { break $ (taken, pending) };
-            let base = pending.get_size - width;
+            if pending.@size == 0 { break $ (taken, pending) };
+            let base = pending.@size - width;
             let thread = _thread_at(base, width, pending);
             let pending = pending.truncate(base);
             let node = nfa.get_node(NodeID { val: thread.@(0) });
@@ -1737,13 +1736,13 @@ namespace DFA {
     _closure_nodes: Bool -> Bool -> Array I64 -> DFA -> Array I64;
     _closure_nodes = |at_begin, at_end, seeds, dfa| (
         let nfa = dfa.@nfa;
-        let node_count = nfa.@nodes.get_size;
-        let reached = range(0, seeds.get_size).fold(
+        let node_count = nfa.@nodes.@size;
+        let reached = range(0, seeds.@size).fold(
             (Array::fill(node_count, false), Array::empty(node_count)),
             |k, reached| _offer_node(seeds.@(k), reached)
         );
         let (marks, _) = loop(reached, |(marks, pending)|
-            let waiting = pending.get_size;
+            let waiting = pending.@size;
             if waiting == 0 { break $ (marks, pending) };
             let node = nfa.get_node(NodeID { val: pending.@(waiting - 1) });
             let reached = _follow_node_action(nfa, at_begin, at_end, node, (marks, pending.pop_back));
@@ -1852,9 +1851,9 @@ namespace DFA {
     _gather_threads: I64 -> Array (Array I64) -> Array I64;
     _gather_threads = |width, taken| (
         let stride = width - 1;
-        range(0, taken.get_size).fold(Array::empty(taken.get_size * width), |node, threads|
+        range(0, taken.@size).fold(Array::empty(taken.@size * width), |node, threads|
             let held = _sorted_counts(stride, taken.@(node));
-            range(0, held.get_size / stride).fold(threads, |k, threads|
+            range(0, held.@size / stride).fold(threads, |k, threads|
                 let threads = threads.push_back(node);
                 range(0, stride).fold(threads, |j, threads|
                     threads.push_back(held.@(k * stride + j))
@@ -1870,7 +1869,7 @@ namespace DFA {
     // * `held` - The counts, one thread after another.
     _sorted_counts: I64 -> Array I64 -> Array I64;
     _sorted_counts = |stride, held| (
-        let count = held.get_size / stride;
+        let count = held.@size / stride;
         if count <= 1 { held };
         range(1, count).fold(held, |k, held|
             loop((k, held), |(k, held)|
@@ -1944,7 +1943,7 @@ namespace DFA {
     _walk_table = |bytes, transitions, length, at, state, best| (
         loop((at, state, best), |(at, state, best)|
             if at == length { break $ (at, state, best) };
-            let transition = transitions.@(state * 256 + bytes.@(at).to_I64);
+            let transition = transitions.@(state * 256 + bytes.@(at).i64);
             if transition <= 0 {
                 if transition < 0 { break $ (at, state, best) };
                 break $ (at, -1, best)
@@ -2000,7 +1999,7 @@ namespace DFA {
     // * `dfa` - The scanner.
     find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
     find = |bytes, from, dfa| (
-        let length = bytes.get_size;
+        let length = bytes.@size;
         if from > length { (none(), dfa) };
         // A match beginning where the input does is looked for on its own, since `^` holds there and
         // the bytes a match may begin with are read off the state that stands away from either end.
@@ -2047,7 +2046,7 @@ namespace DFA {
             let at = _absorbed_to(bytes, absorbing, length, at);
             if at + 1 >= length { break $ (at + 1, dfa) };
             let byte = bytes.@(at);
-            if absorbing.@(byte.to_I64) != 0_U8 { break $ (at + 1, dfa) };
+            if absorbing.@(byte.i64) != 0_U8 { break $ (at + 1, dfa) };
             continue $ (at, dfa._learn_absorbing(byte))
         )
     );
@@ -2063,7 +2062,7 @@ namespace DFA {
     _absorbed_to = |bytes, absorbing, length, at| (
         loop(at, |at|
             if at + 1 >= length { break $ at };
-            if absorbing.@(bytes.@(at).to_I64) != 1_U8 { break $ at };
+            if absorbing.@(bytes.@(at).i64) != 1_U8 { break $ at };
             continue $ at + 1
         )
     );
@@ -2079,7 +2078,7 @@ namespace DFA {
     _learn_absorbing = |byte, dfa| (
         let (next, dfa) = dfa._next(dfa.@interior, byte);
         let absorbs = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
-        dfa.mod_absorbing(set(byte.to_I64, if absorbs { 1_U8 } else { 2_U8 }))
+        dfa.mod_absorbing(set(byte.i64, if absorbs { 1_U8 } else { 2_U8 }))
     );
 
     // Whether every thread that decides what one state does next stands among the threads of
@@ -2134,7 +2133,7 @@ namespace DFA {
         if dfa.@forced_count > 0 { dfa._skip_to_forced(bytes, length, at) };
         if dfa.@prefix_size >= 2 { bytes.find_bytes(dfa.@prefix, at).as_some_or(length) };
         let lone = dfa.@first_byte;
-        if lone >= 0 { bytes.find_byte(lone.to_U8, at).as_some_or(length) };
+        if lone >= 0 { bytes.find_byte(lone.u8, at).as_some_or(length) };
         _skip_to_any(bytes, dfa.@first_bytes, length, at)
     );
 
@@ -2217,15 +2216,15 @@ namespace DFA {
     _choose_forced_set: Array U8 -> DFA -> DFA;
     _choose_forced_set = |bytes, dfa| (
         let sets = dfa.@nfa.@forced_sets;
-        if sets.get_size == 0 { dfa };
+        if sets.@size == 0 { dfa };
         // A forced beginning stands where every match begins, so it needs no backing up and nothing
         // read from inside the pattern beats it.
         if dfa.@prefix_size >= 2 { dfa };
-        let sample = min(bytes.get_size, _FORCED_SAMPLE);
+        let sample = min(bytes.@size, _FORCED_SAMPLE);
         let stops = _stops_of_first_bytes(bytes, sample, dfa.@first_bytes);
         // Looking for a string costs a reading of its own on top of the walking, so a set is taken
         // only where it rules out enough more than the bytes a match may begin with to pay for it.
-        let (best, _) = range(0, sets.get_size).fold((-1, stops / 2), |i, (best, fewest)|
+        let (best, _) = range(0, sets.@size).fold((-1, stops / 2), |i, (best, fewest)|
             let cost = _stops_of_forced_set(bytes, sample, sets.@(i));
             if cost >= fewest { (best, fewest) };
             (i, cost)
@@ -2255,7 +2254,7 @@ namespace DFA {
     // * `dfa` - The scanner.
     _set_forced_strings: Array (Array U8) -> DFA -> DFA;
     _set_forced_strings = |strings, dfa| (
-        dfa.set_forced_count(strings.get_size).set_forced_strings(strings)
+        dfa.set_forced_count(strings.@size).set_forced_strings(strings)
     );
 
     // The leftmost match beginning at or after a position, taking the longest of those that begin
@@ -2290,7 +2289,7 @@ namespace DFA {
     // * `dfa` - The scanner to search with.
     _every_match: Array U8 -> DFA -> (Array Groups, DFA);
     _every_match = |bytes, dfa| (
-        let length = bytes.get_size;
+        let length = bytes.@size;
         let (matches, _, dfa) = loop(
             (Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
@@ -2312,7 +2311,7 @@ namespace DFA {
     // * `dfa` - The scanner.
     _with_forced_set: Array U8 -> Array ForcedRun -> DFA -> DFA;
     _with_forced_set = |bytes, set, dfa| (
-        let sample = min(bytes.get_size, _FORCED_SAMPLE);
+        let sample = min(bytes.@size, _FORCED_SAMPLE);
         let runs = _by_falling_count(bytes, sample, set);
         let (back_max, back_class) = _backing_of(set);
         dfa._set_forced_strings(runs.map(@bytes)).set_back_max(back_max).set_back_class(back_class)
@@ -2482,7 +2481,7 @@ namespace Replacement {
     // * `groups` - The groups the match captured.
     calc_replacement: String -> Array ReplaceFrag -> Groups -> String;
     calc_replacement = |target, rep_frags, groups| (
-        let output: Array U8 = Array::empty(target.get_size + rep_frags.get_size);
+        let output: Array U8 = Array::empty(target.@size + rep_frags.@size);
         let output = rep_frags.to_iter.fold(
             output, |rep, output|
             if rep.is_rep_literal {

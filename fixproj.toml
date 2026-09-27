@@ -1,6 +1,7 @@
 [general]
 name = "regexp"
-version = "1.1.6"
+version = "1.2.0"
+fix_version = "1.5.0"
 description = "Provides regular expression matching."
 
 [build]

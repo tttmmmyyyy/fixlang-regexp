@@ -27,9 +27,10 @@ import RegExp.RegExpNFA::{
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, Bool, ErrMsg, Result, String, Array::{empty, get_size, is_empty, pop_back, push_back, to_iter, @}, 
-    Functor::map, Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, 
-    Result::{err, ok}, String::{concat_iter, get_bytes, get_size}
+    Array, Bool, ErrMsg, Result, String, 
+    Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 
+    Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, Result::{err, ok}, 
+    String::{@size, concat_iter, get_bytes}
 };
 
 // Type of a compiled regular expression.
@@ -220,7 +221,7 @@ namespace Matcher {
         let (matches, dfa) = matcher.@dfa.search_every(bytes);
         let matcher = matcher.set_dfa(dfa);
         let rep_frags = Replacement::compile(replacement);
-        let output: Array String = Array::empty(matches.get_size * 2 + 1);
+        let output: Array String = Array::empty(matches.@size * 2 + 1);
         let (output, last) = matches.to_iter.fold(
             (output, 0), |groups, (output, last)|
             let (begin, end) = groups.@(0);
@@ -228,7 +229,7 @@ namespace Matcher {
             let output = output.push_back(calc_replacement(target, rep_frags, groups));
             (output, end)
         );
-        let output = output.push_back(target.substring(last, target.get_size));
+        let output = output.push_back(target.substring(last, target.@size));
         (output.to_iter.concat_iter, matcher)
     );
 }

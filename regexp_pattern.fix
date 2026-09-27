@@ -14,10 +14,10 @@ import RegExp.SimpleParser::{
 import RegExp.StringEx::{byte_to_string, find_byte};
 import Std::{
     undefined, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
-    Array::{append, empty, fill, get_size, mod, push_back, set, to_iter, @}, Functor::map, 
-    I64::{maximum, to_U64, to_U8}, Iterator::{count_up, fold, map, range, take}, Monad::pure, 
-    Option::{as_some, is_none, is_some, none, some}, String::{get_size, join}, ToString::to_string, 
-    U64::{bit_or, maximum, shift_left}, U8::to_I64
+    Array::{@, @size, append, empty, fill, mod, push_back, set, to_iter}, Functor::map, I64::maximum, 
+    Iterator::{count_up, fold, map, range, take}, Monad::pure, 
+    Option::{as_some, is_none, is_some, none, some}, String::{@size, join}, ToI64::i64, 
+    ToString::to_string, ToU64::u64, ToU8::u8, U64::{bit_or, maximum, shift_left}
 };
 
 // Type of a character class.
@@ -97,11 +97,11 @@ namespace CharClass {
     to_table = |cls| (
         let table = count_up(0).take(256).fold(
             Array::fill(256, false), |i, arr|
-            arr.set(i, cls.contains(i.to_U8))
+            arr.set(i, cls.contains(i.u8))
         );
         CharClass {
             label: cls.@label,
-            f: |c| table.@(c.to_I64)
+            f: |c| table.@(c.i64)
         }
     );
 
@@ -137,7 +137,7 @@ namespace CharClass {
 // Converts a character class to a string.
 impl CharClass: ToString {
     to_string = |cls| (
-        if cls.@label.get_size <= 1 {
+        if cls.@label.@size <= 1 {
             cls.@label
         } else {
             "[" + cls.@label + "]"
@@ -430,7 +430,7 @@ namespace Pattern {
         };
         if pat.is_psequence {
             let input: Array Pattern = pat.as_psequence;
-            let output: Array Pattern = Array::empty(input.get_size);
+            let output: Array Pattern = Array::empty(input.@size);
             let (n, output) = input.to_iter.fold(
                 (n, output), |pat_inner, (n, output)|
                 let (n, pat_inner) = pat_inner._assign_group_number(n);
@@ -506,9 +506,9 @@ _all_bytes = Array::fill(4, U64::maximum);
 _bytes_of_class : CharClass -> (Array U64, I64);
 _bytes_of_class = |cls| (
     Iterator::range(0, 256).fold((_no_bytes, -1), |i, (bits, lone)|
-        if !cls.contains(i.to_U8) { (bits, lone) };
+        if !cls.contains(i.u8) { (bits, lone) };
         (
-            bits.mod(i / 64, bit_or(1_U64.shift_left((i % 64).to_U64))),
+            bits.mod(i / 64, bit_or(1_U64.shift_left((i % 64).u64))),
             if lone == -1 { i } else { -2 }
         )
     )
@@ -581,7 +581,7 @@ _forced_of_nothing = Forced {
 _forced_of_bytes : Array U8 -> Forced;
 _forced_of_bytes = |bytes| Forced {
     exact: some(bytes),
-    sets: if bytes.get_size == 0 { Array::empty(0) } else {
+    sets: if bytes.@size == 0 { Array::empty(0) } else {
         [[ForcedRun { bytes: bytes, back_max: 0, back_class: _no_bytes }]]
     },
     max_read: 0,
@@ -613,12 +613,12 @@ _runs_after = |more, bits, runs| (
 // * `right` - The sets of the other.
 _sets_together : Array (Array ForcedRun) -> Array (Array ForcedRun) -> Array (Array ForcedRun);
 _sets_together = |left, right| (
-    if left.get_size == 0 || right.get_size == 0 { Array::empty(0) };
+    if left.@size == 0 || right.@size == 0 { Array::empty(0) };
     left.to_iter.fold(Array::empty(_MAX_FORCED_SETS), |left_set, out|
         right.to_iter.fold(out, |right_set, out|
-            if out.get_size >= _MAX_FORCED_SETS { out };
+            if out.@size >= _MAX_FORCED_SETS { out };
             let both = left_set.append(right_set);
-            if both.get_size > _MAX_FORCED_MEMBERS { out };
+            if both.@size > _MAX_FORCED_MEMBERS { out };
             out.push_back(both)
         )
     )
@@ -643,10 +643,10 @@ _forced_of_sequence = |pats| (
         let next_bits = _bytes_union(forced.@read_bytes, pre_bits);
         if forced.@exact.is_some {
             let more = forced.@exact.as_some;
-            let (run_max, run_bits) = if run.get_size == 0 { (pre_max, pre_bits) } else { (run_max, run_bits) };
+            let (run_max, run_bits) = if run.@size == 0 { (pre_max, pre_bits) } else { (run_max, run_bits) };
             // A string that would outgrow the room kept for it is broken here, and what follows
             // starts a string of its own, so that every string kept stands in the text entire.
-            if run.get_size + more.get_size > _MAX_FORCED_LENGTH {
+            if run.@size + more.@size > _MAX_FORCED_LENGTH {
                 let sets = _sets_with_run_closed(run, run_max, run_bits, sets);
                 (more, pre_max, pre_bits, next_max, next_bits, sets, false)
             };
@@ -654,7 +654,7 @@ _forced_of_sequence = |pats| (
         };
         let sets = _sets_with_run_closed(run, run_max, run_bits, sets);
         let sets = forced.@sets.to_iter.fold(sets, |set, sets|
-            if sets.get_size >= _MAX_FORCED_SETS { sets };
+            if sets.@size >= _MAX_FORCED_SETS { sets };
             sets.push_back(_runs_after(pre_max, pre_bits, set))
         );
         (empty_run, 0, _no_bytes, next_max, next_bits, sets, false)
@@ -676,8 +676,8 @@ _forced_of_sequence = |pats| (
 // * `sets` - The sets to put it among.
 _sets_with_run_closed : Array U8 -> I64 -> Array U64 -> Array (Array ForcedRun) -> Array (Array ForcedRun);
 _sets_with_run_closed = |run, run_max, run_bits, sets| (
-    if run.get_size == 0 { sets };
-    if sets.get_size >= _MAX_FORCED_SETS { sets };
+    if run.@size == 0 { sets };
+    if sets.@size >= _MAX_FORCED_SETS { sets };
     sets.push_back([ForcedRun { bytes: run, back_max: run_max, back_class: run_bits }])
 );
 
@@ -688,7 +688,7 @@ _sets_with_run_closed = |run, run_max, run_bits, sets| (
 // * `times` - How many times to write it.
 _repeated : Array U8 -> I64 -> Array U8;
 _repeated = |bytes, times| (
-    Iterator::range(0, times).fold(Array::empty(bytes.get_size * times), |_, out| out.append(bytes))
+    Iterator::range(0, times).fold(Array::empty(bytes.@size * times), |_, out| out.append(bytes))
 );
 
 // What a pattern forces the text it matches to hold.
@@ -699,7 +699,7 @@ forced_of : Pattern -> Forced;
 forced_of = |pat| (
     if pat.is_pclass {
         let (bits, lone) = _bytes_of_class(pat.as_pclass);
-        let forced = if lone < 0 { _forced_of_nothing } else { _forced_of_bytes([lone.to_U8]) };
+        let forced = if lone < 0 { _forced_of_nothing } else { _forced_of_bytes([lone.u8]) };
         forced.set_max_read(1).set_read_bytes(bits)
     };
     if pat.is_passert { _forced_of_bytes(Array::empty(0)) };
@@ -730,12 +730,12 @@ forced_of = |pat| (
                 exact: none(), sets: Array::empty(0), max_read: max_read, read_bytes: read_bytes
             }
         };
-        if forced.@exact.is_some && forced.@exact.as_some.get_size > 0 {
+        if forced.@exact.is_some && forced.@exact.as_some.@size > 0 {
             let once = forced.@exact.as_some;
             // How many rounds the room kept for a forced byte string holds. The count is read off a
             // division, so that it stands whatever number of rounds the quantifier asks for: a
             // pattern names that number, and multiplying by it leaves `I64`.
-            let room = _MAX_FORCED_LENGTH / once.get_size;
+            let room = _MAX_FORCED_LENGTH / once.@size;
             let rounds = if least > room { room } else { least };
             let run = _repeated(once, rounds);
             Forced {
