@@ -9,19 +9,19 @@ module RegExp.StringEx;
 import Character::{to_lower, to_upper};
 import RegExp.StdBytes::find_bytes_within;
 import Std::{
-    loop, Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, ToString, U64, U8,
-    Array::{empty, get_size, pop_back, push_back, to_iter, @}, Functor::map, 
+    loop, Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, ToString, U64, U8, 
+    Array::{@, @size, empty, pop_back, push_back, to_iter}, Functor::map, 
     Iterator::{
-        empty, fold, fold_m, is_empty, loop_iter, push_front, to_array, to_dyn, DynIterator, Item,
+        empty, fold, fold_m, is_empty, loop_iter, push_front, to_array, to_dyn, DynIterator, Item, 
         DynIterator::empty
     }, 
     LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, none, some}, Result::{err, ok}, 
     String::{
-        concat_iter, find, get_bytes, get_size, get_sub, split, strip_first_bytes, strip_last_bytes, 
-        _unsafe_from_c_str
+        @size, _unsafe_from_c_str, concat_iter, find, get_bytes, get_sub, split, strip_first_bytes, 
+        strip_last_bytes
     }, 
-    ToString::to_string, U64::{bit_and, bit_or, shift_left, shift_right, to_U8}, 
-    U8::{bit_and, to_I64, to_U64}
+    ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
+    U64::{bit_and, bit_or, shift_left, shift_right}, U8::bit_and
 };
 
 //---------------------------------
@@ -59,7 +59,7 @@ find_byte: U8 -> String -> Option I64;
 find_byte = |c, str| (
     // The bytes of a string end in a terminating zero that the string's own size leaves out, so the
     // reading stops at the size.
-    str.get_bytes.find_bytes_within([c], 0, str.get_size)
+    str.get_bytes.find_bytes_within([c], 0, str.@size)
 );
 
 // Searches for the specified byte from the end of a string.
@@ -67,7 +67,7 @@ find_byte = |c, str| (
 find_last_byte: U8 -> String -> Option I64;
 find_last_byte = |c, str| (
     let array = str.get_bytes;
-    let n = str.get_size;
+    let n = str.@size;
     loop(
         n - 1, |i|
         if i < 0 {
@@ -83,7 +83,7 @@ find_last_byte = |c, str| (
 // Replaces all occurrences of `from` in the string with `to`.
 replace_all: String -> String -> String -> String;
 replace_all = |from, to, str| (
-    if from.get_size <= 0 {
+    if from.@size <= 0 {
         str
     };
     loop((str, 0), |(str, find_start)|
@@ -95,9 +95,9 @@ replace_all = |from, to, str| (
         let str = (
             str.substring(0, pos) +
             to +
-            str.substring(pos + from.get_size, str.get_size)
+            str.substring(pos + from.@size, str.@size)
         );
-        let find_start = pos + to.get_size;
+        let find_start = pos + to.@size;
         continue $ (str, find_start)
     )
 );
@@ -115,7 +115,7 @@ replace_suffix = |from, to, str| (
     if !str.StringEx::ends_with(from) {
         err $ "suffix does not match: " + str
     };
-    let str = str.substring(0, str.get_size - from.get_size);
+    let str = str.substring(0, str.@size - from.@size);
     ok $ str + to
 );
 
@@ -130,7 +130,7 @@ split_first = |delim, str| (
         (str, "")
     };
     let pos = pos.as_some;
-    (str.substring(0, pos), str.substring(pos + delim.get_size, str.get_size))
+    (str.substring(0, pos), str.substring(pos + delim.@size, str.@size))
 );
 
 // Same as Std::String::split, except that `"foo".split_ex(",")` returns a singleton iterator of "foo".
@@ -150,10 +150,10 @@ split_ex = |delim, str| (
 // The result will not contain any empty string.
 split_by: [?it: Iterator, Item ?it = String] (U8 -> Bool) -> String -> ?it;
 split_by = |is_delim, str| (
-    let output = Array::empty(str.get_size);
+    let output = Array::empty(str.@size);
     let output = loop(
         (output, 0, 0), |(output, start, i)|
-        if i >= str.get_size {
+        if i >= str.@size {
             let output = if start < i { output.push_back(str.substring(start, i)) } else { output };
             break $ output
         };
@@ -171,7 +171,7 @@ split_by = |is_delim, str| (
 // If the specified range exceeds the string, it will be truncated to fit within the string.
 substring: I64 -> I64 -> String -> String;
 substring = |s, e, str| (
-    let size = str.get_size;
+    let size = str.@size;
     let s = (if s < 0 { 0 }; if s >= size { size }; s);
     let e = (if e < s { s }; if e >= size { size }; e);
     if s == 0 && e == size { str };
@@ -181,13 +181,13 @@ substring = |s, e, str| (
 // Checks if a string starts with the specified prefix.
 starts_with: String -> String -> Bool;
 starts_with = |prefix, str| (
-    str.substring(0, prefix.get_size) == prefix
+    str.substring(0, prefix.@size) == prefix
 );
 
 // Checks if a string ends with the specified suffix.
 ends_with: String -> String -> Bool;
 ends_with = |suffix, str| (
-    str.substring(str.get_size - suffix.get_size, str.get_size) == suffix
+    str.substring(str.@size - suffix.@size, str.@size) == suffix
 );
 
 // `string_less_than((str1,str2))` compares two strings.
@@ -196,8 +196,8 @@ string_less_than: (String, String) -> Bool;
 string_less_than = |(str1, str2)| (
     let a1 = str1.get_bytes;
     let a2 = str2.get_bytes;
-    let n1 = a1.get_size;
-    let n2 = a2.get_size;
+    let n1 = a1.@size;
+    let n2 = a2.@size;
     _array_cmp_inner(a1, a2, n1, n2, 0) < 0
 );
 
@@ -235,7 +235,7 @@ _array_cmp_inner = |a1, a2, n1, n2, i| (
 formatv: String -> Array String -> String;
 formatv = |str, args| (
     let from = "{}";
-    let output = Array::empty(args.get_size * 2);
+    let output = Array::empty(args.@size * 2);
     let (output, tail) = args.to_iter.loop_iter(
         (output, 0), |to, (output, find_start)|
         let pos = str.find(from, find_start);
@@ -247,11 +247,11 @@ formatv = |str, args| (
             .push_back(str.substring(find_start, pos))
             .push_back(to)
         ;
-        let find_start = pos + from.get_size;
+        let find_start = pos + from.@size;
         continue $ (output, find_start)
     );
     let output = output
-        .push_back(str.substring(tail, str.get_size));
+        .push_back(str.substring(tail, str.@size));
     output.to_iter.concat_iter
 );
 
@@ -292,7 +292,7 @@ namespace Tuple4 {
 encode_hex_char: U8 -> U8;
 encode_hex_char =
     let hex_chars = "0123456789ABCDEF".get_bytes.pop_back
-    in |c| hex_chars.@(c.bit_and(15_U8).to_I64);
+    in |c| hex_chars.@(c.bit_and(15_U8).i64);
 
 // Converts a hex character ('0'..'9', 'A'..'F' or 'a'..'f') to a 4bit number (0..15).
 decode_hex_char: U8 -> Result ErrMsg U8;
@@ -312,7 +312,7 @@ to_string_hex = |input| (
         if i >= 16 || input == 0_U64 {
             break $ output
         };
-        let h = input.bit_and(15_U64).to_U8;
+        let h = input.bit_and(15_U64).u8;
         let input = input.shift_right(4_U64);
         let output = output.push_front(encode_hex_char(h));
         continue $ (output.to_dyn, i + 1, input)
@@ -324,14 +324,14 @@ to_string_hex = |input| (
 // Converts a hex string to a 64bit number.
 from_string_hex: String -> Result ErrMsg U64;
 from_string_hex = |input| (
-    if input.get_size == 0 {
+    if input.@size == 0 {
         err $ "Empty string"
     };
     let input = input.get_bytes.pop_back;
     input.to_iter.fold_m(
         0_U64, |c, output|
         let c = *decode_hex_char(c);
-        pure $ output.shift_left(4_U64).bit_or(c.to_U64)
+        pure $ output.shift_left(4_U64).bit_or(c.u64)
     )
 );
 

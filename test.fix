@@ -2,23 +2,21 @@ module Test;
 
 import RegExp::{
     Matcher::{match_all, match_one, replace_all}, 
-    RegExp::{compile, match_all, match_one, matcher, replace_all, @nfa}
+    RegExp::{@nfa, compile, match_all, match_one, matcher, replace_all}
 };
 import RegExp.RegExpNFA::{
-    DFA, Groups, NFA, 
-    DFA::{make, _decided_by, _every_match, _insert_at, _next, _with_forced_set, @first_bytes, @interior}, 
-    NFA::{search, search_all, @forced_sets, @prefix, _search_threads}, _holds_byte
+    _holds_byte, DFA, Groups, NFA, 
+    DFA::{@first_bytes, @interior, _decided_by, _every_match, _insert_at, _next, _with_forced_set, make}, 
+    NFA::{@forced_sets, @prefix, _search_threads, search, search_all}
 };
-import RegExp.RegExpPattern::{
-    ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}, _bytes_union, _no_bytes
-};
+import RegExp.RegExpPattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
 import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
-    loop, Array, Bool, I64, IO, Option, String, U8, U64, 
-    Array::{empty, pop_back, push_back, to_iter, @, @size}, 
-    Debug::{assert, assert_eq}, I64::to_U8, Iterator::{fold, fold_m, range}, LessThan::max, 
-    LoopState::{break, continue}, Monad::{bind, pure}, Option::{as_some, is_none, none, some}, 
-    Result::{as_ok, is_err, is_ok}, String::get_bytes, ToString::to_string, U8::to_I64
+    loop, Array, Bool, I64, IO, Option, String, U64, U8, 
+    Array::{@, @size, empty, pop_back, push_back, to_iter}, Debug::{assert, assert_eq}, 
+    Iterator::{fold, fold_m, range}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
+    Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, String::get_bytes, 
+    ToI64::i64, ToString::to_string, ToU8::u8
 };
 
 // A case for `match_one` and `match_all`.
@@ -671,7 +669,7 @@ _carrying_bytes: NFA -> Array Bool;
 _carrying_bytes = |nfa| (
     let (carrying, _) = range(0, 256).fold(
         (Array::empty(256), DFA::make(nfa)), |byte, (carrying, dfa)|
-        let (next, dfa) = dfa._next(dfa.@interior, byte.to_U8);
+        let (next, dfa) = dfa._next(dfa.@interior, byte.u8);
         let carries = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
         (carrying.push_back(carries), dfa)
     );
@@ -712,7 +710,7 @@ _test_carrying_bytes = (
         let carrying = _carrying_bytes(nfa);
         // The position where the input ends is never passed over, so the run stops one short of it.
         let weighed = *range(1, max(1, bytes.@size - 1)).fold_m(weighed, |at, weighed|
-            if !carrying.@(bytes.@(at).to_I64) { pure $ weighed };
+            if !carrying.@(bytes.@(at).i64) { pure $ weighed };
             if _begins_at(bytes, at, nfa) { pure $ weighed };
             assert(
                 |_| name + " no match begins at " + (at + 1).to_string + ", behind the byte at "

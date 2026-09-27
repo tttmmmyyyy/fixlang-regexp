@@ -5,13 +5,13 @@
 module RegExp.SimpleParser;
 
 import Character::{is_digit, is_lower, is_space};
-import RegExp.StringEx::{find_byte, substring, _unsafe_to_string};
+import RegExp.StringEx::{_unsafe_to_string, find_byte, substring};
 import Std::{
     loop, Array, Bool, ErrMsg, FromString, Functor, I64, Monad, Option, Result, String, ToString, U8, 
-    Array::{empty, from_iter, get_size, pop_back, push_back, to_iter}, Debug::debug_println, 
+    Array::{@size, empty, from_iter, pop_back, push_back, to_iter}, Debug::debug_println, 
     FromString::from_string, Functor::map, Iterator::{advance, empty, fold, take, to_dyn, DynIterator}, 
     LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, is_some, map_or, none, some}, 
-    Result::{as_err, as_ok, err, is_err, is_ok, ok}, String::{get_bytes, get_first_byte, get_size}, 
+    Result::{as_err, as_ok, err, is_err, is_ok, ok}, String::{@size, get_bytes, get_first_byte}, 
     ToString::to_string
 };
 
@@ -281,7 +281,7 @@ namespace Parser {
     // if the array length is zero.
     one_or_more: Parser a -> Parser (Array a);
     one_or_more = |p| (
-        repeat(p).filter(|array| array.get_size >= 1)
+        repeat(p).filter(|array| array.@size >= 1)
     );
 
     // `p.if_exists` returns `some(x)` if `p` returns `x` as a parse result,
@@ -356,7 +356,7 @@ namespace Parser {
     // If the match fails, a `_NotMatch` error is raised.
     match_str: String -> Parser ();
     match_str = |str| (
-        if str.get_size == 1 { // Optimization
+        if str.@size == 1 { // Optimization
             match_char(str.get_first_byte.as_some)
         };
         str.get_bytes.pop_back.to_iter.fold(
@@ -402,7 +402,7 @@ namespace Parser {
     match_integer: Parser I64;
     match_integer = (
         match_str_class(is_digit)
-        .filter(|str| str.get_size > 0)
+        .filter(|str| str.@size > 0)
         .map_result(|str| from_string(str))
     );
 }
