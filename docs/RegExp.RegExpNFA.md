@@ -42,8 +42,8 @@ at the same place, together with the scanner as the search left it.
 
 Type: `RegExp.RegExpNFA::NFA -> Std::Array Std::U8`
 
-The bytes every match begins with, as far as they are forced. They are worked out once for the
-automaton and kept in its `prefix`.
+The bytes every match begins with, as far as they are forced. They are worked out once for
+the automaton and kept in its `prefix`.
 
 ##### Parameters
 
@@ -470,9 +470,9 @@ so that walking the nodes costs no reference counting at all.
 
 Type: `Std::Array Std::I64`
 
-The kind of each byte value. Two bytes are of one kind where every character class above holds
-both or neither of them, so that they lead every thread the same way, and a table works out
-what a byte does once for the bytes of its kind.
+The kind of each byte value. Two bytes are of one kind where every character class above
+holds both or neither of them, so that they lead every thread the same way, and a table works
+out what a byte does once for the bytes of its kind.
 
 ##### field `kinds`
 
@@ -684,7 +684,7 @@ a match may begin with is not forced
 
 Type: `Std::I64`
 
-to look so that the choice costs no reference count
+how to look so that the choice costs no reference count
 
 ##### field `forced_strings`
 
@@ -743,22 +743,22 @@ Defined as: `type StateTable = box struct { ...fields... }`
 The states an automaton is walked through, worked out as the input calls for them and kept, so
 that reading a byte in a state met before costs one lookup.
 
-A state is the threads the automaton stands at, each ranked by where it began: the threads of rank
-0 began earliest. A thread is `width` numbers: the node it stands at, then the rounds it has
-counted for each special quantifier. Two threads that stand alike have the same future, so a state
-holds a thread once, at the earliest rank that reached it, and a rank left holding nothing is
-dropped.
+A state is the threads the automaton stands at, each ranked by where it began: the threads of
+rank 0 began earliest. A thread is `width` numbers: the node it stands at, then the rounds it has
+counted for each special quantifier. Two threads that stand alike have the same future, so a
+state holds a thread once, at the earliest rank that reached it, and a rank left holding nothing
+is dropped.
 
 A state is seeking while no thread of it has reached the accepting node: reading a byte in it
 starts a new rank at the position after the byte, so that one reading of the text tries every
 position a match may begin at. Once a rank reaches the accepting node, a match beginning later
-could not be the leftmost one, so the ranks after it are dropped and no rank is started again. The
-walk then goes on only to see how far the match reaches, and whether an earlier rank reaches a
-match of its own.
+could not be the leftmost one, so the ranks after it are dropped and no rank is started again.
+The walk then goes on only to see how far the match reaches, and whether an earlier rank reaches
+a match of its own.
 
-A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not, then
-its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a rank,
-by the numbers.
+A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not,
+then its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a
+rank, by the numbers.
 
 ##### field `nfa`
 
@@ -802,15 +802,19 @@ where the input ends: `-1` where none does, `-2` until asked
 
 Type: `Std::I64`
 
+input
+
 ##### field `fresh`
 
 Type: `Std::I64`
+
+input
 
 ##### field `full`
 
 Type: `Std::Bool`
 
-the position the walk stands at; `-1` where it is not
+before the position the walk stands at; `-1` where it is not
 
 #### Walk
 
