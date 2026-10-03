@@ -1420,9 +1420,8 @@ namespace StateTable {
     _DEAD_STATE: I64;
     _DEAD_STATE = 0;
 
-    // The number standing in the table for a transition not worked out yet. A walk stops at it, as
-    // it stops at every negative number but those `_entry` writes for a transition into a state
-    // holding the accepting node.
+    // The number standing in the table for a transition not worked out yet. Read the way `_entry`
+    // says a number below `0` is read, it says a walk stops there.
     _UNTAKEN: I64;
     _UNTAKEN = -1;
 
@@ -1432,8 +1431,7 @@ namespace StateTable {
     _HELD_APART = Array::empty(0);
 
     // The row a state is added with: one transition per byte value, each of them untaken. One row
-    // serves every table, so it is written once for the program. A search over a short string
-    // makes tables of its own, and what they cost to make is most of what it costs.
+    // serves every table, so it is written once for the program.
     _UNTAKEN_ROW: Array I64;
     _UNTAKEN_ROW = Array::fill(256, _UNTAKEN);
 
@@ -1836,7 +1834,8 @@ namespace StateTable {
         let stops = next == _DEAD_STATE || (!keeps_begin && next != fresh);
         let leaves_fresh = state == fresh && next != fresh;
         if !accepts && !stops && !leaves_fresh { 256 * next };
-        let flags = (if accepts { 1 } else { 0 }) + (if stops { 2 } else { 0 }) + (if leaves_fresh { 4 } else { 0 });
+        let flags = (if accepts { 1 } else { 0 }) + (if stops { 2 } else { 0 })
+            + (if leaves_fresh { 4 } else { 0 });
         -2 - (2048 * next + flags)
     );
 
@@ -1875,8 +1874,7 @@ namespace StateTable {
     // the nodes are numbered.
     //
     // This is what `_closure` does for a pattern with no special quantifier, where a thread is a
-    // node and nothing besides, so that following the empty-string transitions writes numbers and
-    // builds nothing.
+    // node and nothing besides, so that one mark per node tells which threads were reached.
     //
     // # Parameters
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
@@ -2217,7 +2215,7 @@ _walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| 
 //
 // Each byte read in the fresh state leads back into it or elsewhere, so the row read is the fresh
 // state's whatever the bytes before were, and the reading of one byte waits on nothing read
-// before it. Walked by `_walk_forward`, each lookup would wait on the one before it for the row.
+// before it. In any other state each lookup waits on the one before it for the row.
 //
 // # Parameters
 // * `bytes` - The bytes to read.
@@ -2272,7 +2270,7 @@ type Prefilter = box struct {
                                   // to look so that the choice costs no reference count
     prefix_anchor: I64,           // where in `prefix` the byte the C library is asked for stands
     forced_strings: Array (Array U8), // the byte strings every match holds, which the search looks
-                                  // for, empty where it reads for the bytes a match may begin with
+                                  // for, empty where it looks for what a match begins with
     forced_anchors: Array I64,    // where in each of `forced_strings` the byte the C library is
                                   // asked for stands
     forced_count: I64,            // how many `forced_strings` holds, read where the search chooses
@@ -2302,8 +2300,9 @@ namespace Prefilter {
     };
 
     // Whether looking for where a match may begin passes over positions faster than walking the
-    // table over them. Reading for one of a set of bytes a byte at a time costs what a walk costs,
-    // and the C library reads for a byte or a byte string many bytes at a time.
+    // table over them: whether there is a byte or a byte string to look for, which the C library
+    // reads for many bytes at a time. Without one, the walk in the fresh state reads for the bytes
+    // a match may begin with as fast as anything written here would.
     //
     // # Parameters
     // * `prefilter` - What to look for.
@@ -2313,12 +2312,11 @@ namespace Prefilter {
     );
 
     // The next position at or after a position where a match may begin, or the length of the input
-    // where none does before it ends.
+    // where none does before it ends. It is asked only where `_skips` holds.
     //
     // Where the search has been told which byte strings every match holds, it looks for those.
-    // Where every match begins with the same two or more bytes, or a match may begin with one byte
-    // alone, the C library looks for that, reading many bytes at a time. Otherwise the text is read
-    // a byte at a time against the set of bytes a match may begin with.
+    // Otherwise every match begins with the same two or more bytes, or a match may begin with one
+    // byte alone, and the C library looks for that.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
@@ -2331,9 +2329,7 @@ namespace Prefilter {
         if prefilter.@prefix_size >= 2 {
             bytes.find_bytes_by(prefilter.@prefix_anchor, prefilter.@prefix, at, length).as_some_or(length)
         };
-        let lone = prefilter.@first_byte;
-        if lone >= 0 { bytes.find_byte(lone.u8, at).as_some_or(length) };
-        _skip_to_any(bytes, prefilter.@first_bytes, length, at)
+        bytes.find_byte(prefilter.@first_byte.u8, at).as_some_or(length)
     );
 
     // The next position at or after a position where a match may begin, found by looking for the
@@ -2365,6 +2361,12 @@ namespace Prefilter {
     _FORCED_SAMPLE: I64;
     _FORCED_SAMPLE = 16384;
 
+    // How many bytes of the text are counted to tell which byte of a string the text holds least
+    // often. Ranking single bytes needs far fewer bytes read than weighing how often whole strings
+    // stand.
+    _COUNTED: I64;
+    _COUNTED = 4096;
+
     // What to look for over a text: which byte of a forced beginning to ask the C library for, and
     // which forced byte strings to look for where looking for them beats reading for the bytes a
     // match may begin with.
@@ -2385,7 +2387,7 @@ namespace Prefilter {
         // read from inside the pattern beats it.
         if prefilter.@prefix_size >= 2 {
             let sample = min(bytes.@size, _FORCED_SAMPLE);
-            let anchor = _byte_counts(bytes, sample)._rarest_in(prefilter.@prefix);
+            let anchor = _byte_counts(bytes, min(sample, _COUNTED))._rarest_in(prefilter.@prefix);
             prefilter.set_prefix_anchor(anchor)
         };
         if sets.@size == 0 { prefilter };
@@ -2438,7 +2440,7 @@ namespace Prefilter {
     _with_forced_set = |bytes, set, prefilter| (
         let sample = min(bytes.@size, _FORCED_SAMPLE);
         let strings = _by_falling_count(bytes, sample, set).map(@bytes);
-        let counts = _byte_counts(bytes, sample);
+        let counts = _byte_counts(bytes, min(sample, _COUNTED));
         let (back_max, back_class) = _backing_of(set);
         prefilter._set_forced_strings(strings, strings.map(|string| counts._rarest_in(string)))
             .set_back_max(back_max)
@@ -2469,24 +2471,6 @@ _rarest_in = |string, counts| (
         if count < fewest { (k, count) } else { (place, fewest) }
     );
     place
-);
-
-// The next position at or after a position holding one of a set of bytes, read a byte at a time,
-// or the length of the input where none holds one. It stands apart from the reading that the C
-// library does, so that neither is compiled into the other.
-//
-// # Parameters
-// * `bytes` - The bytes to read.
-// * `wanted` - The bytes to look for, one bit each.
-// * `length` - How many bytes there are.
-// * `at` - The position to look from.
-_skip_to_any: Array U8 -> Array U64 -> I64 -> I64 -> I64;
-_skip_to_any = |bytes, wanted, length, at| (
-    loop(at, |at|
-        if at >= length { break $ length };
-        if wanted._holds_byte(0, bytes.@(at)) { break $ at };
-        continue $ at + 1
-    )
 );
 
 // How far back from where a forced byte string stands a match holding it may begin, stopping at
@@ -2621,12 +2605,8 @@ type DFA = unbox struct {
 };
 
 namespace DFA {
-    // The bytes every match begins with, as far as they are forced.
-    //
-    // Working them out means walking the automaton, and the states the walk takes are thrown away
-    // with the table it walks. The answer is worked out once for the automaton and kept in its
-    // `prefix`, so that a search over a short string, which makes a scanner of its own, does none
-    // of the walking.
+    // The bytes every match begins with, as far as they are forced. They are worked out once for the
+    // automaton and kept in its `prefix`.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
@@ -2736,6 +2716,9 @@ namespace DFA {
         let dfa = DFA { forward: forward, backward: backward, prefilter: prefilter };
         if end == _GIVEN_UP || begin == _GIVEN_UP { (NFA::_search_threads(bytes, from, nfa), dfa) };
         if end < 0 { (none(), dfa) };
+        // The match that ends at `end` begins at or after `from`, and read from right to left it is
+        // a match of the reversed pattern, so the walk back reaches a match.
+        if begin < 0 { undefined("the walk back from where a match ends reached no beginning") };
         (_match_with_groups(bytes, begin, end, nfa), dfa)
     );
 
