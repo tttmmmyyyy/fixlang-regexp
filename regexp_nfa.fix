@@ -2180,7 +2180,8 @@ _follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
 // byte whose transition it does not go on through: one not worked out yet, one
 // `StateTable::_entry` says it stops at, or, where it is skipping, one into the fresh state.
 //
-// A transition leaving the fresh state reads the byte rank 0 begins at.
+// A transition leaving the fresh state reads the byte rank 0 begins at. In the fresh state the walk
+// reads on with `_fresh_until` for as long as the bytes leave it there.
 //
 // # Parameters
 // * `bytes` - The bytes to read.
@@ -2196,6 +2197,7 @@ _walk_forward: Array U8 -> Array I64 -> I64 -> Bool -> I64 -> I64 -> I64 -> I64 
 _walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| (
     let length = bytes.@size;
     loop((at, row, best, begin), |(at, row, best, begin)|
+        let at = if row == fresh_row { _fresh_until(bytes, transitions, fresh_row, at) } else { at };
         if at >= length { break $ (at, row, best, begin) };
         let entry = transitions.@(row + bytes.@(at).i64);
         if entry >= 0 {
@@ -2207,6 +2209,28 @@ _walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| 
         let begin = if taken.bit_and(4) != 0 { at } else { begin };
         let best = if taken.bit_and(1) != 0 { at + 1 } else { best };
         continue $ (at + 1, taken.shift_right(3), best, begin)
+    )
+);
+
+// Where the bytes from a position on first lead the walk out of the fresh state, or the length of
+// the input where they never do.
+//
+// Each byte read in the fresh state leads back into it or elsewhere, so the row read is the fresh
+// state's whatever the bytes before were, and the reading of one byte waits on nothing read
+// before it. Walked by `_walk_forward`, each lookup would wait on the one before it for the row.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `transitions` - The transitions of the table.
+// * `fresh_row` - The row of the fresh state.
+// * `at` - The position to read from.
+_fresh_until: Array U8 -> Array I64 -> I64 -> I64 -> I64;
+_fresh_until = |bytes, transitions, fresh_row, at| (
+    let length = bytes.@size;
+    loop(at, |at|
+        if at >= length { break $ at };
+        if transitions.@(fresh_row + bytes.@(at).i64) != fresh_row { break $ at };
+        continue $ at + 1
     )
 );
 
