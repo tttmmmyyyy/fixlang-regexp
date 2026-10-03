@@ -32,10 +32,6 @@ Type: `Std::Array Std::U8 -> Std::I64 -> RegExp.RegExpNFA::DFA -> (Std::Option R
 The leftmost match beginning at or after a position, taking the longest of those that begin
 at the same place, together with the scanner as the search left it.
 
-Positions holding a byte no match can begin with are passed over without the automaton being
-walked at all, which is what makes a search over text a pattern rarely meets cost little more
-than reading the text.
-
 ##### Parameters
 
 * `bytes` - The bytes to read.
@@ -46,12 +42,8 @@ than reading the text.
 
 Type: `RegExp.RegExpNFA::NFA -> Std::Array Std::U8`
 
-The bytes every match begins with, as far as they are forced.
-
-Working them out means walking the automaton, and the states the walk takes are thrown away
-with the scanner it walks. The answer is worked out once for the automaton and kept in its
-`prefix`, so that a search over a short string, which makes a scanner of its own, does none
-of the walking.
+The bytes every match begins with, as far as they are forced. They are worked out once for the
+automaton and kept in its `prefix`.
 
 ##### Parameters
 
@@ -61,11 +53,11 @@ of the walking.
 
 Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::DFA`
 
-A scanner that has walked nothing yet.
+The scanner a search with an automaton starts from.
 
 ##### Parameters
 
-* `nfa` - The automaton to walk.
+* `nfa` - The automaton to walk, compiled by `NFA::compile`.
 
 #### search_every
 
@@ -145,9 +137,9 @@ Whether a byte belongs to the class whose words begin at a position.
 
 Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpNFA::NFA`
 
-Compiles a pattern to an automaton. The groups of the pattern are numbered first, so that a
-thread can write down what it captures by number, and an accepting node is put after the
-fragment the pattern compiles to.
+Compiles a pattern to an automaton, together with what a search reads off it before it
+begins: the byte strings every match holds, the bytes every match begins with, the ways on
+that carry one thread, the automaton of the pattern read from right to left, and the scanner.
 
 #### empty
 
@@ -277,6 +269,19 @@ Type: `RegExp.RegExpNFA::OneWayTable`
 
 A table offering no way, which sends every walk to the threads.
 
+### namespace RegExp.RegExpNFA::Prefilter
+
+#### make
+
+Type: `Std::Array Std::U64 -> Std::Array Std::U8 -> RegExp.RegExpNFA::Prefilter`
+
+What a search looks for where it has been told no byte string every match holds.
+
+##### Parameters
+
+* `first_bytes` - The bytes a match may begin with, one bit each.
+* `prefix` - The bytes every match begins with.
+
 ### namespace RegExp.RegExpNFA::Replacement
 
 #### calc_replacement
@@ -298,6 +303,40 @@ Type: `Std::String -> Std::Array RegExp.RegExpNFA::ReplaceFrag`
 
 Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
 `$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
+
+### namespace RegExp.RegExpNFA::StateTable
+
+#### given_up
+
+Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::StateTable`
+
+A table that has given the search back to the automaton before it took a state, so that a
+search with it walks the automaton's threads from the beginning.
+
+##### Parameters
+
+* `nfa` - The automaton.
+
+#### make
+
+Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::StateTable`
+
+A table that has walked nothing yet, holding the state with no thread and no other.
+
+##### Parameters
+
+* `nfa` - The automaton to walk.
+
+#### make_seeking
+
+Type: `RegExp.RegExpNFA::NFA -> RegExp.RegExpNFA::StateTable`
+
+A table that has walked nothing yet, holding the state with no thread and the state a search
+begins in away from the beginning of the input.
+
+##### Parameters
+
+* `nfa` - The automaton to walk.
 
 ### namespace RegExp.RegExpNFA::Walk
 
@@ -343,112 +382,34 @@ Type: `Std::I64`
 
 #### DFA
 
-Defined as: `type DFA = box struct { ...fields... }`
+Defined as: `type DFA = unbox struct { ...fields... }`
 
 The scanner: the automaton walked over sets of threads, so that reading a byte costs one table
 lookup. Where the text below says "the scanner" it means a `DFA`, and "the automaton" an `NFA`.
 
-A state is a set of threads. Reading a byte carries every thread whose node admits it to the node
-that node leads to, and the threads reachable from there without reading anything join them; what
-comes out is again a state. States and the transitions between them are worked out as the input
-calls for them and kept, so that a byte read again in the same state costs one lookup.
-
-A thread is `width` numbers: the node it stands at, then the rounds it has counted for each
-special quantifier. A state holds its threads ordered by node, so that two sets holding the same
-threads are one state.
+A search walks the automaton forward from where it is to begin, starting a rank of threads at
+every position until a match is reached, which finds where the leftmost match ends in one
+reading of the text. Where the match begins is where the rank that reached it began. The walk
+reads that off where it can, and otherwise walks the automaton of the pattern read from right to
+left back from where the match ends: the earliest position that walk reaches a match at is where
+the match begins.
 
 The scanner reports where a match begins and ends and nothing else. The groups a match captured
 are read off afterwards by the automaton, over the stretch the match covers.
 
-##### field `nfa`
+##### field `forward`
 
-Type: `RegExp.RegExpNFA::NFA`
+Type: `RegExp.RegExpNFA::StateTable`
 
-##### field `width`
+##### field `backward`
 
-Type: `Std::I64`
+Type: `RegExp.RegExpNFA::StateTable`
 
-##### field `threads`
+##### field `prefilter`
 
-Type: `Std::Array Std::I64`
+Type: `RegExp.RegExpNFA::Prefilter`
 
-##### field `bounds`
-
-Type: `Std::Array Std::I64`
-
-##### field `ordered_states`
-
-Type: `Std::Array Std::I64`
-
-##### field `transitions`
-
-Type: `Std::Array Std::I64`
-
-##### field `accepts`
-
-Type: `Std::Array Std::Bool`
-
-##### field `accepts_at_end`
-
-Type: `Std::Array Std::I64`
-
-##### field `interior`
-
-Type: `Std::I64`
-
-`1` where it does, `0` where it does not, `-1` until asked
-
-##### field `first_bytes`
-
-Type: `Std::Array Std::U64`
-
-##### field `first_byte`
-
-Type: `Std::I64`
-
-##### field `prefix`
-
-Type: `Std::Array Std::U8`
-
-begin with several bytes or with none
-
-##### field `prefix_size`
-
-Type: `Std::I64`
-
-a match may begin with is not forced
-
-##### field `absorbing`
-
-Type: `Std::Array Std::U8`
-
-to look so that the choice costs no reference count
-
-##### field `forced_strings`
-
-Type: `Std::Array (Std::Array Std::U8)`
-
-`2` where it does not, `0` where it has not been worked out
-
-##### field `forced_count`
-
-Type: `Std::I64`
-
-empty where the scan reads for the bytes a match may begin with
-
-##### field `back_max`
-
-Type: `Std::I64`
-
-look so that the choice costs no reference count
-
-##### field `back_class`
-
-Type: `Std::Array Std::U64`
-
-##### field `full`
-
-Type: `Std::Bool`
+from where a match ends to find where it begins
 
 #### Group
 
@@ -505,6 +466,18 @@ The character classes the nodes are guarded by, as one bit per byte value, four 
 class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
 so that walking the nodes costs no reference counting at all.
 
+##### field `kind_of`
+
+Type: `Std::Array Std::I64`
+
+The kind of each byte value. Two bytes are of one kind where every character class above holds
+both or neither of them, so that they lead every thread the same way, and a table works out
+what a byte does once for the bytes of its kind.
+
+##### field `kinds`
+
+Type: `Std::Array (Std::Array Std::U8)`
+
 ##### field `forced_sets`
 
 Type: `Std::Array (Std::Array RegExp.RegExpPattern::ForcedRun)`
@@ -526,6 +499,22 @@ Type: `RegExp.RegExpNFA::OneWayTable`
 
 What the automaton does between one byte and the next where it offers one way on, which is
 how a match's groups are read without running the threads over it again.
+
+##### field `reversed`
+
+Type: `Std::Option RegExp.RegExpNFA::NFA`
+
+The automaton of the pattern read from right to left, which a search walks back from where a
+match ends to find where it begins. An automaton compiled from a reversed pattern holds
+`none` here, and so does an automaton with no node.
+
+##### field `scanner`
+
+Type: `Std::Option RegExp.RegExpNFA::DFA`
+
+The scanner a search with this automaton starts from, holding the states a search meets first
+worked out. Only `NFA::compile` gives an automaton one: the automaton the scanner walks holds
+`none` here.
 
 #### NFAFrag
 
@@ -662,6 +651,67 @@ Type: `Std::Array Std::Bool`
 Per node, whether its empty-string transitions reach some node two ways. One thread
 stands for the automaton only where they reach each node one way.
 
+#### Prefilter
+
+Defined as: `type Prefilter = box struct { ...fields... }`
+
+What a search looks for to pass over the positions no match begins at.
+
+It is held apart from the tables the search walks so that the search can read it while it
+changes them.
+
+##### field `first_bytes`
+
+Type: `Std::Array Std::U64`
+
+##### field `first_byte`
+
+Type: `Std::I64`
+
+##### field `prefix`
+
+Type: `Std::Array Std::U8`
+
+begin with several bytes or with none
+
+##### field `prefix_size`
+
+Type: `Std::I64`
+
+a match may begin with is not forced
+
+##### field `prefix_anchor`
+
+Type: `Std::I64`
+
+to look so that the choice costs no reference count
+
+##### field `forced_strings`
+
+Type: `Std::Array (Std::Array Std::U8)`
+
+##### field `forced_anchors`
+
+Type: `Std::Array Std::I64`
+
+for, empty where it looks for what a match begins with
+
+##### field `forced_count`
+
+Type: `Std::I64`
+
+asked for stands
+
+##### field `back_max`
+
+Type: `Std::I64`
+
+how to look so that the choice costs no reference count
+
+##### field `back_class`
+
+Type: `Std::Array Std::U64`
+
 #### QuantID
 
 Defined as: `type QuantID = Std::I64`
@@ -685,6 +735,82 @@ Type: `Std::U8`
 ##### variant `rep_group`
 
 Type: `Std::I64`
+
+#### StateTable
+
+Defined as: `type StateTable = box struct { ...fields... }`
+
+The states an automaton is walked through, worked out as the input calls for them and kept, so
+that reading a byte in a state met before costs one lookup.
+
+A state is the threads the automaton stands at, each ranked by where it began: the threads of rank
+0 began earliest. A thread is `width` numbers: the node it stands at, then the rounds it has
+counted for each special quantifier. Two threads that stand alike have the same future, so a state
+holds a thread once, at the earliest rank that reached it, and a rank left holding nothing is
+dropped.
+
+A state is seeking while no thread of it has reached the accepting node: reading a byte in it
+starts a new rank at the position after the byte, so that one reading of the text tries every
+position a match may begin at. Once a rank reaches the accepting node, a match beginning later
+could not be the leftmost one, so the ranks after it are dropped and no rank is started again. The
+walk then goes on only to see how far the match reaches, and whether an earlier rank reaches a
+match of its own.
+
+A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not, then
+its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a rank,
+by the numbers.
+
+##### field `nfa`
+
+Type: `RegExp.RegExpNFA::NFA`
+
+##### field `width`
+
+Type: `Std::I64`
+
+##### field `keys`
+
+Type: `Std::Array Std::I64`
+
+##### field `bounds`
+
+Type: `Std::Array Std::I64`
+
+##### field `ordered_states`
+
+Type: `Std::Array Std::I64`
+
+##### field `transitions`
+
+Type: `Std::Array Std::I64`
+
+##### field `accepts`
+
+Type: `Std::Array Std::Bool`
+
+##### field `accepts_at_end`
+
+Type: `Std::Array Std::I64`
+
+##### field `starting`
+
+Type: `Std::Array Std::I64`
+
+where the input ends: `-1` where none does, `-2` until asked
+
+##### field `interior`
+
+Type: `Std::I64`
+
+##### field `fresh`
+
+Type: `Std::I64`
+
+##### field `full`
+
+Type: `Std::Bool`
+
+the position the walk stands at; `-1` where it is not
 
 #### Walk
 
