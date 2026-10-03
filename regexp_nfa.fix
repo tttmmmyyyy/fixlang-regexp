@@ -70,9 +70,9 @@ type NFA = box struct {
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
     classes: Array U64,
-    // The kind of each byte value. Two bytes are of one kind where every character class above holds
-    // both or neither of them, so that they lead every thread the same way, and a table works out
-    // what a byte does once for the bytes of its kind.
+    // The kind of each byte value. Two bytes are of one kind where every character class above
+    // holds both or neither of them, so that they lead every thread the same way, and a table works
+    // out what a byte does once for the bytes of its kind.
     kind_of: Array I64,
     kinds: Array (Array U8),  // the bytes of each kind
     // Sets of byte strings the pattern forces every text it matches to hold. Every match holds a
@@ -275,8 +275,8 @@ namespace NFA {
         let nfa = nfa.set_kind_of(kind_of).set_kinds(kinds);
         let nfa = nfa.set_forced_sets(forced_of(pattern).@sets);
         let nfa = nfa.set_prefix(DFA::forced_beginning(nfa));
-        // Read from right to left, the pattern holds the same character classes, so its bytes are of
-        // the same kinds.
+        // Read from right to left, the pattern holds the same character classes, so its bytes are
+        // of the same kinds.
         let (reversed, _) = NFA::_nodes_of(pattern.reverse);
         let reversed = reversed.set_kind_of(nfa.@kind_of).set_kinds(nfa.@kinds);
         let nfa = nfa.set_reversed(some(reversed));
@@ -656,7 +656,8 @@ _kinds_of_bytes = |classes| (
     range(0, classes.@size / 4).fold(Array::fill(256, 0), |class, kind_of|
         let (split, _, _) = range(0, 256).fold(
             (Array::empty(256), Array::fill(512, -1), 0), |byte, (split, numbers, count)|
-            let half = 2 * kind_of.@(byte) + (if classes._holds_byte(4 * class, byte.u8) { 1 } else { 0 });
+            let held = classes._holds_byte(4 * class, byte.u8);
+            let half = 2 * kind_of.@(byte) + (if held { 1 } else { 0 });
             let number = numbers.@(half);
             if number >= 0 { (split.push_back(number), numbers, count) };
             (split.push_back(count), numbers.set(half, count), count + 1)
@@ -1382,22 +1383,22 @@ _DFA_MAX_STATES = 1024;
 // The states an automaton is walked through, worked out as the input calls for them and kept, so
 // that reading a byte in a state met before costs one lookup.
 //
-// A state is the threads the automaton stands at, each ranked by where it began: the threads of rank
-// 0 began earliest. A thread is `width` numbers: the node it stands at, then the rounds it has
-// counted for each special quantifier. Two threads that stand alike have the same future, so a state
-// holds a thread once, at the earliest rank that reached it, and a rank left holding nothing is
-// dropped.
+// A state is the threads the automaton stands at, each ranked by where it began: the threads of
+// rank 0 began earliest. A thread is `width` numbers: the node it stands at, then the rounds it has
+// counted for each special quantifier. Two threads that stand alike have the same future, so a
+// state holds a thread once, at the earliest rank that reached it, and a rank left holding nothing
+// is dropped.
 //
 // A state is seeking while no thread of it has reached the accepting node: reading a byte in it
 // starts a new rank at the position after the byte, so that one reading of the text tries every
 // position a match may begin at. Once a rank reaches the accepting node, a match beginning later
-// could not be the leftmost one, so the ranks after it are dropped and no rank is started again. The
-// walk then goes on only to see how far the match reaches, and whether an earlier rank reaches a
-// match of its own.
+// could not be the leftmost one, so the ranks after it are dropped and no rank is started again.
+// The walk then goes on only to see how far the match reaches, and whether an earlier rank reaches
+// a match of its own.
 //
-// A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not, then
-// its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a rank,
-// by the numbers.
+// A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not,
+// then its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a
+// rank, by the numbers.
 type StateTable = box struct {
     nfa: NFA,                     // the automaton the states are worked out from
     width: I64,                   // numbers to a thread: the node, then one count per special quantifier
@@ -1408,10 +1409,12 @@ type StateTable = box struct {
     accepts: Array Bool,          // whether the state holds the accepting node
     accepts_at_end: Array I64,    // the earliest rank of the state that reaches the accepting node
                                   // where the input ends: `-1` where none does, `-2` until asked
-    starting: Array I64,          // the threads a rank begins with away from either end of the input
-    interior: I64,                // the state a search begins in away from the beginning of the input
-    fresh: I64,                   // `interior` where it is seeking, which is where no rank began before
-                                  // the position the walk stands at; `-1` where it is not
+    starting: Array I64,          // the threads a rank begins with away from either end of the
+                                  // input
+    interior: I64,                // the state a search begins in away from the beginning of the
+                                  // input
+    fresh: I64,                   // `interior` where it is seeking, which is where no rank began
+                                  // before the position the walk stands at; `-1` where it is not
     full: Bool                    // whether the states have outgrown what the table may take
 };
 
@@ -1487,8 +1490,8 @@ namespace StateTable {
         if table._seeking(interior) { table.set_fresh(interior) } else { table }
     );
 
-    // The table with every transition worked out from the states offered and the states they lead to,
-    // taken in the order they are reached, until it holds a number of states.
+    // The table with every transition worked out from the states offered and the states they lead
+    // to, taken in the order they are reached, until it holds a number of states.
     //
     // # Parameters
     // * `starts` - The states to begin from.
@@ -1498,7 +1501,8 @@ namespace StateTable {
     _worked_out_from = |starts, most, table| (
         let kinds = table.@nfa.@kinds;
         let (table, _, _) = loop((table, starts, 0), |(table, queue, taken)|
-            if taken >= queue.@size || table.@bounds.@size - 1 >= most { break $ (table, queue, taken) };
+            let held = table.@bounds.@size - 1;
+            if taken >= queue.@size || held >= most { break $ (table, queue, taken) };
             let state = queue.@(taken);
             let (table, queue) = kinds.to_iter.fold((table, queue), |alike, (table, queue)|
                 let byte = alike.@(0);
@@ -1572,7 +1576,9 @@ namespace StateTable {
         let key = range(0, kept).fold(key, |r, key|
             let threads = ranks.@(r);
             range(0, threads.@size / width).fold(key, |k, key|
-                range(0, width).fold(key.push_back(r), |j, key| key.push_back(threads.@(k * width + j)))
+                range(0, width).fold(key.push_back(r), |j, key|
+                    key.push_back(threads.@(k * width + j))
+                )
             )
         );
         (key, accepted)
@@ -1592,7 +1598,7 @@ namespace StateTable {
         range(0, (end - begin) / (width + 1)).fold(Array::empty(4), |k, ranks|
             let base = begin + k * (width + 1);
             let rank = keys.@(base);
-            let ranks = if rank == ranks.@size { ranks.push_back(Array::empty(width)) } else { ranks };
+            let ranks = if rank < ranks.@size { ranks } else { ranks.push_back(Array::empty(width)) };
             ranks.mod(rank, |threads|
                 range(1, width + 1).fold(threads, |j, threads| threads.push_back(keys.@(base + j)))
             )
@@ -1610,7 +1616,8 @@ namespace StateTable {
         let stride = table.@width + 1;
         let begin = table.@bounds.@(state) + 1;
         let end = table.@bounds.@(state + 1);
-        range(0, (end - begin) / stride).check_any(|k| table.@keys.@(begin + k * stride + 1) == node)
+        let keys = table.@keys;
+        range(0, (end - begin) / stride).check_any(|k| keys.@(begin + k * stride + 1) == node)
     );
 
     // The state a key stands for, taking it as a new state when it is one.
@@ -1693,8 +1700,8 @@ namespace StateTable {
         )
     );
 
-    // The state reached from a state by reading a byte, worked out and kept where the table does not
-    // hold it yet, for that byte and every byte of its kind. Reports `-1` when the states have
+    // The state reached from a state by reading a byte, worked out and kept where the table does
+    // not hold it yet, for that byte and every byte of its kind. Reports `-1` when the states have
     // outgrown what the table may take.
     //
     // # Parameters
@@ -1737,7 +1744,8 @@ namespace StateTable {
             table._closure(false, false, table._advance(threads, byte))
         );
         let first_lives = carried.@size > 0 && carried.@(0).@size > 0;
-        let carried = if table._seeking(state) { carried.push_back(table.@starting) } else { carried };
+        let seeking = table._seeking(state);
+        let carried = if seeking { carried.push_back(table.@starting) } else { carried };
         (table._without_repeats(carried), first_lives)
     );
 
@@ -1808,8 +1816,8 @@ namespace StateTable {
 
     // How a walk takes a transition from one state into another.
     //
-    // Most transitions a walk takes say nothing but where they lead, and such a transition stands in
-    // the table as the row of the state it leads into: the state times 256. Any other transition
+    // Most transitions a walk takes say nothing but where they lead, and such a transition stands
+    // in the table as the row of the state it leads into: the state times 256. Any other transition
     // stands as a number below `-1`: `-2` less the row times eight, less one where the state it
     // leads into holds the accepting node, less two where a walk stops at the transition, and less
     // four where it leaves the fresh state, so that rank 0 of the state it leads into began at the
@@ -1884,7 +1892,8 @@ namespace StateTable {
     _closure_nodes: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
     _closure_nodes = |at_begin, at_end, seeds, table| (
         let nfa = table.@nfa;
-        let (reached, _) = _reach_unmarked(nfa, at_begin, at_end, seeds, Array::fill(nfa.@nodes.@size, false));
+        let marks = Array::fill(nfa.@nodes.@size, false);
+        let (reached, _) = _reach_unmarked(nfa, at_begin, at_end, seeds, marks);
         reached.sort_by(|(left, right)| left < right)
     );
 
@@ -1994,8 +2003,9 @@ _holds_node = |node, width, threads| (
     range(0, threads.@size / width).check_any(|k| threads.@(k * width) == node)
 );
 
-// Every node the automaton reaches from the nodes offered without reading a byte and without passing
-// a marked node, in the order they are reached, together with the marks with those nodes marked.
+// Every node the automaton reaches from the nodes offered without reading a byte and without
+// passing a marked node, in the order they are reached, together with the marks with those nodes
+// marked.
 //
 // # Parameters
 // * `nfa` - The automaton.
@@ -2195,7 +2205,7 @@ _walk_forward: Array U8 -> Array I64 -> I64 -> Bool -> I64 -> I64 -> I64 -> I64 
 _walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| (
     let length = bytes.@size;
     loop((at, row, best, begin), |(at, row, best, begin)|
-        let at = if row == fresh_row { _fresh_until(bytes, transitions, fresh_row, at) } else { at };
+        let at = if row != fresh_row { at } else { _fresh_until(bytes, transitions, fresh_row, at) };
         if at >= length { break $ (at, row, best, begin) };
         let entry = transitions.@(row + bytes.@(at).i64);
         if entry >= 0 {
@@ -2266,8 +2276,8 @@ type Prefilter = box struct {
                                   // begin with several bytes or with none
     prefix: Array U8,             // the bytes every match begins with, empty where the first byte
                                   // a match may begin with is not forced
-    prefix_size: I64,             // how many bytes `prefix` holds, read where the search chooses how
-                                  // to look so that the choice costs no reference count
+    prefix_size: I64,             // how many bytes `prefix` holds, read where the search chooses
+                                  // how to look so that the choice costs no reference count
     prefix_anchor: I64,           // where in `prefix` the byte the C library is asked for stands
     forced_strings: Array (Array U8), // the byte strings every match holds, which the search looks
                                   // for, empty where it looks for what a match begins with
@@ -2327,7 +2337,8 @@ namespace Prefilter {
     _skip = |bytes, length, at, prefilter| (
         if prefilter.@forced_count > 0 { prefilter._skip_to_forced(bytes, length, at) };
         if prefilter.@prefix_size >= 2 {
-            bytes.find_bytes_by(prefilter.@prefix_anchor, prefilter.@prefix, at, length).as_some_or(length)
+            let anchor = prefilter.@prefix_anchor;
+            bytes.find_bytes_by(anchor, prefilter.@prefix, at, length).as_some_or(length)
         };
         bytes.find_byte(prefilter.@first_byte.u8, at).as_some_or(length)
     );
@@ -2427,7 +2438,9 @@ namespace Prefilter {
     // * `prefilter` - What to look for so far.
     _set_forced_strings: Array (Array U8) -> Array I64 -> Prefilter -> Prefilter;
     _set_forced_strings = |strings, anchors, prefilter| (
-        prefilter.set_forced_count(strings.@size).set_forced_strings(strings).set_forced_anchors(anchors)
+        prefilter.set_forced_count(strings.@size)
+            .set_forced_strings(strings)
+            .set_forced_anchors(anchors)
     );
 
     // What to look for, told to look for a set of forced byte strings.
@@ -2605,8 +2618,8 @@ type DFA = unbox struct {
 };
 
 namespace DFA {
-    // The bytes every match begins with, as far as they are forced. They are worked out once for the
-    // automaton and kept in its `prefix`.
+    // The bytes every match begins with, as far as they are forced. They are worked out once for
+    // the automaton and kept in its `prefix`.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
@@ -2663,7 +2676,8 @@ namespace DFA {
     // counted, so working out even the first state costs the square of the rounds asked for.
     //
     // # Parameters
-    // * `nfa` - The automaton to walk, holding the automaton of the pattern read from right to left.
+    // * `nfa` - The automaton to walk, holding the automaton of the pattern read from right to
+    //   left.
     _worked_out: NFA -> DFA;
     _worked_out = |nfa| (
         let reversed = nfa.@reversed.as_some;
@@ -2752,15 +2766,17 @@ namespace DFA {
         let best = if table.@accepts.@(start) { from } else { -1 };
         let fresh = table.@fresh;
         let fresh_row = if fresh < 0 { -1 } else { 256 * fresh };
-        // The walk stops before entering the fresh state where looking for the next position a match
-        // may begin at passes over positions faster than walking over them.
+        // The walk stops before entering the fresh state where looking for the next position a
+        // match may begin at passes over positions faster than walking over them.
         let skipping = fresh >= 0 && prefilter._skips;
-        let at = if skipping && start == fresh { prefilter._skip(bytes, length, from) } else { from };
+        let skip_first = skipping && start == fresh;
+        let at = if skip_first { prefilter._skip(bytes, length, from) } else { from };
         // The walk holds the transitions apart from the table while it reads them, so that reading
         // them costs no reference count, and hands them back to the table to work out a new one.
         let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
         let (found, table, transitions) = loop(
-            (at, 256 * start, best, at, table, transitions), |(at, row, best, begin, table, transitions)|
+            (at, 256 * start, best, at, table, transitions),
+            |(at, row, best, begin, table, transitions)|
             let (at, row, best, begin) = _walk_forward(
                 bytes, transitions, fresh_row, skipping, at, row, best, begin
             );
@@ -2773,7 +2789,8 @@ namespace DFA {
             };
             let entry = transitions.@(row + bytes.@(at).i64);
             if entry == StateTable::_UNTAKEN {
-                let (next, table) = table.set_transitions(transitions)._next(row / 256, bytes.@(at));
+                let table = table.set_transitions(transitions);
+                let (next, table) = table._next(row / 256, bytes.@(at));
                 let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
                 if next < 0 { break $ ((_GIVEN_UP, -1), table, transitions) };
                 continue $ (at, row, best, begin, table, transitions)
@@ -2823,7 +2840,8 @@ namespace DFA {
             };
             let entry = transitions.@(row + bytes.@(at - 1).i64);
             if entry == StateTable::_UNTAKEN {
-                let (next, table) = table.set_transitions(transitions)._next(row / 256, bytes.@(at - 1));
+                let table = table.set_transitions(transitions);
+                let (next, table) = table._next(row / 256, bytes.@(at - 1));
                 let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
                 if next < 0 { break $ (_GIVEN_UP, table, transitions) };
                 continue $ (at, row, best, table, transitions)
