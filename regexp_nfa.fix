@@ -12,7 +12,7 @@ import RegExp.RegExpPattern::{
     PAssertion::{is_pa_begin, is_pa_end}, 
     Pattern::{
         _assign_group_number, as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, 
-        is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, psequence
+        is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, psequence, reverse
     }
 };
 import RegExp.SimpleParser::{
@@ -22,7 +22,7 @@ import RegExp.SimpleParser::{
         run_parser_str
     }
 };
-import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
+import RegExp.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
 import RegExp.StringEx::{_unsafe_to_string, substring};
 import Std::{
     loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
@@ -30,7 +30,8 @@ import Std::{
         @, @size, append, empty, fill, from_map, get_last, mod, pop_back, push_back, set, sort_by, to_iter, 
         truncate
     }, 
-    Functor::map, I64::{bit_and, bit_or, maximum}, Iterator::{check_any, fold, map, range}, 
+    Functor::map, I64::{bit_and, bit_or, maximum, shift_right}, Indexable::ixchg, 
+    Iterator::{check_any, fold, map, range}, 
     LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
     Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
     String::{@size, concat_iter, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
@@ -69,6 +70,11 @@ type NFA = box struct {
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
     classes: Array U64,
+    // The kind of each byte value. Two bytes are of one kind where every character class above holds
+    // both or neither of them, so that they lead every thread the same way, and a table works out
+    // what a byte does once for the bytes of its kind.
+    kind_of: Array I64,
+    kinds: Array (Array U8),  // the bytes of each kind
     // Sets of byte strings the pattern forces every text it matches to hold. Every match holds a
     // member of each of these sets, so a search may look for whichever set the text it is over
     // holds least often.
@@ -78,7 +84,15 @@ type NFA = box struct {
     prefix: Array U8,
     // What the automaton does between one byte and the next where it offers one way on, which is
     // how a match's groups are read without running the threads over it again.
-    one_way: OneWayTable
+    one_way: OneWayTable,
+    // The automaton of the pattern read from right to left, which a search walks back from where a
+    // match ends to find where it begins. An automaton compiled from a reversed pattern holds
+    // `none` here, and so does an automaton with no node.
+    reversed: Option NFA,
+    // The scanner a search with this automaton starts from, holding the states a search meets first
+    // worked out. Only `NFA::compile` gives an automaton one: the automaton the scanner walks holds
+    // `none` here.
+    scanner: Option DFA
 };
 
 namespace NFA {
@@ -91,9 +105,13 @@ namespace NFA {
         group_count: 0,
         quant_bounds: Array::empty(0),
         classes: Array::empty(0),
+        kind_of: Array::fill(256, 0),
+        kinds: [Array::from_map(256, |byte| byte.u8)],
         forced_sets: Array::empty(0),
         prefix: Array::empty(0),
-        one_way: OneWayTable::empty
+        one_way: OneWayTable::empty,
+        reversed: none(),
+        scanner: none()
     };
 
     // Adds a node that guards nothing and leads nowhere, and reports its id.
@@ -243,27 +261,45 @@ namespace NFA {
         -1
     );
 
-    // Compiles a pattern to an automaton. The groups of the pattern are numbered first, so that a
-    // thread can write down what it captures by number, and an accepting node is put after the
-    // fragment the pattern compiles to.
+    // Compiles a pattern to an automaton, together with what a search reads off it before it
+    // begins: the byte strings every match holds, the bytes every match begins with, the ways on
+    // that carry one thread, the automaton of the pattern read from right to left, and the scanner.
     compile: Pattern -> NFA;
     compile = |pattern| (
-        // Creates an empty NFA
-        let nfa = NFA::empty;
-        // Assigns group number to each group in the pattern. 
-        let (group_count, pattern) = pattern._assign_group_number(0);
-        let nfa = nfa.set_group_count(group_count);
-        // Compiles the pattern to a NFA fragment.
-        let (nfa, frag) = nfa.compile_pattern(pattern);
-        // Sets the input of the fragment to the initial node
-        let nfa = nfa.set_initial_node(frag.@input);
-        // Creates accepting node and set the output of the fragment to that node
-        let (nfa, accept_id) = nfa.new_node;
-        let nfa = nfa.set_accepting_node(accept_id);
-        let nfa = nfa.set_frag_output(frag, accept_id);
+        let (nfa, pattern) = NFA::_nodes_of(pattern);
+        let kind_of = _kinds_of_bytes(nfa.@classes);
+        let kind_count = kind_of.to_iter.fold(0, |kind, count| max(count, kind + 1));
+        let kinds = range(0, 256).fold(Array::fill(kind_count, Array::empty(0)), |byte, kinds|
+            kinds.mod(kind_of.@(byte), push_back(byte.u8))
+        );
+        let nfa = nfa.set_kind_of(kind_of).set_kinds(kinds);
         let nfa = nfa.set_forced_sets(forced_of(pattern).@sets);
         let nfa = nfa.set_prefix(DFA::forced_beginning(nfa));
-        nfa.set_one_way(_one_way_table(nfa))
+        // Read from right to left, the pattern holds the same character classes, so its bytes are of
+        // the same kinds.
+        let (reversed, _) = NFA::_nodes_of(pattern.reverse);
+        let reversed = reversed.set_kind_of(nfa.@kind_of).set_kinds(nfa.@kinds);
+        let nfa = nfa.set_reversed(some(reversed));
+        let nfa = nfa.set_one_way(_one_way_table(nfa));
+        nfa.set_scanner(some $ DFA::_worked_out(nfa))
+    );
+
+    // The automaton a pattern compiles to, holding its nodes and classes and nothing a search reads
+    // off them, together with the pattern with its groups numbered. The groups are numbered first,
+    // so that a thread can write down what it captures by number, and an accepting node is put
+    // after the fragment the pattern compiles to.
+    //
+    // # Parameters
+    // * `pattern` - The pattern to compile.
+    _nodes_of: Pattern -> (NFA, Pattern);
+    _nodes_of = |pattern| (
+        let (group_count, pattern) = pattern._assign_group_number(0);
+        let nfa = NFA::empty.set_group_count(group_count);
+        let (nfa, frag) = nfa.compile_pattern(pattern);
+        let nfa = nfa.set_initial_node(frag.@input);
+        let (nfa, accept_id) = nfa.new_node;
+        let nfa = nfa.set_accepting_node(accept_id);
+        (nfa.set_frag_output(frag, accept_id), pattern)
     );
 
 }
@@ -607,6 +643,28 @@ _holds_byte = |base, byte, words| (
     words.@(base + index / 64).shift_right((index % 64).u64).bit_and(1_U64) == 1_U64
 );
 
+// The kind of each byte value: two bytes are of one kind where every class holds both or neither of
+// them. The kinds are numbered from 0 in the order of the first byte of each.
+//
+// # Parameters
+// * `classes` - The classes, four words to a class, one bit per byte value.
+_kinds_of_bytes: Array U64 -> Array I64;
+_kinds_of_bytes = |classes| (
+    // Each class splits every kind in two, the bytes it holds and the bytes it does not. A byte's
+    // kind and whether the class holds it say which half it goes to, and the halves are numbered
+    // anew in the order they are met.
+    range(0, classes.@size / 4).fold(Array::fill(256, 0), |class, kind_of|
+        let (split, _, _) = range(0, 256).fold(
+            (Array::empty(256), Array::fill(512, -1), 0), |byte, (split, numbers, count)|
+            let half = 2 * kind_of.@(byte) + (if classes._holds_byte(4 * class, byte.u8) { 1 } else { 0 });
+            let number = numbers.@(half);
+            if number >= 0 { (split.push_back(number), numbers, count) };
+            (split.push_back(count), numbers.set(half, count), count + 1)
+        );
+        split
+    )
+);
+
 // The one byte a set of bytes holds, or `-1` where it holds any other number of them.
 //
 // A set holding one byte is what lets the search for the next position a match may begin at be
@@ -625,17 +683,18 @@ _lone_byte_of = |words| (
     found
 );
 
-// Whether a run of rounds stands among the rounds already counted at one node, which are laid end
-// to end, each run as long as the one looked for.
+// Whether a run of numbers stands among runs laid end to end, each as long as the one looked for:
+// the rounds a thread has counted among those the threads at one node have, or a thread among the
+// threads at one node.
 //
 // # Parameters
-// * `counts` - The rounds to look for.
-// * `held` - The rounds already counted there, one thread after another.
-_holds_counts: Array I64 -> Array I64 -> Bool;
-_holds_counts = |counts, held| (
-    let width = counts.@size;
-    range(0, held.@size / width).check_any(|k|
-        range(0, width).fold(true, |j, same| same && held.@(k * width + j) == counts.@(j))
+// * `run` - The numbers to look for, one or more of them.
+// * `runs` - The runs to look among, one after another.
+_run_among: Array I64 -> Array I64 -> Bool;
+_run_among = |run, runs| (
+    let width = run.@size;
+    range(0, runs.@size / width).check_any(|k|
+        range(0, width).fold(true, |j, same| same && runs.@(k * width + j) == run.@(j))
     )
 );
 
@@ -722,7 +781,7 @@ namespace Walk {
             let walk = walk.mod_at_step(set(node, step));
             (true, walk.mod_counts_at_step(set(node, counts)))
         };
-        if walk.@counts_at_step.@(node)._holds_counts(counts) { (false, walk) };
+        if _run_among(counts, walk.@counts_at_step.@(node)) { (false, walk) };
         (true, walk.mod_counts_at_step(mod(node, append(counts))))
     );
 
@@ -1315,284 +1374,272 @@ namespace NFA {
     );
 }
 
-// How many states the scanner may take before it gives the search back to the automaton. Each state
-// costs a row of 256 transitions, which bounds the table the scanner builds.
+// How many states a table may take before the search is given back to the automaton. Each state
+// costs a row of 256 transitions, which bounds the table a search builds.
 _DFA_MAX_STATES: I64;
 _DFA_MAX_STATES = 1024;
 
-// How many bytes the scanner may read for each position it rules out before it gives the search
-// back to the automaton.
+// The states an automaton is walked through, worked out as the input calls for them and kept, so
+// that reading a byte in a state met before costs one lookup.
 //
-// The scanner reads a byte in one table lookup where the automaton walks every thread standing
-// there, so reading a position over is worth it several times over. What it cannot do is bound the
-// reading: a pattern whose attempt runs far past where it began - `[a-z]+@` over a long word - is
-// read once per position, where the automaton reads every byte once whatever the pattern.
-_DFA_STEPS_PER_POSITION: I64;
-_DFA_STEPS_PER_POSITION = 24;
-
-// How many bytes the scanner may read before that count is held against it, so that a search over a
-// short input is finished by the scanner whatever it reads.
-_DFA_STEPS_GRACE: I64;
-_DFA_STEPS_GRACE = 4096;
-
-// The scanner: the automaton walked over sets of threads, so that reading a byte costs one table
-// lookup. Where the text below says "the scanner" it means a `DFA`, and "the automaton" an `NFA`.
+// A state is the threads the automaton stands at, each ranked by where it began: the threads of rank
+// 0 began earliest. A thread is `width` numbers: the node it stands at, then the rounds it has
+// counted for each special quantifier. Two threads that stand alike have the same future, so a state
+// holds a thread once, at the earliest rank that reached it, and a rank left holding nothing is
+// dropped.
 //
-// A state is a set of threads. Reading a byte carries every thread whose node admits it to the node
-// that node leads to, and the threads reachable from there without reading anything join them; what
-// comes out is again a state. States and the transitions between them are worked out as the input
-// calls for them and kept, so that a byte read again in the same state costs one lookup.
+// A state is seeking while no thread of it has reached the accepting node: reading a byte in it
+// starts a new rank at the position after the byte, so that one reading of the text tries every
+// position a match may begin at. Once a rank reaches the accepting node, a match beginning later
+// could not be the leftmost one, so the ranks after it are dropped and no rank is started again. The
+// walk then goes on only to see how far the match reaches, and whether an earlier rank reaches a
+// match of its own.
 //
-// A thread is `width` numbers: the node it stands at, then the rounds it has counted for each
-// special quantifier. A state holds its threads ordered by node, so that two sets holding the same
-// threads are one state.
-//
-// The scanner reports where a match begins and ends and nothing else. The groups a match captured
-// are read off afterwards by the automaton, over the stretch the match covers.
-type DFA = box struct {
+// A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not, then
+// its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a rank,
+// by the numbers.
+type StateTable = box struct {
     nfa: NFA,                     // the automaton the states are worked out from
     width: I64,                   // numbers to a thread: the node, then one count per special quantifier
-    threads: Array I64,           // the threads of every state, laid end to end
-    bounds: Array I64,            // state `i` holds the threads from `bounds.@(i)` to `bounds.@(i+1)`
-    ordered_states: Array I64,    // the states, ordered by the threads they hold
-    transitions: Array I64,       // `state * 256 + byte` -> `2 * next + accepting`, `-1` when untaken
+    keys: Array I64,              // the key of every state, laid end to end
+    bounds: Array I64,            // state `i` has the key from `bounds.@(i)` to `bounds.@(i + 1)`
+    ordered_states: Array I64,    // the states, ordered by their keys
+    transitions: Array I64,       // `state * 256 + byte` -> how a walk takes the byte; see `_entry`
     accepts: Array Bool,          // whether the state holds the accepting node
-    accepts_at_end: Array I64,    // whether it holds it where the input ends, where `$` holds:
-                                  // `1` where it does, `0` where it does not, `-1` until asked
-    interior: I64,                // the state a match begins in, away from either end of the input
-    first_bytes: Array U64,       // the bytes a match may begin with, one bit each
-    first_byte: I64,              // the one byte a match may begin with, or `-1` where a match may
-                                  // begin with several bytes or with none
-    prefix: Array U8,             // the bytes every match begins with, empty where the first byte
-                                  // a match may begin with is not forced
-    prefix_size: I64,             // how many bytes `prefix` holds, read where the scan chooses how
-                                  // to look so that the choice costs no reference count
-    absorbing: Array U8,          // per byte: `1` where reading it leaves every thread standing,
-                                  // `2` where it does not, `0` where it has not been worked out
-    forced_strings: Array (Array U8), // the byte strings every match holds, which the scan looks for,
-                                  // empty where the scan reads for the bytes a match may begin with
-    forced_count: I64,            // how many `forced_strings` holds, read where the scan chooses how
-                                  // look so that the choice costs no reference count
-    back_max: I64,                // most bytes the pattern may read before a string of `forced_strings`
-    back_class: Array U64,        // the byte values it may read before one, one bit each
-    full: Bool                    // whether the states have outgrown what the scanner may take
+    accepts_at_end: Array I64,    // the earliest rank of the state that reaches the accepting node
+                                  // where the input ends: `-1` where none does, `-2` until asked
+    starting: Array I64,          // the threads a rank begins with away from either end of the input
+    interior: I64,                // the state a search begins in away from the beginning of the input
+    fresh: I64,                   // `interior` where it is seeking, which is where no rank began before
+                                  // the position the walk stands at; `-1` where it is not
+    full: Bool                    // whether the states have outgrown what the table may take
 };
 
-namespace DFA {
-    // The state that holds no thread. It is taken first, so that a transition into it is told from
-    // a transition not taken yet by the number that stands in the table.
+namespace StateTable {
+    // The state that holds no thread. It is taken first, so that it stands as `0`.
     _DEAD_STATE: I64;
     _DEAD_STATE = 0;
 
-    // The row a state is added with: one transition per byte value, each of them untaken. One row
-    // serves every scanner, so it is written once for the program. A search over a short string
-    // makes a scanner of its own, and what that scanner costs to make is most of what it costs.
-    _UNTAKEN_ROW: Array I64;
-    _UNTAKEN_ROW = Array::fill(256, -1);
+    // The number standing in the table for a transition not worked out yet. A walk stops at it, as
+    // it stops at every negative number but those `_entry` writes for a transition into a state
+    // holding the accepting node.
+    _UNTAKEN: I64;
+    _UNTAKEN = -1;
 
-    // A scanner that has walked nothing yet, holding the two states a walk starts from and nothing
-    // the automaton says about where a match may begin.
+    // What a table holds in place of its transitions while a walk holds them apart from it. It is
+    // one value for the program, so that holding them apart allocates nothing.
+    _HELD_APART: Array I64;
+    _HELD_APART = Array::empty(0);
+
+    // The row a state is added with: one transition per byte value, each of them untaken. One row
+    // serves every table, so it is written once for the program. A search over a short string
+    // makes tables of its own, and what they cost to make is most of what it costs.
+    _UNTAKEN_ROW: Array I64;
+    _UNTAKEN_ROW = Array::fill(256, _UNTAKEN);
+
+    // A table that has walked nothing yet, holding the state with no thread and no other.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
-    _bare: NFA -> DFA;
-    _bare = |nfa| (
-        let dfa = DFA {
+    make: NFA -> StateTable;
+    make = |nfa| (
+        let (_, table) = StateTable::_holding_nothing(nfa)._intern([0]);
+        table.set_starting(table._closure(false, false, table._initial_thread))
+    );
+
+    // A table that has given the search back to the automaton before it took a state, so that a
+    // search with it walks the automaton's threads from the beginning.
+    //
+    // # Parameters
+    // * `nfa` - The automaton.
+    given_up: NFA -> StateTable;
+    given_up = |nfa| StateTable::_holding_nothing(nfa).set_full(true);
+
+    // A table holding no state.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to walk.
+    _holding_nothing: NFA -> StateTable;
+    _holding_nothing = |nfa| (
+        StateTable {
             nfa: nfa,
             width: 1 + nfa.@quant_bounds.@size,
-            threads: Array::empty(64),
+            keys: Array::empty(64),
             bounds: [0],
             ordered_states: Array::empty(16),
             transitions: Array::empty(256 * 2),
             accepts: Array::empty(16),
             accepts_at_end: Array::empty(16),
-            interior: _DEAD_STATE,
-            first_bytes: _no_bytes,
-            first_byte: -1,
-            prefix: Array::empty(0),
-            prefix_size: 0,
-            absorbing: Array::fill(256, 0_U8),
-            forced_strings: Array::empty(0),
-            forced_count: 0,
-            back_max: 0,
-            back_class: _no_bytes,
+            starting: Array::empty(0),
+            interior: -1,
+            fresh: -1,
             full: false
-        };
-        let (_, dfa) = dfa._intern(Array::empty(0));
-        let (interior, dfa) = dfa._start_state_at(false, false);
-        dfa.set_interior(interior)
+        }
     );
 
-    // The bytes every match begins with, as far as they are forced.
-    //
-    // Working them out means walking the automaton, and the states the walk takes are thrown away
-    // with the scanner it walks. The answer is worked out once for the automaton and kept in its
-    // `prefix`, so that a search over a short string, which makes a scanner of its own, does none
-    // of the walking.
+    // A table that has walked nothing yet, holding the state with no thread and the state a search
+    // begins in away from the beginning of the input.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
-    forced_beginning: NFA -> Array U8;
-    forced_beginning = |nfa| (
-        if nfa._asks_many_rounds { Array::empty(0) };
-        let (prefix, _) = DFA::_bare(nfa)._forced_prefix;
-        prefix
+    make_seeking: NFA -> StateTable;
+    make_seeking = |nfa| (
+        let (interior, table) = StateTable::make(nfa)._start(true, false, false);
+        let table = table.set_interior(interior);
+        if table._seeking(interior) { table.set_fresh(interior) } else { table }
     );
 
-    // Whether the automaton holds a quantifier asking for more rounds than the walk that works out
-    // the forced beginning may take.
+    // The table with every transition worked out from the states offered and the states they lead to,
+    // taken in the order they are reached, until it holds a number of states.
     //
     // # Parameters
-    // * `nfa` - The automaton to read.
-    _asks_many_rounds: NFA -> Bool;
-    _asks_many_rounds = |nfa| (
-        nfa.@quant_bounds.to_iter.check_any(|(least, most)|
-            least > _MAX_PREFIX_ROUNDS || (most < I64::maximum && most > _MAX_PREFIX_ROUNDS)
-        )
-    );
-
-    // A scanner that has walked nothing yet.
-    //
-    // # Parameters
-    // * `nfa` - The automaton to walk.
-    make: NFA -> DFA;
-    make = |nfa| (
-        let prefix = nfa.@prefix;
-        let dfa = DFA::_bare(nfa);
-        let first_bytes = dfa._first_bytes_of(dfa.@interior);
-        dfa.set_first_bytes(first_bytes)
-            .set_first_byte(_lone_byte_of(first_bytes))
-            .set_prefix_size(prefix.@size)
-            .set_prefix(prefix)
-    );
-
-    // How many bytes of a forced beginning the scanner works out. A longer one is rarer in the text
-    // and so rules out more positions, and the reading that looks for it costs the same either way,
-    // so what bounds this is the states the walk interns rather than the searching.
-    _MAX_PREFIX: I64;
-    _MAX_PREFIX = 32;
-
-    // How many rounds a counted quantifier may ask for, for the walk that works out the forced
-    // beginning to be worth taking.
-    //
-    // The walk asks each state whether a match can end there, and the answer is worked out by
-    // following the automaton with the end of the input reached, which lets a counted quantifier
-    // run its rounds out. Every round stands for a thread, and a thread is read against the threads
-    // taken so far, so the walk costs the square of the rounds asked for: `(a*){100000,}` spends
-    // forty-five seconds on it. A pattern asking for that many rounds is one the forced beginning
-    // would not have paid for anyway.
-    _MAX_PREFIX_ROUNDS: I64;
-    _MAX_PREFIX_ROUNDS = 64;
-
-    // The bytes every match begins with, taken as far as they are forced.
-    //
-    // A state whose matches may begin with one byte alone forces that byte; the state it leads to
-    // forces the next. A state a match can end at forces nothing after it, and there are two ways
-    // to end: the state holds the accepting node, where `_first_bytes_of` answers with every byte
-    // and the walk stops on its own, or it reaches that node where the input ends, which `$` is
-    // matched by and which the state's own threads do not show.
-    //
-    // # Parameters
-    // * `dfa` - The scanner, walked from the state a match begins in.
-    _forced_prefix: DFA -> (Array U8, DFA);
-    _forced_prefix = |dfa| (
-        loop((Array::empty(_MAX_PREFIX), dfa.@interior, dfa), |(prefix, state, dfa)|
-            if prefix.@size == _MAX_PREFIX { break $ (prefix, dfa) };
-            let (ends_here, dfa) = dfa._accepts_at_end(state);
-            if ends_here { break $ (prefix, dfa) };
-            let byte = _lone_byte_of(dfa._first_bytes_of(state));
-            if byte < 0 { break $ (prefix, dfa) };
-            let (next, dfa) = dfa._next(state, byte.u8);
-            if dfa.@full || next < 0 { break $ (prefix, dfa) };
-            continue $ (prefix.push_back(byte.u8), next, dfa)
-        )
+    // * `starts` - The states to begin from.
+    // * `most` - How many states the table may hold before it stops.
+    // * `table` - The table.
+    _worked_out_from: Array I64 -> I64 -> StateTable -> StateTable;
+    _worked_out_from = |starts, most, table| (
+        let kinds = table.@nfa.@kinds;
+        let (table, _, _) = loop((table, starts, 0), |(table, queue, taken)|
+            if taken >= queue.@size || table.@bounds.@size - 1 >= most { break $ (table, queue, taken) };
+            let state = queue.@(taken);
+            let (table, queue) = kinds.to_iter.fold((table, queue), |alike, (table, queue)|
+                let byte = alike.@(0);
+                if table.@transitions.@(state * 256 + byte.i64) != _UNTAKEN { (table, queue) };
+                let count = table.@bounds.@size;
+                let (next, table) = table._next(state, byte);
+                if next < 0 || table.@bounds.@size == count { (table, queue) };
+                (table, queue.push_back(next))
+            );
+            continue $ (table, queue, taken + 1)
+        );
+        table
     );
 
     // The thread the automaton begins with: the initial node, having counted nothing.
     //
     // # Parameters
-    // * `dfa` - The scanner, for the automaton and the width of a thread.
-    _initial_thread: DFA -> Array I64;
-    _initial_thread = |dfa| (
-        Array::from_map(dfa.@width, |j| if j == 0 { dfa.@nfa.@initial_node.@val } else { 0 })
+    // * `table` - The table, for the automaton and the width of a thread.
+    _initial_thread: StateTable -> Array I64;
+    _initial_thread = |table| (
+        Array::from_map(table.@width, |j| if j == 0 { table.@nfa.@initial_node.@val } else { 0 })
     );
 
-    // The state a match begins in.
+    // The state a walk begins in at a position.
     //
     // # Parameters
+    // * `seeking` - Whether the walk starts a new rank at every position, which a walk looking for
+    //   where a match begins does and a walk from where one begins does not.
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
-    // * `dfa` - The scanner.
-    _start_state_at: Bool -> Bool -> DFA -> (I64, DFA);
-    _start_state_at = |at_begin, at_end, dfa| (
-        let closed = dfa._closure(at_begin, at_end, dfa._initial_thread);
-        dfa._intern(closed)
+    // * `table` - The table.
+    _start: Bool -> Bool -> Bool -> StateTable -> (I64, StateTable);
+    _start = |seeking, at_begin, at_end, table| (
+        let threads = if at_begin || at_end {
+            table._closure(at_begin, at_end, table._initial_thread)
+        } else {
+            table.@starting
+        };
+        let (key, _) = table._key_of(seeking, [threads]);
+        table._intern(key)
     );
 
-    // The bytes a match may begin with, one bit each: those the nodes of a state admit. A state that
-    // accepts stands for a match that reads nothing, which every position admits, so there every
-    // bit is set.
+    // Whether a state starts a new rank at every position.
     //
     // # Parameters
-    // * `state` - The state a match begins in.
-    // * `dfa` - The scanner.
-    _first_bytes_of: I64 -> DFA -> Array U64;
-    _first_bytes_of = |state, dfa| (
-        if dfa.@accepts.@(state) { _all_bytes };
-        let nfa = dfa.@nfa;
-        let width = dfa.@width;
-        let begin = dfa.@bounds.@(state);
-        let end = dfa.@bounds.@(state + 1);
-        range(0, (end - begin) / width).fold(_no_bytes, |k, first_bytes|
-            let node = nfa.get_node(NodeID { val: dfa.@threads.@(begin + k * width) });
-            let action = node.@action;
-            if !action.is_sa_char_match { first_bytes };
-            let base = action.as_sa_char_match;
-            range(0, 4).fold(first_bytes, |w, first_bytes|
-                first_bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
+    // * `state` - The state to read.
+    // * `table` - The table.
+    _seeking: I64 -> StateTable -> Bool;
+    _seeking = |state, table| table.@keys.@(table.@bounds.@(state)) == 1;
+
+    // The key of a state holding ranks of threads, together with the earliest rank holding the
+    // accepting node, or `-1` where none holds it. The ranks after that one are dropped, and the
+    // state is seeking where it is asked to be and no rank holds that node.
+    //
+    // # Parameters
+    // * `seeking` - Whether the state is to start a new rank at every position.
+    // * `ranks` - The threads of each rank, the earliest first, each rank holding some thread and
+    //   holding its threads in order.
+    // * `table` - The table, for the automaton and the width of a thread.
+    _key_of: Bool -> Array (Array I64) -> StateTable -> (Array I64, I64);
+    _key_of = |seeking, ranks, table| (
+        let width = table.@width;
+        let accepting = table.@nfa.@accepting_node.@val;
+        let accepted = loop(0, |r|
+            if r == ranks.@size { break $ -1 };
+            if _holds_node(accepting, width, ranks.@(r)) { break $ r };
+            continue $ r + 1
+        );
+        let kept = if accepted < 0 { ranks.@size } else { accepted + 1 };
+        let key = Array::empty(64).push_back(if seeking && accepted < 0 { 1 } else { 0 });
+        let key = range(0, kept).fold(key, |r, key|
+            let threads = ranks.@(r);
+            range(0, threads.@size / width).fold(key, |k, key|
+                range(0, width).fold(key.push_back(r), |j, key| key.push_back(threads.@(k * width + j)))
+            )
+        );
+        (key, accepted)
+    );
+
+    // The threads of each rank a state holds, the earliest first.
+    //
+    // # Parameters
+    // * `state` - The state to read.
+    // * `table` - The table.
+    _ranks_of: I64 -> StateTable -> Array (Array I64);
+    _ranks_of = |state, table| (
+        let width = table.@width;
+        let keys = table.@keys;
+        let begin = table.@bounds.@(state) + 1;
+        let end = table.@bounds.@(state + 1);
+        range(0, (end - begin) / (width + 1)).fold(Array::empty(4), |k, ranks|
+            let base = begin + k * (width + 1);
+            let rank = keys.@(base);
+            let ranks = if rank == ranks.@size { ranks.push_back(Array::empty(width)) } else { ranks };
+            ranks.mod(rank, |threads|
+                range(1, width + 1).fold(threads, |j, threads| threads.push_back(keys.@(base + j)))
             )
         )
     );
 
-    // Whether a node stands among threads laid end to end.
+    // Whether a node stands among the threads of a state.
     //
     // # Parameters
     // * `node` - The node to look for.
-    // * `width` - How many numbers a thread takes.
-    // * `threads` - The threads to look through.
-    _holds_node: I64 -> I64 -> Array I64 -> Bool;
-    _holds_node = |node, width, threads| (
-        range(0, threads.@size / width).check_any(|k| threads.@(k * width) == node)
+    // * `state` - The state to look in.
+    // * `table` - The table.
+    _state_holds_node: I64 -> I64 -> StateTable -> Bool;
+    _state_holds_node = |node, state, table| (
+        let stride = table.@width + 1;
+        let begin = table.@bounds.@(state) + 1;
+        let end = table.@bounds.@(state + 1);
+        range(0, (end - begin) / stride).check_any(|k| table.@keys.@(begin + k * stride + 1) == node)
     );
 
-    // The state a set of threads stands for, taking it as a new state when it is one.
+    // The state a key stands for, taking it as a new state when it is one.
     //
-    // Reports `-1` when the states have outgrown what the scanner may take; the search is given
-    // back to the automaton from there.
+    // Reports `-1` when the states have outgrown what the table may take; the search is given back
+    // to the automaton from there.
     //
     // # Parameters
-    // * `wanted` - The threads the state holds, ordered by node.
-    // * `dfa` - The scanner.
-    _intern: Array I64 -> DFA -> (I64, DFA);
-    _intern = |wanted, dfa| (
-        let (existing, place) = dfa._locate(wanted);
-        if existing >= 0 { (existing, dfa) };
-        let id = dfa.@bounds.@size - 1;
-        if id >= _DFA_MAX_STATES { (-1, dfa.set_full(true)) };
-        let width = dfa.@width;
-        let accepting = dfa.@nfa.@accepting_node.@val;
-        let accepts = _holds_node(accepting, width, wanted);
-        let dfa = dfa
-            .mod_bounds(|bounds| bounds.push_back(bounds.get_last.as_some + wanted.@size))
-            .mod_threads(append(wanted))
-            .mod_accepts(push_back(accepts))
-            .mod_accepts_at_end(push_back(if accepts { 1 } else { -1 }))
+    // * `key` - The key of the state.
+    // * `table` - The table.
+    _intern: Array I64 -> StateTable -> (I64, StateTable);
+    _intern = |key, table| (
+        let (existing, place) = table._locate(key);
+        if existing >= 0 { (existing, table) };
+        let id = table.@bounds.@size - 1;
+        if id >= _DFA_MAX_STATES { (-1, table.set_full(true)) };
+        let table = table
+            .mod_bounds(|bounds| bounds.push_back(bounds.get_last.as_some + key.@size))
+            .mod_keys(append(key))
             .mod_transitions(append(_UNTAKEN_ROW))
+            .mod_accepts_at_end(push_back(-2))
             .mod_ordered_states(_insert_at(place, id));
-        (id, dfa)
+        let accepts = table._state_holds_node(table.@nfa.@accepting_node.@val, id);
+        (id, table.mod_accepts(push_back(accepts)))
     );
 
-    // Puts a state where it belongs among the states ordered by the threads they hold.
+    // Puts a state where it belongs among the states ordered by their keys.
     //
     // # Parameters
     // * `place` - Where it belongs.
@@ -1608,86 +1655,189 @@ namespace DFA {
         )
     );
 
-    // Where a set of threads stands among the states: the state holding it, or `-1` and the place
-    // it would take among the states ordered by the threads they hold.
+    // Where a key stands among the states: the state having it, or `-1` and the place it would take
+    // among the states ordered by their keys.
     //
     // # Parameters
-    // * `wanted` - The threads to look for.
-    // * `dfa` - The scanner.
-    _locate: Array I64 -> DFA -> (I64, I64);
-    _locate = |wanted, dfa| (
-        loop((0, dfa.@ordered_states.@size), |(low, high)|
+    // * `wanted` - The key to look for.
+    // * `table` - The table.
+    _locate: Array I64 -> StateTable -> (I64, I64);
+    _locate = |wanted, table| (
+        loop((0, table.@ordered_states.@size), |(low, high)|
             if low == high { break $ (-1, low) };
             let middle = (low + high) / 2;
-            let state = dfa.@ordered_states.@(middle);
-            let order = dfa._compare(state, wanted);
+            let state = table.@ordered_states.@(middle);
+            let order = table._compare(state, wanted);
             if order == 0 { break $ (state, middle) };
             if order < 0 { continue $ (middle + 1, high) };
             continue $ (low, middle)
         )
     );
 
-    // How the threads a state holds stand against the threads offered, taken number by number: a
-    // negative number when the state comes first, zero when the two are the same, and a positive
-    // number when the offered threads come first.
+    // How a state's key stands against the key offered, taken number by number: a negative number
+    // when the state comes first, zero when the two are the same, and a positive number when the
+    // offered key comes first.
     //
     // # Parameters
-    // * `state` - The state whose threads to weigh.
-    // * `wanted` - The threads to weigh them against.
-    // * `dfa` - The scanner.
-    _compare: I64 -> Array I64 -> DFA -> I64;
-    _compare = |state, wanted, dfa| (
-        let begin = dfa.@bounds.@(state);
-        let end = dfa.@bounds.@(state + 1);
-        let held_size = end - begin;
+    // * `state` - The state whose key to weigh.
+    // * `wanted` - The key to weigh it against.
+    // * `table` - The table.
+    _compare: I64 -> Array I64 -> StateTable -> I64;
+    _compare = |state, wanted, table| (
+        let begin = table.@bounds.@(state);
+        let held_size = table.@bounds.@(state + 1) - begin;
         let offered_size = wanted.@size;
         loop(0, |i|
             if i == held_size || i == offered_size { break $ held_size - offered_size };
-            let difference = dfa.@threads.@(begin + i) - wanted.@(i);
+            let difference = table.@keys.@(begin + i) - wanted.@(i);
             if difference != 0 { break $ difference };
             continue $ i + 1
         )
     );
 
-    // The state reached from a state by reading a byte, worked out and kept when the scanner does
-    // not hold it yet. Reports `-1` when the states have outgrown what the scanner may take.
+    // The state reached from a state by reading a byte, worked out and kept where the table does not
+    // hold it yet, for that byte and every byte of its kind. Reports `-1` when the states have
+    // outgrown what the table may take.
     //
     // # Parameters
     // * `state` - The state the threads stand in.
     // * `byte` - The byte they read.
-    // * `dfa` - The scanner.
-    _next: I64 -> U8 -> DFA -> (I64, DFA);
-    _next = |state, byte, dfa| (
-        let seeds = dfa._advance(state, byte);
-        let closed = dfa._closure(false, false, seeds);
-        let (next, dfa) = dfa._intern(closed);
-        if next < 0 { (-1, dfa) };
-        let accepting = if dfa.@accepts.@(next) { 1 } else { 0 };
-        let dfa = dfa.mod_transitions(set(state * 256 + byte.i64, 2 * next + accepting));
-        (next, dfa)
+    // * `table` - The table.
+    _next: I64 -> U8 -> StateTable -> (I64, StateTable);
+    _next = |state, byte, table| (
+        let (ranks, first_lives) = table._after(state, byte);
+        let (key, accepted) = table._key_of(table._seeking(state), ranks);
+        let (next, table) = table._intern(key);
+        if next < 0 { (-1, table) };
+        let entry = table._entry(state, next, first_lives && accepted <= 0);
+        let nfa = table.@nfa;
+        let row = state * 256;
+        let table = table.mod_transitions(|transitions|
+            nfa.@kinds.@(nfa.@kind_of.@(byte.i64)).to_iter.fold(transitions, |alike, transitions|
+                transitions.set(row + alike.i64, entry)
+            )
+        );
+        (next, table)
     );
 
-    // The threads of a state that admit a byte, carried to the nodes reading it leads to.
+    // The ranks of the state reached from a state by reading a byte, the earliest first, before the
+    // ranks after the first one holding the accepting node are dropped, together with whether rank
+    // 0 of the state lives on as rank 0 of them.
+    //
+    // Each rank's threads that admit the byte are carried over it and followed through the
+    // empty-string transitions. A thread an earlier rank reached already is left out of a later
+    // one: the earlier rank's threads reach everything it would, and began earlier.
     //
     // # Parameters
     // * `state` - The state the threads stand in.
     // * `byte` - The byte they read.
-    // * `dfa` - The scanner.
-    _advance: I64 -> U8 -> DFA -> Array I64;
-    _advance = |state, byte, dfa| (
-        let nfa = dfa.@nfa;
-        let width = dfa.@width;
-        let begin = dfa.@bounds.@(state);
-        let end = dfa.@bounds.@(state + 1);
-        range(0, (end - begin) / width).fold(Array::empty(end - begin), |k, seeds|
-            let base = begin + k * width;
-            let node = nfa.get_node(NodeID { val: dfa.@threads.@(base) });
+    // * `table` - The table.
+    _after: I64 -> U8 -> StateTable -> (Array (Array I64), Bool);
+    _after = |state, byte, table| (
+        if table.@width == 1 { table._after_nodes(state, byte) };
+        let carried = table._ranks_of(state).map(|threads|
+            table._closure(false, false, table._advance(threads, byte))
+        );
+        let first_lives = carried.@size > 0 && carried.@(0).@size > 0;
+        let carried = if table._seeking(state) { carried.push_back(table.@starting) } else { carried };
+        (table._without_repeats(carried), first_lives)
+    );
+
+    // What `_after` does for a pattern with no special quantifier, where a thread is a node and
+    // nothing besides. One mark per node tells which nodes an earlier rank reached, so following a
+    // later rank's empty-string transitions stops wherever an earlier rank's did, and every rank is
+    // worked out in one pass over the automaton.
+    //
+    // # Parameters
+    // * `state` - The state the threads stand in.
+    // * `byte` - The byte they read.
+    // * `table` - The table.
+    _after_nodes: I64 -> U8 -> StateTable -> (Array (Array I64), Bool);
+    _after_nodes = |state, byte, table| (
+        let nfa = table.@nfa;
+        let seeds = table._ranks_of(state).map(|nodes| table._advance(nodes, byte));
+        let first_lives = seeds.@size > 0;
+        let seeds = if table._seeking(state) { seeds.push_back(table.@starting) } else { seeds };
+        let (ranks, _, first_lives) = range(0, seeds.@size).fold(
+            (Array::empty(seeds.@size), Array::fill(nfa.@nodes.@size, false), first_lives),
+            |r, (ranks, marks, first_lives)|
+            let (reached, marks) = _reach_unmarked(nfa, false, false, seeds.@(r), marks);
+            if reached.@size == 0 { (ranks, marks, first_lives && r > 0) };
+            (ranks.push_back(reached.sort_by(|(left, right)| left < right)), marks, first_lives)
+        );
+        (ranks, first_lives)
+    );
+
+    // The ranks left once every thread an earlier rank holds is taken out of a later one, a rank
+    // left holding nothing dropped.
+    //
+    // # Parameters
+    // * `ranks` - The threads of each rank, the earliest first.
+    // * `table` - The table, for the automaton and the width of a thread.
+    _without_repeats: Array (Array I64) -> StateTable -> Array (Array I64);
+    _without_repeats = |ranks, table| (
+        let width = table.@width;
+        let node_count = table.@nfa.@nodes.@size;
+        let (kept, _) = ranks.to_iter.fold(
+            (Array::empty(ranks.@size), Array::fill(node_count, Array::empty(0))),
+            |threads, (kept, held)|
+            let (unheld, held) = _unheld(width, threads, held);
+            (if unheld.@size == 0 { kept } else { kept.push_back(unheld) }, held)
+        );
+        kept
+    );
+
+    // The threads that admit a byte, carried to the nodes reading it leads to.
+    //
+    // # Parameters
+    // * `threads` - The threads, laid end to end.
+    // * `byte` - The byte they read.
+    // * `table` - The table, for the automaton and the width of a thread.
+    _advance: Array I64 -> U8 -> StateTable -> Array I64;
+    _advance = |threads, byte, table| (
+        let nfa = table.@nfa;
+        let width = table.@width;
+        range(0, threads.@size / width).fold(Array::empty(threads.@size), |k, seeds|
+            let base = k * width;
+            let node = nfa.get_node(NodeID { val: threads.@(base) });
             let action = node.@action;
             if !action.is_sa_char_match { seeds };
             if !nfa.class_holds(action.as_sa_char_match, byte) { seeds };
             let seeds = seeds.push_back(node.@output_on_action.@val);
-            range(1, width).fold(seeds, |j, seeds| seeds.push_back(dfa.@threads.@(base + j)))
+            range(1, width).fold(seeds, |j, seeds| seeds.push_back(threads.@(base + j)))
         )
+    );
+
+    // How a walk takes a transition from one state into another.
+    //
+    // Most transitions a walk takes say nothing but where they lead, and such a transition stands in
+    // the table as the row of the state it leads into: the state times 256. Any other transition
+    // stands as a number below `-1`: `-2` less the row times eight, less one where the state it
+    // leads into holds the accepting node, less two where a walk stops at the transition, and less
+    // four where it leaves the fresh state, so that rank 0 of the state it leads into began at the
+    // byte it reads. So the one test a walk makes on a byte that says nothing more is whether the
+    // number is negative.
+    //
+    // A walk stops where the transition leads into the state holding no thread, which ends it, and
+    // where it leaves the walk unable to read where a match begins off where rank 0 began: where
+    // rank 0 dies, unless the transition leads into the fresh state, where a new rank 0 begins, or
+    // where a later rank reaches the accepting node.
+    //
+    // # Parameters
+    // * `state` - The state the transition leads from.
+    // * `next` - The state the transition leads into.
+    // * `keeps_begin` - Whether rank 0 lives on, and is the rank holding the accepting node where
+    //   any is.
+    // * `table` - The table.
+    _entry: I64 -> I64 -> Bool -> StateTable -> I64;
+    _entry = |state, next, keeps_begin, table| (
+        let fresh = table.@fresh;
+        let accepts = table.@accepts.@(next);
+        let stops = next == _DEAD_STATE || (!keeps_begin && next != fresh);
+        let leaves_fresh = state == fresh && next != fresh;
+        if !accepts && !stops && !leaves_fresh { 256 * next };
+        let flags = (if accepts { 1 } else { 0 }) + (if stops { 2 } else { 0 }) + (if leaves_fresh { 4 } else { 0 });
+        -2 - (2048 * next + flags)
     );
 
     // Every thread the automaton reaches from the threads offered without reading a byte, ordered
@@ -1697,12 +1847,12 @@ namespace DFA {
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
     // * `seeds` - The threads to start from, laid end to end.
-    // * `dfa` - The scanner.
-    _closure: Bool -> Bool -> Array I64 -> DFA -> Array I64;
-    _closure = |at_begin, at_end, seeds, dfa| (
-        if dfa.@width == 1 { _closure_nodes(at_begin, at_end, seeds, dfa) };
-        let nfa = dfa.@nfa;
-        let width = dfa.@width;
+    // * `table` - The table.
+    _closure: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
+    _closure = |at_begin, at_end, seeds, table| (
+        if table.@width == 1 { _closure_nodes(at_begin, at_end, seeds, table) };
+        let nfa = table.@nfa;
+        let width = table.@width;
         let node_count = nfa.@nodes.@size;
         let reached = range(0, seeds.@size / width).fold(
             (Array::fill(node_count, Array::empty(0)), Array::empty(node_count * width)),
@@ -1732,393 +1882,416 @@ namespace DFA {
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
     // * `seeds` - The nodes to start from.
-    // * `dfa` - The scanner.
-    _closure_nodes: Bool -> Bool -> Array I64 -> DFA -> Array I64;
-    _closure_nodes = |at_begin, at_end, seeds, dfa| (
-        let nfa = dfa.@nfa;
-        let node_count = nfa.@nodes.@size;
-        let reached = range(0, seeds.@size).fold(
-            (Array::fill(node_count, false), Array::empty(node_count)),
-            |k, reached| _offer_node(seeds.@(k), reached)
+    // * `table` - The table.
+    _closure_nodes: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
+    _closure_nodes = |at_begin, at_end, seeds, table| (
+        let nfa = table.@nfa;
+        let (reached, _) = _reach_unmarked(nfa, at_begin, at_end, seeds, Array::fill(nfa.@nodes.@size, false));
+        reached.sort_by(|(left, right)| left < right)
+    );
+
+    // The earliest rank of a state that reaches the accepting node where the input ends, where `$`
+    // holds, or `-1` where none does. The answer is worked out on the first ask and kept.
+    //
+    // # Parameters
+    // * `state` - The state to weigh.
+    // * `table` - The table.
+    _accepts_at_end: I64 -> StateTable -> (I64, StateTable);
+    _accepts_at_end = |state, table| (
+        let known = table.@accepts_at_end.@(state);
+        if known >= -1 { (known, table) };
+        let width = table.@width;
+        let accepting = table.@nfa.@accepting_node.@val;
+        let ranks = table._ranks_of(state);
+        let rank = loop(0, |r|
+            if r == ranks.@size { break $ -1 };
+            if _holds_node(accepting, width, table._closure(false, true, ranks.@(r))) { break $ r };
+            continue $ r + 1
         );
-        let (marks, _) = loop(reached, |(marks, pending)|
-            let waiting = pending.@size;
-            if waiting == 0 { break $ (marks, pending) };
-            let node = nfa.get_node(NodeID { val: pending.@(waiting - 1) });
-            let reached = _follow_node_action(nfa, at_begin, at_end, node, (marks, pending.pop_back));
-            let reached = _offer_node(node.@output2.@val, reached);
-            continue $ _offer_node(node.@output.@val, reached)
-        );
-        range(0, node_count).fold(Array::empty(node_count), |node, threads|
-            if !marks.@(node) { threads };
-            threads.push_back(node)
-        )
+        (rank, table.mod_accepts_at_end(set(state, rank)))
     );
 
-    // Adds a node to those reached unless it is there already.
+    // The bytes a match may begin with, one bit each: those the nodes of a state admit. A state that
+    // accepts stands for a match that reads nothing, which every position admits, so there every
+    // bit is set.
     //
     // # Parameters
-    // * `node` - The node to add.
-    // * `reached` - The nodes reached so far, and those whose empty-string transitions are still to
-    //   be followed.
-    _offer_node: I64 -> (Array Bool, Array I64) -> (Array Bool, Array I64);
-    _offer_node = |node, (marks, pending)| (
-        if node < 0 { (marks, pending) };
-        if marks.@(node) { (marks, pending) };
-        (marks.set(node, true), pending.push_back(node))
-    );
-
-    // Applies the action a node guards, adding the node it leads to when the action lets it
-    // through. A node guarded by a character class leads nowhere until a byte is read, and a
-    // pattern with no special quantifier guards nothing else that can hold a thread back.
-    //
-    // # Parameters
-    // * `nfa` - The automaton the node belongs to.
-    // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
-    // * `at_end` - Whether it is the end of the input, where `$` holds.
-    // * `node` - The node whose action to apply.
-    // * `reached` - The nodes reached so far.
-    _follow_node_action: NFA -> Bool -> Bool -> NFANode -> (Array Bool, Array I64) -> (Array Bool, Array I64);
-    _follow_node_action = |nfa, at_begin, at_end, node, reached| (
-        // A pattern with no special quantifier has no node that counts, so the action reads and
-        // writes no rounds.
-        let step = nfa.action_step(at_begin, at_end, 0, node);
-        if step.@next < 0 { reached };
-        _offer_node(step.@next, reached)
-    );
-
-    // The thread that begins at a place among threads laid end to end.
-    //
-    // # Parameters
-    // * `base` - Where the thread begins.
-    // * `width` - How many numbers it takes.
-    // * `threads` - The threads it stands among.
-    _thread_at: I64 -> I64 -> Array I64 -> Array I64;
-    _thread_at = |base, width, threads| Array::from_map(width, |j| threads.@(base + j));
-
-    // How two runs of numbers laid end to end stand against each other, taken number by number: a
-    // negative number when the run at `first` comes first, zero when the two are the same, and a
-    // positive number when the run at `second` comes first.
-    //
-    // # Parameters
-    // * `first` - Where one run begins.
-    // * `second` - Where the other begins.
-    // * `width` - How many numbers a run takes.
-    // * `runs` - The numbers the two runs stand in.
-    _run_order: I64 -> I64 -> I64 -> Array I64 -> I64;
-    _run_order = |first, second, width, runs| (
-        range(0, width).fold(0, |j, order|
-            if order != 0 { order };
-            runs.@(first + j) - runs.@(second + j)
-        )
-    );
-
-    // Adds a thread to those reached, unless a thread standing at the same node having counted the
-    // same rounds is there already. Two such threads have the same future, so keeping one loses
-    // nothing.
-    //
-    // # Parameters
-    // * `width` - How many numbers a thread takes.
-    // * `thread` - The thread to add.
-    // * `reached` - The threads reached at each node, and those whose empty-string transitions are
-    //   still to be followed.
-    _offer_thread: I64 -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
-    _offer_thread = |width, thread, (taken, pending)| (
-        let node = thread.@(0);
-        if node < 0 { (taken, pending) };
-        let counts = _thread_counts(width, thread);
-        if taken.@(node)._holds_counts(counts) { (taken, pending) };
-        (taken.mod(node, append(counts)), pending.append(thread))
-    );
-
-    // The rounds a thread has counted. Two threads reached at one node are told apart by these.
-    //
-    // # Parameters
-    // * `width` - How many numbers a thread takes.
-    // * `thread` - The thread to read.
-    _thread_counts: I64 -> Array I64 -> Array I64;
-    _thread_counts = |width, thread| (
-        Array::from_map(width - 1, |j| thread.@(1 + j))
-    );
-
-    // The threads reached at each node, laid end to end in the order the nodes are numbered and,
-    // at one node, in the order of the rounds they have counted. Two searches that reach the same
-    // threads write them the same way, which is what makes them one state.
-    //
-    // # Parameters
-    // * `width` - How many numbers a thread takes.
-    // * `taken` - The counts of the threads reached at each node.
-    _gather_threads: I64 -> Array (Array I64) -> Array I64;
-    _gather_threads = |width, taken| (
-        let stride = width - 1;
-        range(0, taken.@size).fold(Array::empty(taken.@size * width), |node, threads|
-            let held = _sorted_counts(stride, taken.@(node));
-            range(0, held.@size / stride).fold(threads, |k, threads|
-                let threads = threads.push_back(node);
-                range(0, stride).fold(threads, |j, threads|
-                    threads.push_back(held.@(k * stride + j))
+    // * `state` - The state a match begins in.
+    // * `table` - The table.
+    _first_bytes_of: I64 -> StateTable -> Array U64;
+    _first_bytes_of = |state, table| (
+        if table.@accepts.@(state) { _all_bytes };
+        let nfa = table.@nfa;
+        table._ranks_of(state).to_iter.fold(_no_bytes, |threads, first_bytes|
+            let width = table.@width;
+            range(0, threads.@size / width).fold(first_bytes, |k, first_bytes|
+                let node = nfa.get_node(NodeID { val: threads.@(k * width) });
+                let action = node.@action;
+                if !action.is_sa_char_match { first_bytes };
+                let base = action.as_sa_char_match;
+                range(0, 4).fold(first_bytes, |w, first_bytes|
+                    first_bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
                 )
             )
         )
     );
 
-    // The counts of the threads reached at one node, put in order.
+    // How many bytes of a forced beginning a walk works out. A longer one is rarer in the text and
+    // so rules out more positions, and the reading that looks for it costs the same either way, so
+    // what bounds this is the states the walk interns rather than the searching.
+    _MAX_PREFIX: I64;
+    _MAX_PREFIX = 32;
+
+    // The bytes every match begins with, taken as far as they are forced.
+    //
+    // A state whose matches may begin with one byte alone forces that byte; the state it leads to
+    // forces the next. A state a match can end at forces nothing after it, and there are two ways
+    // to end: the state holds the accepting node, where `_first_bytes_of` answers with every byte
+    // and the walk stops on its own, or it reaches that node where the input ends, which `$` is
+    // matched by and which the state's own threads do not show.
     //
     // # Parameters
-    // * `stride` - How many numbers a thread's counts take.
-    // * `held` - The counts, one thread after another.
-    _sorted_counts: I64 -> Array I64 -> Array I64;
-    _sorted_counts = |stride, held| (
-        let count = held.@size / stride;
-        if count <= 1 { held };
-        range(1, count).fold(held, |k, held|
-            loop((k, held), |(k, held)|
-                if k == 0 { break $ held };
-                let order = held._run_order((k - 1) * stride, k * stride, stride);
-                if order <= 0 { break $ held };
-                let held = range(0, stride).fold(held, |j, held|
-                    let earlier = held.@((k - 1) * stride + j);
-                    held.set((k - 1) * stride + j, held.@(k * stride + j)).set(k * stride + j, earlier)
-                );
-                continue $ (k - 1, held)
+    // * `table` - The table to walk, from the state a match begins in.
+    _forced_prefix: StateTable -> (Array U8, StateTable);
+    _forced_prefix = |table| (
+        let (start, table) = table._start(false, false, false);
+        loop((Array::empty(_MAX_PREFIX), start, table), |(prefix, state, table)|
+            if prefix.@size == _MAX_PREFIX { break $ (prefix, table) };
+            let (ends_here, table) = table._accepts_at_end(state);
+            if ends_here >= 0 { break $ (prefix, table) };
+            let byte = _lone_byte_of(table._first_bytes_of(state));
+            if byte < 0 { break $ (prefix, table) };
+            let (next, table) = table._next(state, byte.u8);
+            if table.@full || next < 0 { break $ (prefix, table) };
+            continue $ (prefix.push_back(byte.u8), next, table)
+        )
+    );
+}
+
+// The threads of a run not held yet, in the order they stand in, together with what is held once
+// they are.
+//
+// # Parameters
+// * `width` - How many numbers a thread takes.
+// * `threads` - The threads, laid end to end.
+// * `held` - Per node, the threads standing there already, laid end to end.
+_unheld: I64 -> Array I64 -> Array (Array I64) -> (Array I64, Array (Array I64));
+_unheld = |width, threads, held| (
+    range(0, threads.@size / width).fold((Array::empty(threads.@size), held), |k, (unheld, held)|
+        let thread = _thread_at(k * width, width, threads);
+        let node = thread.@(0);
+        if _run_among(thread, held.@(node)) { (unheld, held) };
+        (unheld.append(thread), held.mod(node, append(thread)))
+    )
+);
+
+// Whether a node stands among threads laid end to end.
+//
+// # Parameters
+// * `node` - The node to look for.
+// * `width` - How many numbers a thread takes.
+// * `threads` - The threads to look through.
+_holds_node: I64 -> I64 -> Array I64 -> Bool;
+_holds_node = |node, width, threads| (
+    range(0, threads.@size / width).check_any(|k| threads.@(k * width) == node)
+);
+
+// Every node the automaton reaches from the nodes offered without reading a byte and without passing
+// a marked node, in the order they are reached, together with the marks with those nodes marked.
+//
+// # Parameters
+// * `nfa` - The automaton.
+// * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
+// * `at_end` - Whether it is the end of the input, where `$` holds.
+// * `seeds` - The nodes to start from.
+// * `marks` - Per node, whether it is marked.
+_reach_unmarked: NFA -> Bool -> Bool -> Array I64 -> Array Bool -> (Array I64, Array Bool);
+_reach_unmarked = |nfa, at_begin, at_end, seeds, marks| (
+    // Every node is put among those reached once, when it is marked, and its empty-string
+    // transitions are followed in the order the nodes were put there.
+    let (marks, reached) = seeds.to_iter.fold((marks, Array::empty(seeds.@size)), |node, reached|
+        _offer_node(node, reached)
+    );
+    loop((0, marks, reached), |(followed, marks, reached)|
+        if followed == reached.@size { break $ (reached, marks) };
+        let node = nfa.get_node(NodeID { val: reached.@(followed) });
+        let next = _follow_node_action(nfa, at_begin, at_end, node, (marks, reached));
+        let next = _offer_node(node.@output2.@val, next);
+        let (marks, reached) = _offer_node(node.@output.@val, next);
+        continue $ (followed + 1, marks, reached)
+    )
+);
+
+// Adds a node to those reached unless it is there already.
+//
+// # Parameters
+// * `node` - The node to add.
+// * `reached` - The nodes reached so far, and those whose empty-string transitions are still to
+//   be followed.
+_offer_node: I64 -> (Array Bool, Array I64) -> (Array Bool, Array I64);
+_offer_node = |node, (marks, pending)| (
+    if node < 0 { (marks, pending) };
+    if marks.@(node) { (marks, pending) };
+    (marks.set(node, true), pending.push_back(node))
+);
+
+// Applies the action a node guards, adding the node it leads to when the action lets it
+// through. A node guarded by a character class leads nowhere until a byte is read, and a
+// pattern with no special quantifier guards nothing else that can hold a thread back.
+//
+// # Parameters
+// * `nfa` - The automaton the node belongs to.
+// * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
+// * `at_end` - Whether it is the end of the input, where `$` holds.
+// * `node` - The node whose action to apply.
+// * `reached` - The nodes reached so far.
+_follow_node_action: NFA -> Bool -> Bool -> NFANode -> (Array Bool, Array I64) -> (Array Bool, Array I64);
+_follow_node_action = |nfa, at_begin, at_end, node, reached| (
+    // A pattern with no special quantifier has no node that counts, so the action reads and
+    // writes no rounds.
+    let step = nfa.action_step(at_begin, at_end, 0, node);
+    if step.@next < 0 { reached };
+    _offer_node(step.@next, reached)
+);
+
+// The thread that begins at a place among threads laid end to end.
+//
+// # Parameters
+// * `base` - Where the thread begins.
+// * `width` - How many numbers it takes.
+// * `threads` - The threads it stands among.
+_thread_at: I64 -> I64 -> Array I64 -> Array I64;
+_thread_at = |base, width, threads| Array::from_map(width, |j| threads.@(base + j));
+
+// How two runs of numbers laid end to end stand against each other, taken number by number: a
+// negative number when the run at `first` comes first, zero when the two are the same, and a
+// positive number when the run at `second` comes first.
+//
+// # Parameters
+// * `first` - Where one run begins.
+// * `second` - Where the other begins.
+// * `width` - How many numbers a run takes.
+// * `runs` - The numbers the two runs stand in.
+_run_order: I64 -> I64 -> I64 -> Array I64 -> I64;
+_run_order = |first, second, width, runs| (
+    range(0, width).fold(0, |j, order|
+        if order != 0 { order };
+        runs.@(first + j) - runs.@(second + j)
+    )
+);
+
+// Adds a thread to those reached, unless a thread standing at the same node having counted the
+// same rounds is there already. Two such threads have the same future, so keeping one loses
+// nothing.
+//
+// # Parameters
+// * `width` - How many numbers a thread takes.
+// * `thread` - The thread to add.
+// * `reached` - The threads reached at each node, and those whose empty-string transitions are
+//   still to be followed.
+_offer_thread: I64 -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
+_offer_thread = |width, thread, (taken, pending)| (
+    let node = thread.@(0);
+    if node < 0 { (taken, pending) };
+    let counts = _thread_counts(width, thread);
+    if _run_among(counts, taken.@(node)) { (taken, pending) };
+    (taken.mod(node, append(counts)), pending.append(thread))
+);
+
+// The rounds a thread has counted. Two threads reached at one node are told apart by these.
+//
+// # Parameters
+// * `width` - How many numbers a thread takes.
+// * `thread` - The thread to read.
+_thread_counts: I64 -> Array I64 -> Array I64;
+_thread_counts = |width, thread| (
+    Array::from_map(width - 1, |j| thread.@(1 + j))
+);
+
+// The threads reached at each node, laid end to end in the order the nodes are numbered and,
+// at one node, in the order of the rounds they have counted. Two walks that reach the same
+// threads write them the same way, which is what makes them one state.
+//
+// # Parameters
+// * `width` - How many numbers a thread takes.
+// * `taken` - The counts of the threads reached at each node.
+_gather_threads: I64 -> Array (Array I64) -> Array I64;
+_gather_threads = |width, taken| (
+    let stride = width - 1;
+    range(0, taken.@size).fold(Array::empty(taken.@size * width), |node, threads|
+        let held = _sorted_counts(stride, taken.@(node));
+        range(0, held.@size / stride).fold(threads, |k, threads|
+            let threads = threads.push_back(node);
+            range(0, stride).fold(threads, |j, threads|
+                threads.push_back(held.@(k * stride + j))
             )
         )
-    );
+    )
+);
 
-    // Applies the action a node guards, adding the thread it leads to when the action lets it
-    // through. A node guarded by a character class leads nowhere until a byte is read.
-    //
-    // # Parameters
-    // * `nfa` - The automaton the node belongs to.
-    // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
-    // * `at_end` - Whether it is the end of the input, where `$` holds.
-    // * `width` - How many numbers a thread takes.
-    // * `node` - The node whose action to apply.
-    // * `thread` - The thread standing at that node.
-    // * `reached` - The threads reached so far.
-    _follow_action: NFA -> Bool -> Bool -> I64 -> NFANode -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
-    _follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
-        let qid = action_quant(node.@action);
-        let counted = if qid < 0 { 0 } else { thread.@(1 + qid) };
-        let step = nfa.action_step(at_begin, at_end, counted, node);
-        if step.@next < 0 { reached };
-        let next = thread.set(0, step.@next);
-        let next = if step.@quant < 0 { next } else { next.set(1 + step.@quant, step.@round) };
-        _offer_thread(width, next, reached)
-    );
-
-    // Whether a state accepts where the input ends, where `$` holds. The answer is worked out on
-    // the first ask and kept.
-    //
-    // # Parameters
-    // * `state` - The state to weigh.
-    // * `dfa` - The scanner.
-    _accepts_at_end: I64 -> DFA -> (Bool, DFA);
-    _accepts_at_end = |state, dfa| (
-        let known = dfa.@accepts_at_end.@(state);
-        if known >= 0 { (known == 1, dfa) };
-        let width = dfa.@width;
-        let accepting = dfa.@nfa.@accepting_node.@val;
-        let begin = dfa.@bounds.@(state);
-        let end = dfa.@bounds.@(state + 1);
-        let threads = Array::from_map(end - begin, |j| dfa.@threads.@(begin + j));
-        let accepts = _holds_node(accepting, width, dfa._closure(false, true, threads));
-        (accepts, dfa.mod_accepts_at_end(set(state, if accepts { 1 } else { 0 })))
-    );
-
-    // Walks the table from a state, taking the transitions the scanner holds.
-    //
-    // Reports where it stopped, the state it stopped in, and how far the longest match seen so far
-    // reaches. The state is `-1` when the walk entered the state holding no thread; otherwise the
-    // walk stopped at the end of the input or on a transition the scanner does not hold yet.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `transitions` - The transitions the scanner holds.
-    // * `length` - How many bytes there are.
-    // * `at` - The position to read from.
-    // * `state` - The state the threads stand in.
-    // * `best` - How far the longest match seen so far reaches, or `-1`.
-    _walk_table: Array U8 -> Array I64 -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64);
-    _walk_table = |bytes, transitions, length, at, state, best| (
-        loop((at, state, best), |(at, state, best)|
-            if at == length { break $ (at, state, best) };
-            let transition = transitions.@(state * 256 + bytes.@(at).i64);
-            if transition <= 0 {
-                if transition < 0 { break $ (at, state, best) };
-                break $ (at, -1, best)
-            };
-            let at = at + 1;
-            continue $ (at, transition / 2, if transition % 2 == 1 { at } else { best })
+// The counts of the threads reached at one node, put in order.
+//
+// # Parameters
+// * `stride` - How many numbers a thread's counts take.
+// * `held` - The counts, one thread after another.
+_sorted_counts: I64 -> Array I64 -> Array I64;
+_sorted_counts = |stride, held| (
+    let count = held.@size / stride;
+    if count <= 1 { held };
+    range(1, count).fold(held, |k, held|
+        loop((k, held), |(k, held)|
+            if k == 0 { break $ held };
+            let order = held._run_order((k - 1) * stride, k * stride, stride);
+            if order <= 0 { break $ held };
+            let held = range(0, stride).fold(held, |j, held|
+                let earlier = held.@((k - 1) * stride + j);
+                held.set((k - 1) * stride + j, held.@(k * stride + j)).set(k * stride + j, earlier)
+            );
+            continue $ (k - 1, held)
         )
-    );
+    )
+);
 
-    // How far the longest match beginning at a position reaches, or `-1` when none begins there,
-    // together with how many bytes the scanner read to find out.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `length` - How many bytes there are.
-    // * `from` - The position the match has to begin at.
-    // * `dfa` - The scanner.
-    _attempt: Array U8 -> I64 -> I64 -> DFA -> (I64, I64, DFA);
-    _attempt = |bytes, length, from, dfa| (
-        // The ends of the input are the two places an assertion can hold, so a match beginning there
-        // starts from a state of its own.
-        let (state, dfa) = if from == 0 || from == length {
-            dfa._start_state_at(from == 0, from == length)
-        } else {
-            (dfa.@interior, dfa)
+// Applies the action a node guards, adding the thread it leads to when the action lets it
+// through. A node guarded by a character class leads nowhere until a byte is read.
+//
+// # Parameters
+// * `nfa` - The automaton the node belongs to.
+// * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
+// * `at_end` - Whether it is the end of the input, where `$` holds.
+// * `width` - How many numbers a thread takes.
+// * `node` - The node whose action to apply.
+// * `thread` - The thread standing at that node.
+// * `reached` - The threads reached so far.
+_follow_action: NFA -> Bool -> Bool -> I64 -> NFANode -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
+_follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
+    let qid = action_quant(node.@action);
+    let counted = if qid < 0 { 0 } else { thread.@(1 + qid) };
+    let step = nfa.action_step(at_begin, at_end, counted, node);
+    if step.@next < 0 { reached };
+    let next = thread.set(0, step.@next);
+    let next = if step.@quant < 0 { next } else { next.set(1 + step.@quant, step.@round) };
+    _offer_thread(width, next, reached)
+);
+
+// Walks a table forward from a position, taking the transitions it goes on through without
+// stopping, and reports where it stopped, the row of the state it stopped in, how far the longest
+// match seen so far reaches, and where rank 0 began. It stops where the input ends, or before a
+// byte whose transition it does not go on through: one not worked out yet, one
+// `StateTable::_entry` says it stops at, or, where it is skipping, one into the fresh state.
+//
+// A transition leaving the fresh state reads the byte rank 0 begins at.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `transitions` - The transitions of the table.
+// * `fresh_row` - The row of the fresh state, or `-1` where the table has none.
+// * `skipping` - Whether the walk stops before entering the fresh state, so that the search can
+//   pass over the positions no match begins at.
+// * `at` - The position to read from.
+// * `row` - The row of the state the walk stands in: the state times 256.
+// * `best` - How far the longest match seen so far reaches, or `-1`.
+// * `begin` - Where rank 0 began, or `-1` where the walk cannot tell.
+_walk_forward: Array U8 -> Array I64 -> I64 -> Bool -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64, I64);
+_walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| (
+    let length = bytes.@size;
+    loop((at, row, best, begin), |(at, row, best, begin)|
+        if at >= length { break $ (at, row, best, begin) };
+        let entry = transitions.@(row + bytes.@(at).i64);
+        if entry >= 0 {
+            if skipping && entry == fresh_row { break $ (at, row, best, begin) };
+            continue $ (at + 1, entry, best, begin)
         };
-        if state < 0 { (-1, 0, dfa) };
-        let best = if dfa.@accepts.@(state) { from } else { -1 };
-        loop((from, state, best, 0, dfa), |(at, state, best, steps, dfa)|
-            let (stopped, state, best) = _walk_table(bytes, dfa.@transitions, length, at, state, best);
-            let steps = steps + stopped - at;
-            if state < 0 { break $ (best, steps, dfa) };
-            if stopped == length {
-                let (accepts, dfa) = dfa._accepts_at_end(state);
-                break $ (if accepts { stopped } else { best }, steps, dfa)
-            };
-            let (next, dfa) = dfa._next(state, bytes.@(stopped));
-            if next < 0 { break $ (best, steps, dfa) };
-            continue $ (stopped, state, best, steps, dfa)
-        )
-    );
+        let taken = -2 - entry;
+        if taken.bit_and(2) != 0 { break $ (at, row, best, begin) };
+        let begin = if taken.bit_and(4) != 0 { at } else { begin };
+        let best = if taken.bit_and(1) != 0 { at + 1 } else { best };
+        continue $ (at + 1, taken.shift_right(3), best, begin)
+    )
+);
 
-    // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place, together with the scanner as the search left it.
-    //
-    // Positions holding a byte no match can begin with are passed over without the automaton being
-    // walked at all, which is what makes a search over text a pattern rarely meets cost little more
-    // than reading the text.
+// Walks a table back from a position, reading the byte before it each time, and reports where it
+// stopped, the row of the state it stopped in, and the earliest position a match was seen to
+// reach back to. It stops at `floor`, or behind a byte whose transition it does not go on through.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `transitions` - The transitions of the table.
+// * `floor` - The position to stop at.
+// * `at` - The position to read back from.
+// * `row` - The row of the state the walk stands in: the state times 256.
+// * `best` - The earliest position a match was seen to reach back to, or `-1`.
+_walk_backward: Array U8 -> Array I64 -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64);
+_walk_backward = |bytes, transitions, floor, at, row, best| (
+    loop((at, row, best), |(at, row, best)|
+        if at <= floor { break $ (at, row, best) };
+        let entry = transitions.@(row + bytes.@(at - 1).i64);
+        if entry >= 0 { continue $ (at - 1, entry, best) };
+        let taken = -2 - entry;
+        if taken.bit_and(2) != 0 { break $ (at, row, best) };
+        let best = if taken.bit_and(1) != 0 { at - 1 } else { best };
+        continue $ (at - 1, taken.shift_right(3), best)
+    )
+);
+
+// What a search looks for to pass over the positions no match begins at.
+//
+// It is held apart from the tables the search walks so that the search can read it while it
+// changes them.
+type Prefilter = box struct {
+    first_bytes: Array U64,       // the bytes a match may begin with, one bit each
+    first_byte: I64,              // the one byte a match may begin with, or `-1` where a match may
+                                  // begin with several bytes or with none
+    prefix: Array U8,             // the bytes every match begins with, empty where the first byte
+                                  // a match may begin with is not forced
+    prefix_size: I64,             // how many bytes `prefix` holds, read where the search chooses how
+                                  // to look so that the choice costs no reference count
+    prefix_anchor: I64,           // where in `prefix` the byte the C library is asked for stands
+    forced_strings: Array (Array U8), // the byte strings every match holds, which the search looks
+                                  // for, empty where it reads for the bytes a match may begin with
+    forced_anchors: Array I64,    // where in each of `forced_strings` the byte the C library is
+                                  // asked for stands
+    forced_count: I64,            // how many `forced_strings` holds, read where the search chooses
+                                  // how to look so that the choice costs no reference count
+    back_max: I64,                // most bytes the pattern may read before a string of `forced_strings`
+    back_class: Array U64         // the byte values it may read before one, one bit each
+};
+
+namespace Prefilter {
+    // What a search looks for where it has been told no byte string every match holds.
     //
     // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `from` - The position at or after which the match has to begin.
-    // * `dfa` - The scanner.
-    find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    find = |bytes, from, dfa| (
-        let length = bytes.@size;
-        if from > length { (none(), dfa) };
-        // A match beginning where the input does is looked for on its own, since `^` holds there and
-        // the bytes a match may begin with are read off the state that stands away from either end.
-        let (best, _, dfa) = if from == 0 { dfa._attempt(bytes, length, 0) } else { (-1, 0, dfa) };
-        if dfa.@full { (NFA::_search_threads(bytes, from, dfa.@nfa), dfa) };
-        if best >= 0 { (dfa._match_with_groups(bytes, 0, best), dfa) };
-        loop((max(from, 1), 0, dfa), |(at, steps, dfa)|
-            let at = dfa._skip_bytes(bytes, length, at);
-            if steps > _DFA_STEPS_PER_POSITION * (at - from) + _DFA_STEPS_GRACE {
-                break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa)
-            };
-            let (best, bytes_read, dfa) = dfa._attempt(bytes, length, at);
-            if dfa.@full { break $ (NFA::_search_threads(bytes, at, dfa.@nfa), dfa) };
-            if best >= 0 { break $ (dfa._match_with_groups(bytes, at, best), dfa) };
-            if at >= length { break $ (none(), dfa) };
-            let (next, dfa) = dfa._after_failure(bytes, length, at);
-            continue $ (next, steps + bytes_read, dfa)
-        )
-    );
+    // * `first_bytes` - The bytes a match may begin with, one bit each.
+    // * `prefix` - The bytes every match begins with.
+    make: Array U64 -> Array U8 -> Prefilter;
+    make = |first_bytes, prefix| Prefilter {
+        first_bytes: first_bytes,
+        first_byte: _lone_byte_of(first_bytes),
+        prefix: prefix,
+        prefix_size: prefix.@size,
+        prefix_anchor: 0,
+        forced_strings: Array::empty(0),
+        forced_anchors: Array::empty(0),
+        forced_count: 0,
+        back_max: 0,
+        back_class: _no_bytes
+    };
 
-    // Where the search goes on after no match was found at a position.
-    //
-    // A byte that leaves every thread of the state a match begins in standing carries that state
-    // forward whole: whatever a match beginning after the byte would do, a match beginning before it
-    // could do as well. So no match begins after such a byte where none began before it, and a run
-    // of them is passed over reading each byte once. This is what keeps a pattern that begins with a
-    // run - `[a-z]+@`, `\d+\.` - from being read once for every position the run holds.
-    //
-    // The position where the input ends is not passed over, since `$` holds there and nowhere else,
-    // and a match may begin there that could begin nowhere before it.
+    // Whether looking for where a match may begin passes over positions faster than walking the
+    // table over them. Reading for one of a set of bytes a byte at a time costs what a walk costs,
+    // and the C library reads for a byte or a byte string many bytes at a time.
     //
     // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `length` - How many bytes there are.
-    // * `at` - The position no match was found at.
-    // * `dfa` - The scanner.
-    _after_failure: Array U8 -> I64 -> I64 -> DFA -> (I64, DFA);
-    _after_failure = |bytes, length, at, dfa| (
-        loop((at, dfa), |(at, dfa)|
-            // A field of the scanner is a field of a boxed value, so reading one raises and lowers
-            // a reference count. The table is read once here and stands for both the run passed
-            // over and the byte the run stopped at.
-            let absorbing = dfa.@absorbing;
-            let at = _absorbed_to(bytes, absorbing, length, at);
-            if at + 1 >= length { break $ (at + 1, dfa) };
-            let byte = bytes.@(at);
-            if absorbing.@(byte.i64) != 0_U8 { break $ (at + 1, dfa) };
-            continue $ (at, dfa._learn_absorbing(byte))
-        )
+    // * `prefilter` - What to look for.
+    _skips: Prefilter -> Bool;
+    _skips = |prefilter| (
+        prefilter.@forced_count > 0 || prefilter.@prefix_size >= 2 || prefilter.@first_byte >= 0
     );
 
-    // How far the bytes that carry the state a match begins in forward run from a position.
+    // The next position at or after a position where a match may begin, or the length of the input
+    // where none does before it ends.
     //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `absorbing` - Which bytes carry that state forward.
-    // * `length` - How many bytes there are.
-    // * `at` - The position to read from.
-    _absorbed_to: Array U8 -> Array U8 -> I64 -> I64 -> I64;
-    _absorbed_to = |bytes, absorbing, length, at| (
-        loop(at, |at|
-            if at + 1 >= length { break $ at };
-            if absorbing.@(bytes.@(at).i64) != 1_U8 { break $ at };
-            continue $ at + 1
-        )
-    );
-
-    // Works out whether a byte carries the state a match begins in forward whole, and keeps the
-    // answer. A byte the scanner cannot follow, because the states have outgrown what it may take,
-    // is taken to carry nothing forward, which rules out nothing.
-    //
-    // # Parameters
-    // * `byte` - The byte to weigh.
-    // * `dfa` - The scanner.
-    _learn_absorbing: U8 -> DFA -> DFA;
-    _learn_absorbing = |byte, dfa| (
-        let (next, dfa) = dfa._next(dfa.@interior, byte);
-        let absorbs = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
-        dfa.mod_absorbing(set(byte.i64, if absorbs { 1_U8 } else { 2_U8 }))
-    );
-
-    // Whether every thread that decides what one state does next stands among the threads of
-    // another, so that the second can do everything the first can.
-    //
-    // A thread standing at a node guarded by a character class or by an assertion, or at the
-    // accepting node, is such a thread: it is where reading a byte, reaching the end of the input,
-    // and matching are decided. A thread standing anywhere else has already had what follows it
-    // gathered into the state around it, since a state holds every thread reachable without reading
-    // a byte, so nothing is lost by passing over it.
-    //
-    // # Parameters
-    // * `inner` - The state whose threads are looked for.
-    // * `outer` - The state they are looked for in.
-    // * `dfa` - The scanner.
-    _decided_by: I64 -> I64 -> DFA -> Bool;
-    _decided_by = |inner, outer, dfa| (
-        let nfa = dfa.@nfa;
-        let width = dfa.@width;
-        let accepting = nfa.@accepting_node.@val;
-        let inner_end = dfa.@bounds.@(inner + 1);
-        let outer_end = dfa.@bounds.@(outer + 1);
-        // Both hold their threads ordered by node, so one walk over each tells them apart.
-        loop((dfa.@bounds.@(inner), dfa.@bounds.@(outer)), |(i, o)|
-            if i == inner_end { break $ true };
-            let node = dfa.@threads.@(i);
-            let action = nfa.get_node(NodeID { val: node }).@action;
-            let decides = action.is_sa_char_match || action.is_sa_assert || node == accepting;
-            if !decides { continue $ (i + width, o) };
-            if o == outer_end { break $ false };
-            let order = dfa.@threads._run_order(i, o, width);
-            if order == 0 { continue $ (i + width, o + width) };
-            if order > 0 { continue $ (i, o + width) };
-            break $ false
-        )
-    );
-
-    // The next position at or after a position where a match may begin.
-    //
-    // Where the scanner has been told which byte strings every match holds, it looks for those.
+    // Where the search has been told which byte strings every match holds, it looks for those.
     // Where every match begins with the same two or more bytes, or a match may begin with one byte
     // alone, the C library looks for that, reading many bytes at a time. Otherwise the text is read
     // a byte at a time against the set of bytes a match may begin with.
@@ -2127,32 +2300,16 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `length` - How many bytes there are.
     // * `at` - The position to look from.
-    // * `dfa` - The scanner, for the bytes a match may begin with.
-    _skip_bytes: Array U8 -> I64 -> I64 -> DFA -> I64;
-    _skip_bytes = |bytes, length, at, dfa| (
-        if dfa.@forced_count > 0 { dfa._skip_to_forced(bytes, length, at) };
-        if dfa.@prefix_size >= 2 { bytes.find_bytes(dfa.@prefix, at).as_some_or(length) };
-        let lone = dfa.@first_byte;
+    // * `prefilter` - What to look for.
+    _skip: Array U8 -> I64 -> I64 -> Prefilter -> I64;
+    _skip = |bytes, length, at, prefilter| (
+        if prefilter.@forced_count > 0 { prefilter._skip_to_forced(bytes, length, at) };
+        if prefilter.@prefix_size >= 2 {
+            bytes.find_bytes_by(prefilter.@prefix_anchor, prefilter.@prefix, at, length).as_some_or(length)
+        };
+        let lone = prefilter.@first_byte;
         if lone >= 0 { bytes.find_byte(lone.u8, at).as_some_or(length) };
-        _skip_to_any(bytes, dfa.@first_bytes, length, at)
-    );
-
-    // The next position at or after a position holding one of a set of bytes, read a byte at a
-    // time. It stands apart from the reading that the C library does, so that neither is compiled
-    // into the other.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `wanted` - The bytes to look for, one bit each.
-    // * `length` - How many bytes there are.
-    // * `at` - The position to look from.
-    _skip_to_any: Array U8 -> Array U64 -> I64 -> I64 -> I64;
-    _skip_to_any = |bytes, wanted, length, at| (
-        loop(at, |at|
-            if at >= length { break $ length };
-            if wanted._holds_byte(0, bytes.@(at)) { break $ at };
-            continue $ at + 1
-        )
+        _skip_to_any(bytes, prefilter.@first_bytes, length, at)
     );
 
     // The next position at or after a position where a match may begin, found by looking for the
@@ -2167,61 +2324,49 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `length` - How many bytes there are.
     // * `at` - The position to look from.
-    // * `dfa` - The scanner, for the strings and for what may stand before them.
-    _skip_to_forced: Array U8 -> I64 -> I64 -> DFA -> I64;
-    _skip_to_forced = |bytes, length, at, dfa| (
+    // * `prefilter` - The strings, and what may stand before them.
+    _skip_to_forced: Array U8 -> I64 -> I64 -> Prefilter -> I64;
+    _skip_to_forced = |bytes, length, at, prefilter| (
         // The strings stand in the order the text holds them most often, so the one looked for
         // first bounds how far the rest are looked for.
-        let hit = dfa.@forced_strings.to_iter.fold(length, |wanted, earliest|
-            bytes.find_bytes_within(wanted, at, earliest).as_some_or(earliest)
+        let (strings, anchors) = (prefilter.@forced_strings, prefilter.@forced_anchors);
+        let hit = range(0, prefilter.@forced_count).fold(length, |i, earliest|
+            bytes.find_bytes_by(anchors.@(i), strings.@(i), at, earliest).as_some_or(earliest)
         );
         if hit >= length { length };
-        _backed_up_to(bytes, dfa.@back_class, dfa.@back_max, at, hit)
-    );
-
-    // How far back from where a forced byte string stands a match holding it may begin, stopping at
-    // a floor.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `back_class` - The byte values the pattern may read before the string, one bit each.
-    // * `back_max` - How many bytes the pattern may read before it.
-    // * `floor` - The position to stop at.
-    // * `at` - The position the string stands at.
-    _backed_up_to: Array U8 -> Array U64 -> I64 -> I64 -> I64 -> I64;
-    _backed_up_to = |bytes, back_class, back_max, floor, at| (
-        let stop = max(floor, at - back_max);
-        loop(at, |at|
-            if at <= stop { break $ at };
-            if !back_class._holds_byte(0, bytes.@(at - 1)) { break $ at };
-            continue $ at - 1
-        )
+        _backed_up_to(bytes, prefilter.@back_class, prefilter.@back_max, at, hit)
     );
 
     // How many bytes of the text are read to judge which set of forced byte strings to look for.
     _FORCED_SAMPLE: I64;
     _FORCED_SAMPLE = 16384;
 
-    // The scanner told which forced byte strings to look for, where looking for them beats reading
-    // for the bytes a match may begin with.
+    // What to look for over a text: which byte of a forced beginning to ask the C library for, and
+    // which forced byte strings to look for where looking for them beats reading for the bytes a
+    // match may begin with.
     //
-    // Which set is worth looking for depends on the text: a string the text holds everywhere rules
-    // out nothing. So the sets are weighed against a stretch of the text the search is about to
-    // read, and the one met least often is taken where it is met less often than the bytes a match
-    // may begin with.
+    // Both depend on the text: a byte the text holds everywhere is a poor one to ask for, and a
+    // string the text holds everywhere rules out nothing. So they are weighed against a stretch of
+    // the text the search is about to read. The byte of the beginning the stretch holds least often
+    // is asked for, and the set of strings met least often is taken where it is met less often than
+    // the bytes a match may begin with.
     //
     // # Parameters
     // * `bytes` - The text the search is over.
-    // * `dfa` - The scanner.
-    _choose_forced_set: Array U8 -> DFA -> DFA;
-    _choose_forced_set = |bytes, dfa| (
-        let sets = dfa.@nfa.@forced_sets;
-        if sets.@size == 0 { dfa };
+    // * `sets` - The sets of forced byte strings the pattern offers.
+    // * `prefilter` - What to look for so far.
+    _fit: Array U8 -> Array (Array ForcedRun) -> Prefilter -> Prefilter;
+    _fit = |bytes, sets, prefilter| (
         // A forced beginning stands where every match begins, so it needs no backing up and nothing
         // read from inside the pattern beats it.
-        if dfa.@prefix_size >= 2 { dfa };
+        if prefilter.@prefix_size >= 2 {
+            let sample = min(bytes.@size, _FORCED_SAMPLE);
+            let anchor = _byte_counts(bytes, sample)._rarest_in(prefilter.@prefix);
+            prefilter.set_prefix_anchor(anchor)
+        };
+        if sets.@size == 0 { prefilter };
         let sample = min(bytes.@size, _FORCED_SAMPLE);
-        let stops = _stops_of_first_bytes(bytes, sample, dfa.@first_bytes);
+        let stops = _stops_of_first_bytes(bytes, sample, prefilter.@first_bytes);
         // Looking for a string costs a reading of its own on top of the walking, so a set is taken
         // only where it rules out enough more than the bytes a match may begin with to pay for it.
         let (best, _) = range(0, sets.@size).fold((-1, stops / 2), |i, (best, fewest)|
@@ -2229,32 +2374,460 @@ namespace DFA {
             if cost >= fewest { (best, fewest) };
             (i, cost)
         );
-        if best < 0 { dfa._without_forced_set };
-        dfa._with_forced_set(bytes, sets.@(best))
+        if best < 0 { prefilter._without_forced_set };
+        prefilter._with_forced_set(bytes, sets.@(best))
     );
 
-    // The scanner told to read for the bytes a match may begin with. A scanner kept from one search
-    // to the next carries the strings the text of that search wanted looked for, and a text that
-    // wants none of them is searched by reading for the bytes instead.
+    // What to look for, told to read for the bytes a match may begin with. A scanner kept from one
+    // search to the next carries the strings the text of that search wanted looked for, and a text
+    // that wants none of them is searched by reading for the bytes instead.
     //
     // # Parameters
-    // * `dfa` - The scanner.
-    _without_forced_set: DFA -> DFA;
-    _without_forced_set = |dfa| (
-        if dfa.@forced_count == 0 { dfa };
-        dfa._set_forced_strings(Array::empty(0))
+    // * `prefilter` - What to look for so far.
+    _without_forced_set: Prefilter -> Prefilter;
+    _without_forced_set = |prefilter| (
+        if prefilter.@forced_count == 0 { prefilter };
+        prefilter._set_forced_strings(Array::empty(0), Array::empty(0))
     );
 
-    // The scanner told which byte strings to look for. `forced_count` holds what `forced_strings` holds,
-    // so this is where both are written.
+    // What to look for, told which byte strings to look for and which byte of each to ask the C
+    // library for. `forced_count` holds what `forced_strings` holds, so this is where both are
+    // written.
     //
     // # Parameters
-    // * `strings` - The byte strings to look for, none of them where the scan is to read for the
+    // * `strings` - The byte strings to look for, none of them where the search is to read for the
     //   bytes a match may begin with.
+    // * `anchors` - Where in each string the byte to ask for stands.
+    // * `prefilter` - What to look for so far.
+    _set_forced_strings: Array (Array U8) -> Array I64 -> Prefilter -> Prefilter;
+    _set_forced_strings = |strings, anchors, prefilter| (
+        prefilter.set_forced_count(strings.@size).set_forced_strings(strings).set_forced_anchors(anchors)
+    );
+
+    // What to look for, told to look for a set of forced byte strings.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over, which the strings are ordered against.
+    // * `set` - The set to look for.
+    // * `prefilter` - What to look for so far.
+    _with_forced_set: Array U8 -> Array ForcedRun -> Prefilter -> Prefilter;
+    _with_forced_set = |bytes, set, prefilter| (
+        let sample = min(bytes.@size, _FORCED_SAMPLE);
+        let strings = _by_falling_count(bytes, sample, set).map(@bytes);
+        let counts = _byte_counts(bytes, sample);
+        let (back_max, back_class) = _backing_of(set);
+        prefilter._set_forced_strings(strings, strings.map(|string| counts._rarest_in(string)))
+            .set_back_max(back_max)
+            .set_back_class(back_class)
+    );
+}
+
+// How many times each byte value stands in a stretch of the text.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `sample` - How many bytes of it to read.
+_byte_counts: Array U8 -> I64 -> Array I64;
+_byte_counts = |bytes, sample| (
+    range(0, sample).fold(Array::fill(256, 0), |i, counts| counts.mod(bytes.@(i).i64, |n| n + 1))
+);
+
+// Where in a byte string the byte stands that a stretch of the text holds least often, the earliest
+// such place where several hold it equally often.
+//
+// # Parameters
+// * `string` - The byte string to read.
+// * `counts` - How many times each byte value stands in the stretch.
+_rarest_in: Array U8 -> Array I64 -> I64;
+_rarest_in = |string, counts| (
+    let (place, _) = range(0, string.@size).fold((0, I64::maximum), |k, (place, fewest)|
+        let count = counts.@(string.@(k).i64);
+        if count < fewest { (k, count) } else { (place, fewest) }
+    );
+    place
+);
+
+// The next position at or after a position holding one of a set of bytes, read a byte at a time,
+// or the length of the input where none holds one. It stands apart from the reading that the C
+// library does, so that neither is compiled into the other.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `wanted` - The bytes to look for, one bit each.
+// * `length` - How many bytes there are.
+// * `at` - The position to look from.
+_skip_to_any: Array U8 -> Array U64 -> I64 -> I64 -> I64;
+_skip_to_any = |bytes, wanted, length, at| (
+    loop(at, |at|
+        if at >= length { break $ length };
+        if wanted._holds_byte(0, bytes.@(at)) { break $ at };
+        continue $ at + 1
+    )
+);
+
+// How far back from where a forced byte string stands a match holding it may begin, stopping at
+// a floor.
+//
+// # Parameters
+// * `bytes` - The bytes to read.
+// * `back_class` - The byte values the pattern may read before the string, one bit each.
+// * `back_max` - How many bytes the pattern may read before it.
+// * `floor` - The position to stop at.
+// * `at` - The position the string stands at.
+_backed_up_to: Array U8 -> Array U64 -> I64 -> I64 -> I64 -> I64;
+_backed_up_to = |bytes, back_class, back_max, floor, at| (
+    let stop = max(floor, at - back_max);
+    loop(at, |at|
+        if at <= stop { break $ at };
+        if !back_class._holds_byte(0, bytes.@(at - 1)) { break $ at };
+        continue $ at - 1
+    )
+);
+
+// What a set of forced byte strings says may stand before one of them: how many bytes at most,
+// and which byte values. A search looks for the whole set at once, so what it may back over is
+// what any member of the set may.
+//
+// # Parameters
+// * `set` - The set to read.
+_backing_of: Array ForcedRun -> (I64, Array U64);
+_backing_of = |set| (
+    set.to_iter.fold((0, _no_bytes), |run, (most, bits)|
+        (max(most, run.@back_max), _bytes_union(run.@back_class, bits))
+    )
+);
+
+// How many times a search would look for where a match may begin over a stretch of the text as it
+// stands, reading for the bytes a match may begin with. A run of them counts once: the walk goes on
+// through a run without looking again.
+//
+// # Parameters
+// * `bytes` - The text the search is over.
+// * `sample` - How many bytes of it to read.
+// * `wanted` - The bytes a match may begin with, one bit each.
+_stops_of_first_bytes: Array U8 -> I64 -> Array U64 -> I64;
+_stops_of_first_bytes = |bytes, sample, wanted| (
+    range(0, sample).fold(0, |i, n|
+        if !wanted._holds_byte(0, bytes.@(i)) { n };
+        if i > 0 && wanted._holds_byte(0, bytes.@(i - 1)) { n };
+        n + 1
+    )
+);
+
+// How many positions a search would walk from over a stretch of the text, were it to look for a
+// set of forced byte strings: one for every place a string of the set stands, and one more for
+// every position before it a match could begin at.
+//
+// # Parameters
+// * `bytes` - The text the search is over.
+// * `sample` - How many bytes of it to read.
+// * `set` - The set to weigh.
+_stops_of_forced_set: Array U8 -> I64 -> Array ForcedRun -> I64;
+_stops_of_forced_set = |bytes, sample, set| (
+    let (back_max, bits) = _backing_of(set);
+    set.to_iter.fold(0, |run, cost|
+        cost + _stops_of_string(bytes, sample, run.@bytes, bits, back_max)
+    )
+);
+
+// A set of forced byte strings, ordered so that the one a stretch of the text holds most often
+// stands first. A search looks for them in the order they stand in, and the one looked for
+// first bounds how far the rest are looked for, so the commonest first leaves the least
+// reading to the rest.
+//
+// # Parameters
+// * `bytes` - The text the search is over.
+// * `sample` - How many bytes of it to read.
+// * `set` - The set to order.
+_by_falling_count: Array U8 -> I64 -> Array ForcedRun -> Array ForcedRun;
+_by_falling_count = |bytes, sample, set| (
+    set.map(|run| (_places_of(bytes, sample, run.@bytes), run))
+        .sort_by(|((left, _), (right, _))| left > right)
+        .map(|(_, run)| run)
+);
+
+// How many places a byte string stands at in a stretch of the text.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `sample` - How many bytes of it to read.
+// * `wanted` - The byte string to look for.
+_places_of: Array U8 -> I64 -> Array U8 -> I64;
+_places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, _no_bytes, 0);
+
+// How many positions a search would walk from over a stretch of the text, for one of the forced
+// byte strings it looks for: every place the string stands, and every position before it a match
+// holding that string could begin at.
+//
+// # Parameters
+// * `bytes` - The text to read.
+// * `sample` - How many bytes of it to read.
+// * `wanted` - The byte string to look for.
+// * `back_class` - The byte values the pattern may read before it, one bit each.
+// * `back_max` - How many bytes the pattern may read before it.
+_stops_of_string: Array U8 -> I64 -> Array U8 -> Array U64 -> I64 -> I64;
+_stops_of_string = |bytes, sample, wanted, back_class, back_max| (
+    loop((0, 0), |(at, cost)|
+        if at >= sample { break $ cost };
+        let hit = bytes.find_bytes_within(wanted, at, sample);
+        if hit.is_none { break $ cost };
+        let hit = hit.as_some;
+        let begin = _backed_up_to(bytes, back_class, back_max, at, hit);
+        continue $ (hit + 1, cost + 1 + hit - begin)
+    )
+);
+
+// The scanner: the automaton walked over sets of threads, so that reading a byte costs one table
+// lookup. Where the text below says "the scanner" it means a `DFA`, and "the automaton" an `NFA`.
+//
+// A search walks the automaton forward from where it is to begin, starting a rank of threads at
+// every position until a match is reached, which finds where the leftmost match ends in one
+// reading of the text. Where the match begins is where the rank that reached it began. The walk
+// reads that off where it can, and otherwise walks the automaton of the pattern read from right to
+// left back from where the match ends: the earliest position that walk reaches a match at is where
+// the match begins.
+//
+// The scanner reports where a match begins and ends and nothing else. The groups a match captured
+// are read off afterwards by the automaton, over the stretch the match covers.
+type DFA = unbox struct {
+    forward: StateTable,      // the automaton, walked forward to find where a match ends
+    backward: StateTable,     // the automaton of the pattern read from right to left, walked back
+                              // from where a match ends to find where it begins
+    prefilter: Prefilter      // what the forward walk looks for to pass over positions
+};
+
+namespace DFA {
+    // The bytes every match begins with, as far as they are forced.
+    //
+    // Working them out means walking the automaton, and the states the walk takes are thrown away
+    // with the table it walks. The answer is worked out once for the automaton and kept in its
+    // `prefix`, so that a search over a short string, which makes a scanner of its own, does none
+    // of the walking.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to walk.
+    forced_beginning: NFA -> Array U8;
+    forced_beginning = |nfa| (
+        if nfa._asks_many_rounds { Array::empty(0) };
+        let (prefix, _) = StateTable::make(nfa)._forced_prefix;
+        prefix
+    );
+
+    // How many rounds a counted quantifier may ask for, for the walk that works out the forced
+    // beginning to be worth taking.
+    //
+    // The walk asks each state whether a match can end there, and the answer is worked out by
+    // following the automaton with the end of the input reached, which lets a counted quantifier
+    // run its rounds out. Every round stands for a thread, and a thread is read against the threads
+    // taken so far, so the walk costs the square of the rounds asked for: `(a*){100000,}` spends
+    // forty-five seconds on it. A pattern asking for that many rounds is one the forced beginning
+    // would not have paid for anyway.
+    _MAX_PREFIX_ROUNDS: I64;
+    _MAX_PREFIX_ROUNDS = 64;
+
+    // Whether the automaton holds a quantifier asking for more rounds than the walk that works out
+    // the forced beginning may take.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to read.
+    _asks_many_rounds: NFA -> Bool;
+    _asks_many_rounds = |nfa| (
+        nfa.@quant_bounds.to_iter.check_any(|(least, most)|
+            least > _MAX_PREFIX_ROUNDS || (most < I64::maximum && most > _MAX_PREFIX_ROUNDS)
+        )
+    );
+
+    // The scanner a search with an automaton starts from.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to walk, compiled by `NFA::compile`.
+    make: NFA -> DFA;
+    make = |nfa| nfa.@scanner.as_some;
+
+    // How many states of each table a scanner is given before any search. A search over a short
+    // string reads few bytes, and what it costs is then mostly the states it works out; working
+    // out the states every search meets first once for the automaton leaves it reading.
+    _AHEAD_STATES: I64;
+    _AHEAD_STATES = 8;
+
+    // A scanner holding the states a search meets first, worked out ahead of any search: the states
+    // a search begins in and those it reaches from them, every transition of each worked out, up to
+    // `_AHEAD_STATES` states a table.
+    //
+    // A pattern asking for more rounds than the walk that works out the forced beginning may take
+    // is searched by the automaton's threads: a state stands for every round a thread may have
+    // counted, so working out even the first state costs the square of the rounds asked for.
+    //
+    // # Parameters
+    // * `nfa` - The automaton to walk, holding the automaton of the pattern read from right to left.
+    _worked_out: NFA -> DFA;
+    _worked_out = |nfa| (
+        let reversed = nfa.@reversed.as_some;
+        if nfa._asks_many_rounds {
+            DFA {
+                forward: StateTable::given_up(nfa),
+                backward: StateTable::given_up(reversed),
+                prefilter: Prefilter::make(_all_bytes, Array::empty(0))
+            }
+        };
+        let forward = StateTable::make_seeking(nfa);
+        let first_bytes = forward._first_bytes_of(forward.@interior);
+        let backward = StateTable::make(reversed);
+        let (at_begin, forward) = forward._start(true, true, false);
+        let forward = forward._worked_out_from([forward.@interior, at_begin], _AHEAD_STATES);
+        let (at_end, backward) = backward._start(false, true, false);
+        let (inside, backward) = backward._start(false, false, false);
+        let backward = backward._worked_out_from([at_end, inside], _AHEAD_STATES);
+        DFA {
+            forward: forward,
+            backward: backward,
+            prefilter: Prefilter::make(first_bytes, nfa.@prefix)
+        }
+    );
+
+    // The leftmost match beginning at or after a position, taking the longest of those that begin
+    // at the same place, together with the scanner as the search left it.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner.
-    _set_forced_strings: Array (Array U8) -> DFA -> DFA;
-    _set_forced_strings = |strings, dfa| (
-        dfa.set_forced_count(strings.@size).set_forced_strings(strings)
+    find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
+    find = |bytes, from, dfa| (
+        if from > bytes.@size { (none(), dfa) };
+        let DFA { forward: forward, backward: backward, prefilter: prefilter } = dfa;
+        let nfa = forward.@nfa;
+        let ((end, begin), forward) = if forward.@full {
+            ((_GIVEN_UP, -1), forward)
+        } else {
+            _scan_forward(bytes, from, prefilter, forward)
+        };
+        let (begin, backward) = if end < 0 || begin >= 0 {
+            (begin, backward)
+        } else if backward.@full {
+            (_GIVEN_UP, backward)
+        } else {
+            _scan_backward(bytes, from, end, backward)
+        };
+        let dfa = DFA { forward: forward, backward: backward, prefilter: prefilter };
+        if end == _GIVEN_UP || begin == _GIVEN_UP { (NFA::_search_threads(bytes, from, nfa), dfa) };
+        if end < 0 { (none(), dfa) };
+        (_match_with_groups(bytes, begin, end, nfa), dfa)
+    );
+
+    // What a walk reports where the states outgrew what its table may take, and the search is given
+    // back to the automaton.
+    _GIVEN_UP: I64;
+    _GIVEN_UP = -2;
+
+    // Walks the automaton forward from a position, starting a rank of threads at every position
+    // until a match is reached, and reports where the leftmost match beginning at or after that
+    // position ends, taking the longest of those that begin where it begins, or `-1` where no
+    // match begins there or later. Reports with it where the match begins, where the walk could
+    // read it off where rank 0 began, or `-1` where it could not.
+    //
+    // Reports `_GIVEN_UP` for where the match ends where the states outgrew the table.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `from` - The position at or after which the match has to begin.
+    // * `prefilter` - What to look for to pass over positions.
+    // * `table` - The table of the automaton.
+    _scan_forward: Array U8 -> I64 -> Prefilter -> StateTable -> ((I64, I64), StateTable);
+    _scan_forward = |bytes, from, prefilter, table| (
+        let length = bytes.@size;
+        let (start, table) = if from == 0 || from == length {
+            table._start(true, from == 0, from == length)
+        } else {
+            (table.@interior, table)
+        };
+        if start < 0 { ((_GIVEN_UP, -1), table) };
+        let best = if table.@accepts.@(start) { from } else { -1 };
+        let fresh = table.@fresh;
+        let fresh_row = if fresh < 0 { -1 } else { 256 * fresh };
+        // The walk stops before entering the fresh state where looking for the next position a match
+        // may begin at passes over positions faster than walking over them.
+        let skipping = fresh >= 0 && prefilter._skips;
+        let at = if skipping && start == fresh { prefilter._skip(bytes, length, from) } else { from };
+        // The walk holds the transitions apart from the table while it reads them, so that reading
+        // them costs no reference count, and hands them back to the table to work out a new one.
+        let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+        let (found, table, transitions) = loop(
+            (at, 256 * start, best, at, table, transitions), |(at, row, best, begin, table, transitions)|
+            let (at, row, best, begin) = _walk_forward(
+                bytes, transitions, fresh_row, skipping, at, row, best, begin
+            );
+            if at == length {
+                let (rank, table) = table._accepts_at_end(row / 256);
+                if rank < 0 { break $ ((best, begin), table, transitions) };
+                // In the fresh state rank 0 is the rank begun where the walk stands.
+                let begin = if row == fresh_row { length } else { begin };
+                break $ ((length, if rank == 0 { begin } else { -1 }), table, transitions)
+            };
+            let entry = transitions.@(row + bytes.@(at).i64);
+            if entry == StateTable::_UNTAKEN {
+                let (next, table) = table.set_transitions(transitions)._next(row / 256, bytes.@(at));
+                let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+                if next < 0 { break $ ((_GIVEN_UP, -1), table, transitions) };
+                continue $ (at, row, best, begin, table, transitions)
+            };
+            if skipping && entry == fresh_row {
+                let at = prefilter._skip(bytes, length, at + 1);
+                continue $ (at, entry, best, at, table, transitions)
+            };
+            let taken = -2 - entry;
+            let (row, at) = (taken.shift_right(3), at + 1);
+            let best = if taken.bit_and(1) == 1 { at } else { best };
+            if row == 256 * StateTable::_DEAD_STATE { break $ ((best, begin), table, transitions) };
+            // Rank 0 died, or a later rank reached the accepting node, so where the match begins is
+            // no longer where rank 0 began.
+            continue $ (at, row, best, -1, table, transitions)
+        );
+        (found, table.set_transitions(transitions))
+    );
+
+    // Walks the automaton of the pattern read from right to left back from where a match ends, and
+    // reports where the leftmost match ending there begins, no earlier than a position: the
+    // earliest position at or after that one the walk reaches a match at. Reports `_GIVEN_UP` where
+    // the states outgrew the table.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `floor` - The position at or after which the match has to begin.
+    // * `end` - Where the match ends.
+    // * `table` - The table of the reversed automaton.
+    _scan_backward: Array U8 -> I64 -> I64 -> StateTable -> (I64, StateTable);
+    _scan_backward = |bytes, floor, end, table| (
+        // Read from right to left, the input begins where it ends and ends where it begins, so `$`
+        // holds where `^` would and `^` where `$` would.
+        let (start, table) = table._start(false, end == bytes.@size, end == 0);
+        if start < 0 { (_GIVEN_UP, table) };
+        let best = if table.@accepts.@(start) { end } else { -1 };
+        let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+        let (found, table, transitions) = loop(
+            (end, 256 * start, best, table, transitions), |(at, row, best, table, transitions)|
+            let (at, row, best) = _walk_backward(bytes, transitions, floor, at, row, best);
+            if at == floor {
+                // Read from right to left, the input ends where it begins, which only the position
+                // where the input begins stands for.
+                if floor > 0 { break $ (best, table, transitions) };
+                let (rank, table) = table._accepts_at_end(row / 256);
+                break $ (if rank >= 0 { 0 } else { best }, table, transitions)
+            };
+            let entry = transitions.@(row + bytes.@(at - 1).i64);
+            if entry == StateTable::_UNTAKEN {
+                let (next, table) = table.set_transitions(transitions)._next(row / 256, bytes.@(at - 1));
+                let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+                if next < 0 { break $ (_GIVEN_UP, table, transitions) };
+                continue $ (at, row, best, table, transitions)
+            };
+            let taken = -2 - entry;
+            let (row, at) = (taken.shift_right(3), at - 1);
+            let best = if taken.bit_and(1) == 1 { at } else { best };
+            if row == 256 * StateTable::_DEAD_STATE { break $ (best, table, transitions) };
+            continue $ (at, row, best, table, transitions)
+        );
+        (found, table.set_transitions(transitions))
     );
 
     // The leftmost match beginning at or after a position, taking the longest of those that begin
@@ -2269,7 +2842,7 @@ namespace DFA {
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
     search_from: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    search_from = |bytes, from, dfa| dfa._choose_forced_set(bytes).find(bytes, from);
+    search_from = |bytes, from, dfa| dfa._fit(bytes).find(bytes, from);
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
     // with the scanner as the search left it.
@@ -2278,7 +2851,18 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `dfa` - The scanner to search with.
     search_every: Array U8 -> DFA -> (Array Groups, DFA);
-    search_every = |bytes, dfa| dfa._choose_forced_set(bytes)._every_match(bytes);
+    search_every = |bytes, dfa| dfa._fit(bytes)._every_match(bytes);
+
+    // The scanner told what to look for over a text. See `Prefilter::_fit`.
+    //
+    // # Parameters
+    // * `bytes` - The text the search is over.
+    // * `dfa` - The scanner.
+    _fit: Array U8 -> DFA -> DFA;
+    _fit = |bytes, dfa| (
+        let sets = dfa.@forward.@nfa.@forced_sets;
+        dfa.mod_prefilter(Prefilter::_fit(bytes, sets))
+    );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
     // with the scanner as the search left it. The scanner searches as it stands, looking for
@@ -2303,114 +2887,6 @@ namespace DFA {
         (matches, dfa)
     );
 
-    // The scanner told to look for a set of forced byte strings.
-    //
-    // # Parameters
-    // * `bytes` - The text the search is over, which the strings are ordered against.
-    // * `set` - The set to look for.
-    // * `dfa` - The scanner.
-    _with_forced_set: Array U8 -> Array ForcedRun -> DFA -> DFA;
-    _with_forced_set = |bytes, set, dfa| (
-        let sample = min(bytes.@size, _FORCED_SAMPLE);
-        let runs = _by_falling_count(bytes, sample, set);
-        let (back_max, back_class) = _backing_of(set);
-        dfa._set_forced_strings(runs.map(@bytes)).set_back_max(back_max).set_back_class(back_class)
-    );
-
-    // What a set of forced byte strings says may stand before one of them: how many bytes at most,
-    // and which byte values. A search looks for the whole set at once, so what it may back over is
-    // what any member of the set may.
-    //
-    // # Parameters
-    // * `set` - The set to read.
-    _backing_of: Array ForcedRun -> (I64, Array U64);
-    _backing_of = |set| (
-        set.to_iter.fold((0, _no_bytes), |run, (most, bits)|
-            (max(most, run.@back_max), _bytes_union(run.@back_class, bits))
-        )
-    );
-
-    // How many positions a search hands the automaton over a stretch of the text as it stands,
-    // reading for the bytes a match may begin with. A run of them counts once: after the first of
-    // them fails, the bytes that leave every thread standing are passed over rather than tried.
-    //
-    // # Parameters
-    // * `bytes` - The text the search is over.
-    // * `sample` - How many bytes of it to read.
-    // * `wanted` - The bytes a match may begin with, one bit each.
-    _stops_of_first_bytes: Array U8 -> I64 -> Array U64 -> I64;
-    _stops_of_first_bytes = |bytes, sample, wanted| (
-        range(0, sample).fold(0, |i, n|
-            if !wanted._holds_byte(0, bytes.@(i)) { n };
-            if i > 0 && wanted._holds_byte(0, bytes.@(i - 1)) { n };
-            n + 1
-        )
-    );
-
-    // How many positions a search would hand the automaton over a stretch of the text, were it to
-    // look for a set of forced byte strings: one for every place a string of the set stands, and
-    // one more for every position before it a match could begin at.
-    //
-    // # Parameters
-    // * `bytes` - The text the search is over.
-    // * `sample` - How many bytes of it to read.
-    // * `set` - The set to weigh.
-    _stops_of_forced_set: Array U8 -> I64 -> Array ForcedRun -> I64;
-    _stops_of_forced_set = |bytes, sample, set| (
-        let (back_max, bits) = _backing_of(set);
-        set.to_iter.fold(0, |run, cost|
-            cost + _stops_of_string(bytes, sample, run.@bytes, bits, back_max)
-        )
-    );
-
-    // A set of forced byte strings, ordered so that the one a stretch of the text holds most often
-    // stands first. A search looks for them in the order they stand in, and the one looked for
-    // first bounds how far the rest are looked for, so the commonest first leaves the least
-    // reading to the rest.
-    //
-    // # Parameters
-    // * `bytes` - The text the search is over.
-    // * `sample` - How many bytes of it to read.
-    // * `set` - The set to order.
-    _by_falling_count: Array U8 -> I64 -> Array ForcedRun -> Array ForcedRun;
-    _by_falling_count = |bytes, sample, set| (
-        set.map(|run| (_places_of(bytes, sample, run.@bytes), run))
-            .sort_by(|((left, _), (right, _))| left > right)
-            .map(|(_, run)| run)
-    );
-
-    // How many places a byte string stands at in a stretch of the text.
-    //
-    // # Parameters
-    // * `bytes` - The text to read.
-    // * `sample` - How many bytes of it to read.
-    // * `wanted` - The byte string to look for.
-    _places_of: Array U8 -> I64 -> Array U8 -> I64;
-    _places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, _no_bytes, 0);
-
-    // How many positions a search would hand the automaton over a stretch of the text, for one of
-    // the forced byte strings it looks for: every place the string stands, and every position
-    // before it a match holding that string could begin at.
-    //
-    // # Parameters
-    // * `bytes` - The text to read.
-    // * `sample` - How many bytes of it to read.
-    // * `wanted` - The byte string to look for.
-    // * `back_class` - The byte values the pattern may read before it, one bit each.
-    // * `back_max` - How many bytes the pattern may read before it.
-    _stops_of_string: Array U8 -> I64 -> Array U8 -> Array U64 -> I64 -> I64;
-    _stops_of_string = |bytes, sample, wanted, back_class, back_max| (
-        loop((0, 0), |(at, cost)|
-            if at >= sample { break $ cost };
-            let hit = bytes.find_bytes_within(wanted, at, sample);
-            if hit.is_none { break $ cost };
-            let hit = hit.as_some;
-            let begin = _backed_up_to(bytes, back_class, back_max, at, hit);
-            continue $ (hit + 1, cost + 1 + hit - begin)
-        )
-    );
-
-
     // A match together with the groups it captured. A pattern that captures nothing has the whole
     // match for its only group, and one that captures is walked again by the automaton over the
     // stretch the match covers, which is where the groups are read off.
@@ -2419,11 +2895,11 @@ namespace DFA {
     // * `bytes` - The bytes the match was found in.
     // * `begin` - Where the match begins.
     // * `end` - Where it ends.
-    // * `dfa` - The scanner that found it.
-    _match_with_groups: Array U8 -> I64 -> I64 -> DFA -> Option Groups;
-    _match_with_groups = |bytes, begin, end, dfa| (
-        if dfa.@nfa.@group_count <= 1 { some $ [(begin, end)] };
-        NFA::_capture_groups(bytes, begin, end, dfa.@nfa)
+    // * `nfa` - The automaton the match was found with.
+    _match_with_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
+    _match_with_groups = |bytes, begin, end, nfa| (
+        if nfa.@group_count <= 1 { some $ [(begin, end)] };
+        NFA::_capture_groups(bytes, begin, end, nfa)
     );
 }
 

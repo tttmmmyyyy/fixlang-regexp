@@ -66,7 +66,21 @@ find_bytes = |wanted, from, bytes| bytes.find_bytes_within(wanted, from, bytes.@
 // * `limit` - The last position a run may begin at.
 // * `bytes` - The bytes to read.
 find_bytes_within : Array U8 -> I64 -> I64 -> Array U8 -> Option I64;
-find_bytes_within = |wanted, from, limit, bytes| (
+find_bytes_within = |wanted, from, limit, bytes| bytes.find_bytes_by(0, wanted, from, limit);
+
+// What `find_bytes_within` reports, found by asking the C library for the byte of `wanted` at
+// `anchor` and reading the rest here. Each place that byte stands is a place the rest is read at,
+// so the byte of `wanted` the text holds least often is the one to ask for.
+//
+// # Parameters
+// * `anchor` - Where in `wanted` the byte asked for stands, below the size of `wanted` where that
+//   is above zero.
+// * `wanted` - The bytes to look for.
+// * `from` - The position to look from.
+// * `limit` - The last position a run may begin at.
+// * `bytes` - The bytes to read.
+find_bytes_by : I64 -> Array U8 -> I64 -> I64 -> Array U8 -> Option I64;
+find_bytes_by = |anchor, wanted, from, limit, bytes| (
     let length = bytes.@size;
     let wanted_length = wanted.@size;
     if wanted_length == 0 { if from <= min(limit, length) { some(from) } else { none() } };
@@ -75,21 +89,21 @@ find_bytes_within = |wanted, from, limit, bytes| (
     // reaches, and the earliest is what is being looked for.
     let last_begin = min(limit, length - wanted_length);
     if from > last_begin { none() };
-    let head = wanted.@(0);
+    let byte = wanted.@(anchor);
     bytes.borrow_elements(|base|
         loop(from, |at|
             if at > last_begin { break $ none() };
             let found = FFI_CALL[Ptr memchr(Ptr, CInt, CSizeT),
-                base.add_offset(at), head.c_int, (last_begin + 1 - at).c_size_t];
+                base.add_offset(at + anchor), byte.c_int, (last_begin + 1 - at).c_size_t];
             if found == nullptr { break $ none() };
-            let begin = found.offset_from(base);
+            let begin = found.offset_from(base) - anchor;
             if _holds_run(bytes, begin, wanted, wanted_length) { break $ some(begin) };
             continue $ begin + 1
         )
     )
 );
 
-// Whether `bytes` holds `wanted` beginning at `begin`, the first byte taken as read.
+// Whether `bytes` holds `wanted` beginning at `begin`.
 //
 // # Parameters
 // * `bytes` - The bytes to read.
@@ -98,7 +112,7 @@ find_bytes_within = |wanted, from, limit, bytes| (
 // * `wanted_length` - How many bytes `wanted` holds.
 _holds_run : Array U8 -> I64 -> Array U8 -> I64 -> Bool;
 _holds_run = |bytes, begin, wanted, wanted_length| (
-    loop(1, |k|
+    loop(0, |k|
         if k == wanted_length { break $ true };
         if bytes.@(begin + k) != wanted.@(k) { break $ false };
         continue $ k + 1

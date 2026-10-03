@@ -6,7 +6,8 @@ import RegExp::{
 };
 import RegExp.RegExpNFA::{
     _holds_byte, DFA, Groups, NFA, 
-    DFA::{@first_bytes, @interior, _decided_by, _every_match, _insert_at, _next, _with_forced_set, make}, 
+    DFA::{@prefilter, _every_match, make, mod_prefilter}, Prefilter::{@first_bytes, _with_forced_set}, 
+    StateTable::_insert_at, 
     NFA::{@forced_sets, @prefix, _search_threads, search, search_all}
 };
 import RegExp.RegExpPattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
@@ -596,7 +597,7 @@ _forced_sets_agree = |nfa, pattern, target, tried| (
     let by_threads = _search_all_threads(bytes, nfa);
     let sets = nfa.@forced_sets;
     range(0, sets.@size).fold_m(tried, |i, tried|
-        let dfa = DFA::make(nfa)._with_forced_set(bytes, sets.@(i));
+        let dfa = DFA::make(nfa).mod_prefilter(_with_forced_set(bytes, sets.@(i)));
         assert_eq(|_| name + " forced set " + i.to_string, _search_all_scanner(bytes, dfa), by_threads);;
         pure $ tried + 1
     )
@@ -658,75 +659,6 @@ _test_forced_shapes = (
         pure $ next
     );;
     pure()
-);
-
-// Which bytes the scan takes as carrying the state a match begins in forward whole, weighed the way
-// `_learn_absorbing` weighs them.
-//
-// # Parameters
-// * `nfa` - The automaton to weigh them against.
-_carrying_bytes: NFA -> Array Bool;
-_carrying_bytes = |nfa| (
-    let (carrying, _) = range(0, 256).fold(
-        (Array::empty(256), DFA::make(nfa)), |byte, (carrying, dfa)|
-        let (next, dfa) = dfa._next(dfa.@interior, byte.u8);
-        let carries = if next < 0 { false } else { dfa._decided_by(dfa.@interior, next) };
-        (carrying.push_back(carries), dfa)
-    );
-    carrying
-);
-
-// Whether a match begins at a position, worked out by walking every thread.
-//
-// # Parameters
-// * `bytes` - The text to read.
-// * `at` - The position to ask about.
-// * `nfa` - The automaton to run.
-_begins_at: Array U8 -> I64 -> NFA -> Bool;
-_begins_at = |bytes, at, nfa| (
-    let opt = NFA::_search_threads(bytes, at, nfa);
-    if opt.is_none { false };
-    let (begin, _) = opt.as_some.@(0);
-    begin == at
-);
-
-// A byte taken as carrying the state a match begins in forward passes over the position behind it,
-// so a match beginning there where none begins before it is one the search never finds.
-//
-// The bytes are weighed here as the scan weighs them and held to the matches the automaton finds,
-// which says so wherever a drawn text holds such a byte, rather than only where the search, reading
-// that text, would have been led past a match.
-_test_carrying_bytes: IO ();
-_test_carrying_bytes = (
-    let (_, weighed) = *range(0, _random_cases).fold_m(
-        (Draws { state: 20260919 }, 0), |_, (draws, weighed)|
-        let (pattern, draws) = _draw_pattern(draws);
-        let (target, draws) = _draw_target(draws);
-        let result = RegExp::compile(pattern, "g");
-        if result.is_err { pure $ (draws, weighed) };
-        let nfa = result.as_ok.@nfa;
-        let bytes = target.get_bytes.pop_back;
-        let name = _named(pattern, "g", target);
-        let carrying = _carrying_bytes(nfa);
-        // The position where the input ends is never passed over, so the run stops one short of it.
-        let weighed = *range(1, max(1, bytes.@size - 1)).fold_m(weighed, |at, weighed|
-            if !carrying.@(bytes.@(at).i64) { pure $ weighed };
-            if _begins_at(bytes, at, nfa) { pure $ weighed };
-            assert(
-                |_| name + " no match begins at " + (at + 1).to_string + ", behind the byte at "
-                    + at.to_string + " that carries the start state on",
-                !_begins_at(bytes, at + 1, nfa)
-            );;
-            pure $ weighed + 1
-        );
-        pure $ (draws, weighed)
-    );
-    // The draws are held to producing work. A generator that stopped producing bytes that carry the
-    // start state on would let every case agree with no position having been weighed.
-    assert(
-        |_| "the drawn strings hold bytes that carry the start state on",
-        weighed >= _random_cases / 8
-    )
 );
 
 // Whether a byte string stands at a position.
@@ -843,7 +775,7 @@ _test_first_bytes = (
         let nfa = result.as_ok.@nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
-        let first_bytes = DFA::make(nfa).@first_bytes;
+        let first_bytes = DFA::make(nfa).@prefilter.@first_bytes;
         let held = *_search_all_threads(bytes, nfa).to_iter.fold_m(held, |groups, held|
             let (begin, _) = groups.@(0);
             // The ends of the input are where an assertion may hold, so a match beginning at either
@@ -1068,7 +1000,6 @@ test = (
     _test_forced_sets;;
     _test_repeat_bound;;
     _test_forced_shapes;;
-    _test_carrying_bytes;;
     _test_forced_sets_stand_in_matches;;
     _test_first_bytes;;
     _test_forced_beginning;;
