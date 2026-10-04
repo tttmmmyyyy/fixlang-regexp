@@ -137,6 +137,17 @@ Type: `RegExp.SimpleParser::Parser RegExp.RegExpPattern::Pattern`
 
 Parses a pattern from the stream.
 
+#### reverse
+
+Type: `RegExp.RegExpPattern::Pattern -> RegExp.RegExpPattern::Pattern`
+
+The pattern read from right to left: it matches the bytes of every match of `pat` taken in
+the opposite order, `^` and `$` changing places. It captures no group.
+
+##### Parameters
+
+* `pat` - The pattern to read from right to left.
+
 ## Types and aliases
 
 ### namespace RegExp.RegExpPattern

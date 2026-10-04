@@ -49,6 +49,23 @@ commonest thing in the text.
 * `from` - The position to look from.
 * `bytes` - The bytes to read.
 
+#### find_bytes_by
+
+Type: `Std::I64 -> Std::Array Std::U8 -> Std::I64 -> Std::I64 -> Std::Array Std::U8 -> Std::Option Std::I64`
+
+What `find_bytes_within` reports, found by asking the C library for the byte of `wanted` at
+`anchor` and reading the rest here. Each place that byte stands is a place the rest is read at,
+so the byte of `wanted` the text holds least often is the one to ask for.
+
+##### Parameters
+
+* `anchor` - Where in `wanted` the byte asked for stands, below the size of `wanted` where that
+  is above zero.
+* `wanted` - The bytes to look for.
+* `from` - The position to look from.
+* `limit` - The last position a run may begin at.
+* `bytes` - The bytes to read.
+
 #### find_bytes_within
 
 Type: `Std::Array Std::U8 -> Std::I64 -> Std::I64 -> Std::Array Std::U8 -> Std::Option Std::I64`
