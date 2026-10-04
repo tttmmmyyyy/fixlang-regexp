@@ -61,66 +61,67 @@ type QuantID = I64;
 // reading raises one reference count for the automaton, where unboxed it raises one for each array
 // the automaton holds.
 type NFA = box struct {
-    nodes: Array NFANode,     // every node, each named by its place here
-    initial_node: NodeID,     // the node a thread starts at
-    accepting_node: NodeID,   // the node a thread has matched at
-    group_count: I64,         // how many groups the pattern captures, the whole match counted as one
-    quant_bounds: Array (I64, I64), // fewest and most rounds each special quant admits
+    _nodes: Array NFANode,           // every node, each named by its place here
+    _initial_node: NodeID,           // the node a thread starts at
+    _accepting_node: NodeID,         // the node a thread has matched at
+    _group_count: I64,               // how many groups the pattern captures, the whole match
+                                     // counted as one
+    _quant_bounds: Array (I64, I64), // fewest and most rounds each special quant admits
     // The character classes the nodes are guarded by, as one bit per byte value, four words to a
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
-    classes: Array U64,
+    _classes: Array U64,
     // The kind of each byte value. Two bytes are of one kind where every character class above
     // holds both or neither of them, so that they lead every thread the same way, and a table works
     // out what a byte does once for the bytes of its kind.
-    kind_of: Array I64,
-    kinds: Array (Array U8),  // the bytes of each kind
+    _kind_of: Array I64,
+    _kinds: Array (Array U8),        // the bytes of each kind
     // Sets of byte strings the pattern forces every text it matches to hold. Every match holds a
     // member of each of these sets, so a search may look for whichever set the text it is over
     // holds least often.
-    forced_sets: Array (Array ForcedRun),
+    _forced_sets: Array (Array ForcedRun),
     // The bytes every match begins with. Working them out means walking the automaton, and doing
     // it here leaves every scanner made from this automaton with nothing to walk.
-    prefix: Array U8,
+    _prefix: Array U8,
     // What the automaton does between one byte and the next where it offers one way on, which is
     // how a match's groups are read without running the threads over it again.
-    one_way: OneWayTable,
+    _one_way: OneWayTable,
     // The automaton of the pattern read from right to left, which a search walks back from where a
     // match ends to find where it begins. An automaton compiled from a reversed pattern holds
     // `none` here, and so does an automaton with no node.
-    reversed: Option NFA,
+    _reversed: Option NFA,
     // The scanner a search with this automaton starts from, holding the states a search meets first
     // worked out. Only `NFA::compile` gives an automaton one: the automaton the scanner walks holds
     // `none` here.
-    scanner: Option DFA
+    _scanner: Option DFA
 };
 
 namespace NFA {
     // An automaton with no node and no group.
     empty: NFA;
     empty = NFA {
-        nodes: Array::empty(0),
-        initial_node: _INVALID_NODE_ID,
-        accepting_node: _INVALID_NODE_ID,
-        group_count: 0,
-        quant_bounds: Array::empty(0),
-        classes: Array::empty(0),
-        kind_of: Array::fill(256, 0),
-        kinds: [Array::from_map(256, |byte| byte.u8)],
-        forced_sets: Array::empty(0),
-        prefix: Array::empty(0),
-        one_way: OneWayTable::empty,
-        reversed: none(),
-        scanner: none()
+        _nodes: Array::empty(0),
+        _initial_node: _INVALID_NODE_ID,
+        _accepting_node: _INVALID_NODE_ID,
+        _group_count: 0,
+        _quant_bounds: Array::empty(0),
+        _classes: Array::empty(0),
+        _kind_of: Array::fill(256, 0),
+        _kinds: [Array::from_map(256, |byte| byte.u8)],
+        _forced_sets: Array::empty(0),
+        _prefix: Array::empty(0),
+        _one_way: OneWayTable::empty,
+        _reversed: none(),
+        _scanner: none()
     };
 
     // Adds a node that guards nothing and leads nowhere, and reports its id.
     new_node: NFA -> (NFA, NodeID);
     new_node = |nfa| (
-        let id = NodeID { val: nfa.@nodes.@size };
+        let id = NodeID { val: nfa.@_nodes.@size };
         let node = NFANode::empty;
         let node = node.set_id(id);
-        let nfa = nfa.mod_nodes(push_back(node));
+        let nfa = nfa.mod__nodes(push_back(node));
         (nfa, id)
     );
 
@@ -131,9 +132,9 @@ namespace NFA {
     // * `nfa` - The automaton to store it in.
     new_class: CharClass -> NFA -> (NFA, I64);
     new_class = |cls, nfa| (
-        let base = nfa.@classes.@size;
+        let base = nfa.@_classes.@size;
         let (bits, _) = _bytes_of_class(cls);
-        (nfa.mod_classes(append(bits)), base)
+        (nfa.mod__classes(append(bits)), base)
     );
 
     // Whether a byte belongs to the class whose words begin at a position.
@@ -144,19 +145,19 @@ namespace NFA {
     // * `nfa` - The automaton holding the classes.
     class_holds: I64 -> U8 -> NFA -> Bool;
     class_holds = |base, byte, nfa| (
-        nfa.@classes._holds_byte(base, byte)
+        nfa.@_classes._holds_byte(base, byte)
     );
 
     // The node an id names.
     get_node: NodeID -> NFA -> NFANode;
     get_node = |id, nfa| (
-        nfa.@nodes.@(id.@val)
+        nfa.@_nodes.@(id.@val)
     );
 
     // Replaces the node an id names by what a function makes of it.
     mod_node: NodeID -> (NFANode -> NFANode) -> NFA -> NFA;
     mod_node = |id, f, nfa| (
-        nfa.mod_nodes(|nodes| nodes.set(id.@val, f(nodes.@(id.@val))))
+        nfa.mod__nodes(|nodes| nodes.set(id.@val, f(nodes.@(id.@val))))
     );
 
     // Points every node a fragment leads out of at one node.
@@ -178,8 +179,8 @@ namespace NFA {
     // * `nfa` - The automaton to add the quantifier to.
     new_quant: I64 -> I64 -> NFA -> (NFA, QuantID);
     new_quant = |least, most, nfa| (
-        let id = nfa.@quant_bounds.@size;
-        (nfa.mod_quant_bounds(push_back((least, most))), id)
+        let id = nfa.@_quant_bounds.@size;
+        (nfa.mod__quant_bounds(push_back((least, most))), id)
     );
 
     // The rounds a thread standing at a special quantifier's loop has counted after one more
@@ -199,7 +200,7 @@ namespace NFA {
     // * `nfa` - The automaton the quantifier belongs to.
     quant_next_round: QuantID -> I64 -> NFA -> I64;
     quant_next_round = |qid, counted, nfa| (
-        let (least, most) = nfa.@quant_bounds.@(qid);
+        let (least, most) = nfa.@_quant_bounds.@(qid);
         let round = counted + 1;
         if most != I64::maximum && round > most { -1 };
         min(round, if most == I64::maximum { least } else { most })
@@ -267,21 +268,21 @@ namespace NFA {
     compile: Pattern -> NFA;
     compile = |pattern| (
         let (nfa, pattern) = NFA::_nodes_of(pattern);
-        let kind_of = _kinds_of_bytes(nfa.@classes);
+        let kind_of = _kinds_of_bytes(nfa.@_classes);
         let kind_count = kind_of.to_iter.fold(0, |kind, count| max(count, kind + 1));
         let kinds = range(0, 256).fold(Array::fill(kind_count, Array::empty(0)), |byte, kinds|
             kinds.mod(kind_of.@(byte), push_back(byte.u8))
         );
-        let nfa = nfa.set_kind_of(kind_of).set_kinds(kinds);
-        let nfa = nfa.set_forced_sets(forced_of(pattern).@sets);
-        let nfa = nfa.set_prefix(DFA::forced_beginning(nfa));
+        let nfa = nfa.set__kind_of(kind_of).set__kinds(kinds);
+        let nfa = nfa.set__forced_sets(forced_of(pattern).@sets);
+        let nfa = nfa.set__prefix(DFA::forced_beginning(nfa));
         // Read from right to left, the pattern holds the same character classes, so its bytes are
         // of the same kinds.
         let (reversed, _) = NFA::_nodes_of(pattern.reverse);
-        let reversed = reversed.set_kind_of(nfa.@kind_of).set_kinds(nfa.@kinds);
-        let nfa = nfa.set_reversed(some(reversed));
-        let nfa = nfa.set_one_way(_one_way_table(nfa));
-        nfa.set_scanner(some $ DFA::_worked_out(nfa))
+        let reversed = reversed.set__kind_of(nfa.@_kind_of).set__kinds(nfa.@_kinds);
+        let nfa = nfa.set__reversed(some(reversed));
+        let nfa = nfa.set__one_way(_one_way_table(nfa));
+        nfa.set__scanner(some $ DFA::_worked_out(nfa))
     );
 
     // The automaton a pattern compiles to, holding its nodes and classes and nothing a search reads
@@ -294,11 +295,11 @@ namespace NFA {
     _nodes_of: Pattern -> (NFA, Pattern);
     _nodes_of = |pattern| (
         let (group_count, pattern) = pattern._assign_group_number(0);
-        let nfa = NFA::empty.set_group_count(group_count);
+        let nfa = NFA::empty.set__group_count(group_count);
         let (nfa, frag) = nfa.compile_pattern(pattern);
-        let nfa = nfa.set_initial_node(frag.@input);
+        let nfa = nfa.set__initial_node(frag.@input);
         let (nfa, accept_id) = nfa.new_node;
-        let nfa = nfa.set_accepting_node(accept_id);
+        let nfa = nfa.set__accepting_node(accept_id);
         (nfa.set_frag_output(frag, accept_id), pattern)
     );
 
@@ -307,11 +308,11 @@ namespace NFA {
 impl NFA: ToString {
     to_string = |nfa| (
         "NFA { nodes=\n"
-        + range(0, nfa.@nodes.@size).map(|i|
-            "  " + nfa.@nodes.@(i).to_string + "\n"
+        + range(0, nfa.@_nodes.@size).map(|i|
+            "  " + nfa.@_nodes.@(i).to_string + "\n"
         ).concat_iter
-        + "  initial_node=" + nfa.@initial_node.to_string + "\n"
-        + "  accepting_node=" + nfa.@accepting_node.to_string + "\n"
+        + "  initial_node=" + nfa.@_initial_node.to_string + "\n"
+        + "  accepting_node=" + nfa.@_accepting_node.to_string + "\n"
         +"}"
     );
 }
@@ -361,9 +362,9 @@ type NFANode = unbox struct {
     output2: NodeID            // a second such node, where the node offers two ways on
 };
 
-// A node's name: its place in the automaton's `nodes`.
+// A node's name: its place in the automaton's `_nodes`.
 type NodeID = unbox struct {
-    val: I64   // the place in `nodes`, or `-1` for no node
+    val: I64   // the place in `_nodes`, or `-1` for no node
 };
 
 impl NodeID: ToString {
@@ -736,9 +737,9 @@ namespace Walk {
     // * `nfa` - The automaton to walk.
     make: NFA -> Walk;
     make = |nfa| (
-        let node_count = nfa.@nodes.@size;
-        let count_width = nfa.@quant_bounds.@size;
-        let slot_width = 2 * max(1, nfa.@group_count);
+        let node_count = nfa.@_nodes.@size;
+        let count_width = nfa.@_quant_bounds.@size;
+        let slot_width = 2 * max(1, nfa.@_group_count);
         Walk {
             slot_width: slot_width,
             count_width: count_width,
@@ -1160,9 +1161,9 @@ namespace NFA {
     // * `nfa` - The automaton to run.
     _walk_threads: Array U8 -> I64 -> I64 -> Bool -> NFA -> Option Groups;
     _walk_threads = |bytes, from, stop, anchored, nfa| (
-        let node_count = nfa.@nodes.@size;
-        let initial = nfa.@initial_node.@val;
-        let accepting = nfa.@accepting_node.@val;
+        let node_count = nfa.@_nodes.@size;
+        let initial = nfa.@_initial_node.@val;
+        let accepting = nfa.@_accepting_node.@val;
         let length = bytes.@size;
         let walk = Walk::make(nfa);
         let (spare_nodes, spare_slots, spare_counts) = (
@@ -1223,7 +1224,7 @@ namespace NFA {
         if node < 0 { build };
         if build.@seen.@(node) == start { build.set_twice(true) };
         let build = build.mod_seen(set(node, start));
-        let build = if node == nfa.@accepting_node.@val {
+        let build = if node == nfa.@_accepting_node.@val {
             let from = build.@writes.@size;
             build.mod_writes(append(path)).set_accept([flags, from, from + path.@size])
         } else { build };
@@ -1273,8 +1274,8 @@ namespace NFA {
     // * `nfa` - The automaton to read.
     _one_way_table: NFA -> OneWayTable;
     _one_way_table = |nfa| (
-        if nfa.@quant_bounds.@size > 0 { OneWayTable::empty };
-        let node_count = nfa.@nodes.@size;
+        if nfa.@_quant_bounds.@size > 0 { OneWayTable::empty };
+        let node_count = nfa.@_nodes.@size;
         let build = WayBuild {
             ways: Array::empty(node_count * 5),
             writes: Array::empty(node_count * 4),
@@ -1321,15 +1322,15 @@ namespace NFA {
     // * `nfa` - The automaton the match was found with.
     _one_way_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
     _one_way_groups = |bytes, begin, end, nfa| (
-        let table = nfa.@one_way;
+        let table = nfa.@_one_way;
         if table.@bounds.@size == 0 { none() };
         let length = bytes.@size;
-        let slot_width = 2 * max(1, nfa.@group_count);
+        let slot_width = 2 * max(1, nfa.@_group_count);
         // Each of these is a field of a boxed value, so reading one raises and lowers a reference
         // count. They are read once here and stand for every byte the walk reads.
         let (ways, bounds, accepts) = (table.@ways, table.@bounds, table.@accepts);
-        let (writes, twice, classes) = (table.@writes, table.@twice, nfa.@classes);
-        loop((nfa.@initial_node.@val, Array::fill(slot_width, -1), begin), |(node, slots, at)|
+        let (writes, twice, classes) = (table.@writes, table.@twice, nfa.@_classes);
+        loop((nfa.@_initial_node.@val, Array::fill(slot_width, -1), begin), |(node, slots, at)|
             if twice.@(node) { break $ none() };
             let (at_begin, at_end) = (at == 0, at == length);
             if at >= end {
@@ -1400,22 +1401,21 @@ _DFA_MAX_STATES = 1024;
 // then its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a
 // rank, by the numbers.
 type StateTable = box struct {
-    nfa: NFA,                     // the automaton the states are worked out from
-    width: I64,                   // numbers to a thread: the node, then one count per special quantifier
-    keys: Array I64,              // the key of every state, laid end to end
-    bounds: Array I64,            // state `i` has the key from `bounds.@(i)` to `bounds.@(i + 1)`
-    ordered_states: Array I64,    // the states, ordered by their keys
-    transitions: Array I64,       // `state * 256 + byte` -> how a walk takes the byte; see `_entry`
-    accepts: Array Bool,          // whether the state holds the accepting node
-    accepts_at_end: Array I64,    // the earliest rank of the state that reaches the accepting node
-                                  // where the input ends: `-1` where none does, `-2` until asked
-    starting: Array I64,          // the threads a rank begins with away from either end of the
-                                  // input
-    interior: I64,                // the state a search begins in away from the beginning of the
-                                  // input
-    fresh: I64,                   // `interior` where it is seeking, which is where no rank began
-                                  // before the position the walk stands at; `-1` where it is not
-    full: Bool                    // whether the states have outgrown what the table may take
+    _nfa: NFA,                  // the automaton the states are worked out from
+    _width: I64,                // numbers to a thread: the node, then one count per special
+                                // quantifier
+    _keys: Array I64,           // the key of every state, laid end to end
+    _bounds: Array I64,         // state `i` has the key from `_bounds.@(i)` to `_bounds.@(i + 1)`
+    _ordered_states: Array I64, // the states, ordered by their keys
+    _transitions: Array I64,    // `state * 256 + byte` -> how a walk takes the byte; see `_entry`
+    _accepts: Array Bool,       // whether the state holds the accepting node
+    _accepts_at_end: Array I64, // the earliest rank of the state that reaches the accepting node
+                                // where the input ends: `-1` where none does, `-2` until asked
+    _starting: Array I64,       // the threads a rank begins with away from either end of the input
+    _interior: I64,             // the state a search begins in away from the beginning of the input
+    _fresh: I64,                // `_interior` where it is seeking, which is where no rank began
+                                // before the position the walk stands at; `-1` where it is not
+    _full: Bool                 // whether the states have outgrown what the table may take
 };
 
 namespace StateTable {
@@ -1445,7 +1445,7 @@ namespace StateTable {
     make: NFA -> StateTable;
     make = |nfa| (
         let (_, table) = StateTable::_holding_nothing(nfa)._intern([0]);
-        table.set_starting(table._closure(false, false, table._initial_thread))
+        table.set__starting(table._closure(false, false, table._initial_thread))
     );
 
     // A table that has given the search back to the automaton before it took a state, so that a
@@ -1454,7 +1454,7 @@ namespace StateTable {
     // # Parameters
     // * `nfa` - The automaton.
     given_up: NFA -> StateTable;
-    given_up = |nfa| StateTable::_holding_nothing(nfa).set_full(true);
+    given_up = |nfa| StateTable::_holding_nothing(nfa).set__full(true);
 
     // A table holding no state.
     //
@@ -1463,18 +1463,18 @@ namespace StateTable {
     _holding_nothing: NFA -> StateTable;
     _holding_nothing = |nfa| (
         StateTable {
-            nfa: nfa,
-            width: 1 + nfa.@quant_bounds.@size,
-            keys: Array::empty(64),
-            bounds: [0],
-            ordered_states: Array::empty(16),
-            transitions: Array::empty(256 * 2),
-            accepts: Array::empty(16),
-            accepts_at_end: Array::empty(16),
-            starting: Array::empty(0),
-            interior: -1,
-            fresh: -1,
-            full: false
+            _nfa: nfa,
+            _width: 1 + nfa.@_quant_bounds.@size,
+            _keys: Array::empty(64),
+            _bounds: [0],
+            _ordered_states: Array::empty(16),
+            _transitions: Array::empty(256 * 2),
+            _accepts: Array::empty(16),
+            _accepts_at_end: Array::empty(16),
+            _starting: Array::empty(0),
+            _interior: -1,
+            _fresh: -1,
+            _full: false
         }
     );
 
@@ -1486,8 +1486,8 @@ namespace StateTable {
     make_seeking: NFA -> StateTable;
     make_seeking = |nfa| (
         let (interior, table) = StateTable::make(nfa)._start(true, false, false);
-        let table = table.set_interior(interior);
-        if table._seeking(interior) { table.set_fresh(interior) } else { table }
+        let table = table.set__interior(interior);
+        if table._seeking(interior) { table.set__fresh(interior) } else { table }
     );
 
     // The table with every transition worked out from the states offered and the states they lead
@@ -1499,17 +1499,17 @@ namespace StateTable {
     // * `table` - The table.
     _worked_out_from: Array I64 -> I64 -> StateTable -> StateTable;
     _worked_out_from = |starts, most, table| (
-        let kinds = table.@nfa.@kinds;
+        let kinds = table.@_nfa.@_kinds;
         let (table, _, _) = loop((table, starts, 0), |(table, queue, taken)|
-            let held = table.@bounds.@size - 1;
+            let held = table.@_bounds.@size - 1;
             if taken >= queue.@size || held >= most { break $ (table, queue, taken) };
             let state = queue.@(taken);
             let (table, queue) = kinds.to_iter.fold((table, queue), |alike, (table, queue)|
                 let byte = alike.@(0);
-                if table.@transitions.@(state * 256 + byte.i64) != _UNTAKEN { (table, queue) };
-                let count = table.@bounds.@size;
+                if table.@_transitions.@(state * 256 + byte.i64) != _UNTAKEN { (table, queue) };
+                let count = table.@_bounds.@size;
                 let (next, table) = table._next(state, byte);
-                if next < 0 || table.@bounds.@size == count { (table, queue) };
+                if next < 0 || table.@_bounds.@size == count { (table, queue) };
                 (table, queue.push_back(next))
             );
             continue $ (table, queue, taken + 1)
@@ -1523,7 +1523,7 @@ namespace StateTable {
     // * `table` - The table, for the automaton and the width of a thread.
     _initial_thread: StateTable -> Array I64;
     _initial_thread = |table| (
-        Array::from_map(table.@width, |j| if j == 0 { table.@nfa.@initial_node.@val } else { 0 })
+        Array::from_map(table.@_width, |j| if j == 0 { table.@_nfa.@_initial_node.@val } else { 0 })
     );
 
     // The state a walk begins in at a position.
@@ -1539,7 +1539,7 @@ namespace StateTable {
         let threads = if at_begin || at_end {
             table._closure(at_begin, at_end, table._initial_thread)
         } else {
-            table.@starting
+            table.@_starting
         };
         let (key, _) = table._key_of(seeking, [threads]);
         table._intern(key)
@@ -1551,7 +1551,7 @@ namespace StateTable {
     // * `state` - The state to read.
     // * `table` - The table.
     _seeking: I64 -> StateTable -> Bool;
-    _seeking = |state, table| table.@keys.@(table.@bounds.@(state)) == 1;
+    _seeking = |state, table| table.@_keys.@(table.@_bounds.@(state)) == 1;
 
     // The key of a state holding ranks of threads, together with the earliest rank holding the
     // accepting node, or `-1` where none holds it. The ranks after that one are dropped, and the
@@ -1564,8 +1564,8 @@ namespace StateTable {
     // * `table` - The table, for the automaton and the width of a thread.
     _key_of: Bool -> Array (Array I64) -> StateTable -> (Array I64, I64);
     _key_of = |seeking, ranks, table| (
-        let width = table.@width;
-        let accepting = table.@nfa.@accepting_node.@val;
+        let width = table.@_width;
+        let accepting = table.@_nfa.@_accepting_node.@val;
         let accepted = loop(0, |r|
             if r == ranks.@size { break $ -1 };
             if _holds_node(accepting, width, ranks.@(r)) { break $ r };
@@ -1591,10 +1591,10 @@ namespace StateTable {
     // * `table` - The table.
     _ranks_of: I64 -> StateTable -> Array (Array I64);
     _ranks_of = |state, table| (
-        let width = table.@width;
-        let keys = table.@keys;
-        let begin = table.@bounds.@(state) + 1;
-        let end = table.@bounds.@(state + 1);
+        let width = table.@_width;
+        let keys = table.@_keys;
+        let begin = table.@_bounds.@(state) + 1;
+        let end = table.@_bounds.@(state + 1);
         range(0, (end - begin) / (width + 1)).fold(Array::empty(4), |k, ranks|
             let base = begin + k * (width + 1);
             let rank = keys.@(base);
@@ -1613,10 +1613,10 @@ namespace StateTable {
     // * `table` - The table.
     _state_holds_node: I64 -> I64 -> StateTable -> Bool;
     _state_holds_node = |node, state, table| (
-        let stride = table.@width + 1;
-        let begin = table.@bounds.@(state) + 1;
-        let end = table.@bounds.@(state + 1);
-        let keys = table.@keys;
+        let stride = table.@_width + 1;
+        let begin = table.@_bounds.@(state) + 1;
+        let end = table.@_bounds.@(state + 1);
+        let keys = table.@_keys;
         range(0, (end - begin) / stride).check_any(|k| keys.@(begin + k * stride + 1) == node)
     );
 
@@ -1632,16 +1632,16 @@ namespace StateTable {
     _intern = |key, table| (
         let (existing, place) = table._locate(key);
         if existing >= 0 { (existing, table) };
-        let id = table.@bounds.@size - 1;
-        if id >= _DFA_MAX_STATES { (-1, table.set_full(true)) };
+        let id = table.@_bounds.@size - 1;
+        if id >= _DFA_MAX_STATES { (-1, table.set__full(true)) };
         let table = table
-            .mod_bounds(|bounds| bounds.push_back(bounds.get_last.as_some + key.@size))
-            .mod_keys(append(key))
-            .mod_transitions(append(_UNTAKEN_ROW))
-            .mod_accepts_at_end(push_back(-2))
-            .mod_ordered_states(_insert_at(place, id));
-        let accepts = table._state_holds_node(table.@nfa.@accepting_node.@val, id);
-        (id, table.mod_accepts(push_back(accepts)))
+            .mod__bounds(|bounds| bounds.push_back(bounds.get_last.as_some + key.@size))
+            .mod__keys(append(key))
+            .mod__transitions(append(_UNTAKEN_ROW))
+            .mod__accepts_at_end(push_back(-2))
+            .mod__ordered_states(_insert_at(place, id));
+        let accepts = table._state_holds_node(table.@_nfa.@_accepting_node.@val, id);
+        (id, table.mod__accepts(push_back(accepts)))
     );
 
     // Puts a state where it belongs among the states ordered by their keys.
@@ -1668,10 +1668,10 @@ namespace StateTable {
     // * `table` - The table.
     _locate: Array I64 -> StateTable -> (I64, I64);
     _locate = |wanted, table| (
-        loop((0, table.@ordered_states.@size), |(low, high)|
+        loop((0, table.@_ordered_states.@size), |(low, high)|
             if low == high { break $ (-1, low) };
             let middle = (low + high) / 2;
-            let state = table.@ordered_states.@(middle);
+            let state = table.@_ordered_states.@(middle);
             let order = table._compare(state, wanted);
             if order == 0 { break $ (state, middle) };
             if order < 0 { continue $ (middle + 1, high) };
@@ -1689,12 +1689,12 @@ namespace StateTable {
     // * `table` - The table.
     _compare: I64 -> Array I64 -> StateTable -> I64;
     _compare = |state, wanted, table| (
-        let begin = table.@bounds.@(state);
-        let held_size = table.@bounds.@(state + 1) - begin;
+        let begin = table.@_bounds.@(state);
+        let held_size = table.@_bounds.@(state + 1) - begin;
         let offered_size = wanted.@size;
         loop(0, |i|
             if i == held_size || i == offered_size { break $ held_size - offered_size };
-            let difference = table.@keys.@(begin + i) - wanted.@(i);
+            let difference = table.@_keys.@(begin + i) - wanted.@(i);
             if difference != 0 { break $ difference };
             continue $ i + 1
         )
@@ -1715,10 +1715,10 @@ namespace StateTable {
         let (next, table) = table._intern(key);
         if next < 0 { (-1, table) };
         let entry = table._entry(state, next, first_lives && accepted <= 0);
-        let nfa = table.@nfa;
+        let nfa = table.@_nfa;
         let row = state * 256;
-        let table = table.mod_transitions(|transitions|
-            nfa.@kinds.@(nfa.@kind_of.@(byte.i64)).to_iter.fold(transitions, |alike, transitions|
+        let table = table.mod__transitions(|transitions|
+            nfa.@_kinds.@(nfa.@_kind_of.@(byte.i64)).to_iter.fold(transitions, |alike, transitions|
                 transitions.set(row + alike.i64, entry)
             )
         );
@@ -1739,13 +1739,13 @@ namespace StateTable {
     // * `table` - The table.
     _after: I64 -> U8 -> StateTable -> (Array (Array I64), Bool);
     _after = |state, byte, table| (
-        if table.@width == 1 { table._after_nodes(state, byte) };
+        if table.@_width == 1 { table._after_nodes(state, byte) };
         let carried = table._ranks_of(state).map(|threads|
             table._closure(false, false, table._advance(threads, byte))
         );
         let first_lives = carried.@size > 0 && carried.@(0).@size > 0;
         let seeking = table._seeking(state);
-        let carried = if seeking { carried.push_back(table.@starting) } else { carried };
+        let carried = if seeking { carried.push_back(table.@_starting) } else { carried };
         (table._without_repeats(carried), first_lives)
     );
 
@@ -1760,12 +1760,12 @@ namespace StateTable {
     // * `table` - The table.
     _after_nodes: I64 -> U8 -> StateTable -> (Array (Array I64), Bool);
     _after_nodes = |state, byte, table| (
-        let nfa = table.@nfa;
+        let nfa = table.@_nfa;
         let seeds = table._ranks_of(state).map(|nodes| table._advance(nodes, byte));
         let first_lives = seeds.@size > 0;
-        let seeds = if table._seeking(state) { seeds.push_back(table.@starting) } else { seeds };
+        let seeds = if table._seeking(state) { seeds.push_back(table.@_starting) } else { seeds };
         let (ranks, _, first_lives) = range(0, seeds.@size).fold(
-            (Array::empty(seeds.@size), Array::fill(nfa.@nodes.@size, false), first_lives),
+            (Array::empty(seeds.@size), Array::fill(nfa.@_nodes.@size, false), first_lives),
             |r, (ranks, marks, first_lives)|
             let (reached, marks) = _reach_unmarked(nfa, false, false, seeds.@(r), marks);
             if reached.@size == 0 { (ranks, marks, first_lives && r > 0) };
@@ -1782,8 +1782,8 @@ namespace StateTable {
     // * `table` - The table, for the automaton and the width of a thread.
     _without_repeats: Array (Array I64) -> StateTable -> Array (Array I64);
     _without_repeats = |ranks, table| (
-        let width = table.@width;
-        let node_count = table.@nfa.@nodes.@size;
+        let width = table.@_width;
+        let node_count = table.@_nfa.@_nodes.@size;
         let (kept, _) = ranks.to_iter.fold(
             (Array::empty(ranks.@size), Array::fill(node_count, Array::empty(0))),
             |threads, (kept, held)|
@@ -1801,8 +1801,8 @@ namespace StateTable {
     // * `table` - The table, for the automaton and the width of a thread.
     _advance: Array I64 -> U8 -> StateTable -> Array I64;
     _advance = |threads, byte, table| (
-        let nfa = table.@nfa;
-        let width = table.@width;
+        let nfa = table.@_nfa;
+        let width = table.@_width;
         range(0, threads.@size / width).fold(Array::empty(threads.@size), |k, seeds|
             let base = k * width;
             let node = nfa.get_node(NodeID { val: threads.@(base) });
@@ -1837,8 +1837,8 @@ namespace StateTable {
     // * `table` - The table.
     _entry: I64 -> I64 -> Bool -> StateTable -> I64;
     _entry = |state, next, keeps_begin, table| (
-        let fresh = table.@fresh;
-        let accepts = table.@accepts.@(next);
+        let fresh = table.@_fresh;
+        let accepts = table.@_accepts.@(next);
         let stops = next == _DEAD_STATE || (!keeps_begin && next != fresh);
         let leaves_fresh = state == fresh && next != fresh;
         if !accepts && !stops && !leaves_fresh { 256 * next };
@@ -1857,10 +1857,10 @@ namespace StateTable {
     // * `table` - The table.
     _closure: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
     _closure = |at_begin, at_end, seeds, table| (
-        if table.@width == 1 { _closure_nodes(at_begin, at_end, seeds, table) };
-        let nfa = table.@nfa;
-        let width = table.@width;
-        let node_count = nfa.@nodes.@size;
+        if table.@_width == 1 { _closure_nodes(at_begin, at_end, seeds, table) };
+        let nfa = table.@_nfa;
+        let width = table.@_width;
+        let node_count = nfa.@_nodes.@size;
         let reached = range(0, seeds.@size / width).fold(
             (Array::fill(node_count, Array::empty(0)), Array::empty(node_count * width)),
             |k, reached| _offer_thread(width, _thread_at(k * width, width, seeds), reached)
@@ -1891,8 +1891,8 @@ namespace StateTable {
     // * `table` - The table.
     _closure_nodes: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
     _closure_nodes = |at_begin, at_end, seeds, table| (
-        let nfa = table.@nfa;
-        let marks = Array::fill(nfa.@nodes.@size, false);
+        let nfa = table.@_nfa;
+        let marks = Array::fill(nfa.@_nodes.@size, false);
         let (reached, _) = _reach_unmarked(nfa, at_begin, at_end, seeds, marks);
         reached.sort_by(|(left, right)| left < right)
     );
@@ -1905,17 +1905,17 @@ namespace StateTable {
     // * `table` - The table.
     _accepts_at_end: I64 -> StateTable -> (I64, StateTable);
     _accepts_at_end = |state, table| (
-        let known = table.@accepts_at_end.@(state);
+        let known = table.@_accepts_at_end.@(state);
         if known >= -1 { (known, table) };
-        let width = table.@width;
-        let accepting = table.@nfa.@accepting_node.@val;
+        let width = table.@_width;
+        let accepting = table.@_nfa.@_accepting_node.@val;
         let ranks = table._ranks_of(state);
         let rank = loop(0, |r|
             if r == ranks.@size { break $ -1 };
             if _holds_node(accepting, width, table._closure(false, true, ranks.@(r))) { break $ r };
             continue $ r + 1
         );
-        (rank, table.mod_accepts_at_end(set(state, rank)))
+        (rank, table.mod__accepts_at_end(set(state, rank)))
     );
 
     // The bytes a match may begin with, one bit each: those the nodes of a state admit. A state that
@@ -1927,17 +1927,17 @@ namespace StateTable {
     // * `table` - The table.
     _first_bytes_of: I64 -> StateTable -> Array U64;
     _first_bytes_of = |state, table| (
-        if table.@accepts.@(state) { _all_bytes };
-        let nfa = table.@nfa;
+        if table.@_accepts.@(state) { _all_bytes };
+        let nfa = table.@_nfa;
         table._ranks_of(state).to_iter.fold(_no_bytes, |threads, first_bytes|
-            let width = table.@width;
+            let width = table.@_width;
             range(0, threads.@size / width).fold(first_bytes, |k, first_bytes|
                 let node = nfa.get_node(NodeID { val: threads.@(k * width) });
                 let action = node.@action;
                 if !action.is_sa_char_match { first_bytes };
                 let base = action.as_sa_char_match;
                 range(0, 4).fold(first_bytes, |w, first_bytes|
-                    first_bytes.mod(w, bit_or(nfa.@classes.@(base + w)))
+                    first_bytes.mod(w, bit_or(nfa.@_classes.@(base + w)))
                 )
             )
         )
@@ -1969,7 +1969,7 @@ namespace StateTable {
             let byte = _lone_byte_of(table._first_bytes_of(state));
             if byte < 0 { break $ (prefix, table) };
             let (next, table) = table._next(state, byte.u8);
-            if table.@full || next < 0 { break $ (prefix, table) };
+            if table.@_full || next < 0 { break $ (prefix, table) };
             continue $ (prefix.push_back(byte.u8), next, table)
         )
     );
@@ -2271,22 +2271,26 @@ _walk_backward = |bytes, transitions, floor, at, row, best| (
 // It is held apart from the tables the search walks so that the search can read it while it
 // changes them.
 type Prefilter = box struct {
-    first_bytes: Array U64,       // the bytes a match may begin with, one bit each
-    first_byte: I64,              // the one byte a match may begin with, or `-1` where a match may
-                                  // begin with several bytes or with none
-    prefix: Array U8,             // the bytes every match begins with, empty where the first byte
-                                  // a match may begin with is not forced
-    prefix_size: I64,             // how many bytes `prefix` holds, read where the search chooses
-                                  // how to look so that the choice costs no reference count
-    prefix_anchor: I64,           // where in `prefix` the byte the C library is asked for stands
-    forced_strings: Array (Array U8), // the byte strings every match holds, which the search looks
-                                  // for, empty where it looks for what a match begins with
-    forced_anchors: Array I64,    // where in each of `forced_strings` the byte the C library is
-                                  // asked for stands
-    forced_count: I64,            // how many `forced_strings` holds, read where the search chooses
-                                  // how to look so that the choice costs no reference count
-    back_max: I64,                // most bytes the pattern may read before a string of `forced_strings`
-    back_class: Array U64         // the byte values it may read before one, one bit each
+    _first_bytes: Array U64,           // the bytes a match may begin with, one bit each
+    _first_byte: I64,                  // the one byte a match may begin with, or `-1` where a match
+                                       // may begin with several bytes or with none
+    _prefix: Array U8,                 // the bytes every match begins with, empty where the first
+                                       // byte a match may begin with is not forced
+    _prefix_size: I64,                 // how many bytes `_prefix` holds, read where the search
+                                       // chooses how to look so that the choice costs no reference
+                                       // count
+    _prefix_anchor: I64,               // where in `_prefix` the byte the C library is asked for
+                                       // stands
+    _forced_strings: Array (Array U8), // the byte strings every match holds, which the search looks
+                                       // for, empty where it looks for what a match begins with
+    _forced_anchors: Array I64,        // where in each of `_forced_strings` the byte the C library
+                                       // is asked for stands
+    _forced_count: I64,                // how many `_forced_strings` holds, read where the search
+                                       // chooses how to look so that the choice costs no reference
+                                       // count
+    _back_max: I64,                    // most bytes the pattern may read before a string of
+                                       // `_forced_strings`
+    _back_class: Array U64             // the byte values it may read before one, one bit each
 };
 
 namespace Prefilter {
@@ -2297,16 +2301,16 @@ namespace Prefilter {
     // * `prefix` - The bytes every match begins with.
     make: Array U64 -> Array U8 -> Prefilter;
     make = |first_bytes, prefix| Prefilter {
-        first_bytes: first_bytes,
-        first_byte: _lone_byte_of(first_bytes),
-        prefix: prefix,
-        prefix_size: prefix.@size,
-        prefix_anchor: 0,
-        forced_strings: Array::empty(0),
-        forced_anchors: Array::empty(0),
-        forced_count: 0,
-        back_max: 0,
-        back_class: _no_bytes
+        _first_bytes: first_bytes,
+        _first_byte: _lone_byte_of(first_bytes),
+        _prefix: prefix,
+        _prefix_size: prefix.@size,
+        _prefix_anchor: 0,
+        _forced_strings: Array::empty(0),
+        _forced_anchors: Array::empty(0),
+        _forced_count: 0,
+        _back_max: 0,
+        _back_class: _no_bytes
     };
 
     // Whether looking for where a match may begin passes over positions faster than walking the
@@ -2318,7 +2322,7 @@ namespace Prefilter {
     // * `prefilter` - What to look for.
     _skips: Prefilter -> Bool;
     _skips = |prefilter| (
-        prefilter.@forced_count > 0 || prefilter.@prefix_size >= 2 || prefilter.@first_byte >= 0
+        prefilter.@_forced_count > 0 || prefilter.@_prefix_size >= 2 || prefilter.@_first_byte >= 0
     );
 
     // The next position at or after a position where a match may begin, or the length of the input
@@ -2335,12 +2339,12 @@ namespace Prefilter {
     // * `prefilter` - What to look for.
     _skip: Array U8 -> I64 -> I64 -> Prefilter -> I64;
     _skip = |bytes, length, at, prefilter| (
-        if prefilter.@forced_count > 0 { prefilter._skip_to_forced(bytes, length, at) };
-        if prefilter.@prefix_size >= 2 {
-            let anchor = prefilter.@prefix_anchor;
-            bytes.find_bytes_by(anchor, prefilter.@prefix, at, length).as_some_or(length)
+        if prefilter.@_forced_count > 0 { prefilter._skip_to_forced(bytes, length, at) };
+        if prefilter.@_prefix_size >= 2 {
+            let anchor = prefilter.@_prefix_anchor;
+            bytes.find_bytes_by(anchor, prefilter.@_prefix, at, length).as_some_or(length)
         };
-        bytes.find_byte(prefilter.@first_byte.u8, at).as_some_or(length)
+        bytes.find_byte(prefilter.@_first_byte.u8, at).as_some_or(length)
     );
 
     // The next position at or after a position where a match may begin, found by looking for the
@@ -2360,12 +2364,12 @@ namespace Prefilter {
     _skip_to_forced = |bytes, length, at, prefilter| (
         // The strings stand in the order the text holds them most often, so the one looked for
         // first bounds how far the rest are looked for.
-        let (strings, anchors) = (prefilter.@forced_strings, prefilter.@forced_anchors);
-        let hit = range(0, prefilter.@forced_count).fold(length, |i, earliest|
+        let (strings, anchors) = (prefilter.@_forced_strings, prefilter.@_forced_anchors);
+        let hit = range(0, prefilter.@_forced_count).fold(length, |i, earliest|
             bytes.find_bytes_by(anchors.@(i), strings.@(i), at, earliest).as_some_or(earliest)
         );
         if hit >= length { length };
-        _backed_up_to(bytes, prefilter.@back_class, prefilter.@back_max, at, hit)
+        _backed_up_to(bytes, prefilter.@_back_class, prefilter.@_back_max, at, hit)
     );
 
     // How many bytes of the text are read to judge which set of forced byte strings to look for.
@@ -2396,14 +2400,14 @@ namespace Prefilter {
     _fit = |bytes, sets, prefilter| (
         // A forced beginning stands where every match begins, so it needs no backing up and nothing
         // read from inside the pattern beats it.
-        if prefilter.@prefix_size >= 2 {
+        if prefilter.@_prefix_size >= 2 {
             let sample = min(bytes.@size, _FORCED_SAMPLE);
-            let anchor = _byte_counts(bytes, min(sample, _COUNTED))._rarest_in(prefilter.@prefix);
-            prefilter.set_prefix_anchor(anchor)
+            let anchor = _byte_counts(bytes, min(sample, _COUNTED))._rarest_in(prefilter.@_prefix);
+            prefilter.set__prefix_anchor(anchor)
         };
         if sets.@size == 0 { prefilter };
         let sample = min(bytes.@size, _FORCED_SAMPLE);
-        let stops = _stops_of_first_bytes(bytes, sample, prefilter.@first_bytes);
+        let stops = _stops_of_first_bytes(bytes, sample, prefilter.@_first_bytes);
         // Looking for a string costs a reading of its own on top of the walking, so a set is taken
         // only where it rules out enough more than the bytes a match may begin with to pay for it.
         let (best, _) = range(0, sets.@size).fold((-1, stops / 2), |i, (best, fewest)|
@@ -2423,12 +2427,12 @@ namespace Prefilter {
     // * `prefilter` - What to look for so far.
     _without_forced_set: Prefilter -> Prefilter;
     _without_forced_set = |prefilter| (
-        if prefilter.@forced_count == 0 { prefilter };
+        if prefilter.@_forced_count == 0 { prefilter };
         prefilter._set_forced_strings(Array::empty(0), Array::empty(0))
     );
 
     // What to look for, told which byte strings to look for and which byte of each to ask the C
-    // library for. `forced_count` holds what `forced_strings` holds, so this is where both are
+    // library for. `_forced_count` holds what `_forced_strings` holds, so this is where both are
     // written.
     //
     // # Parameters
@@ -2438,9 +2442,9 @@ namespace Prefilter {
     // * `prefilter` - What to look for so far.
     _set_forced_strings: Array (Array U8) -> Array I64 -> Prefilter -> Prefilter;
     _set_forced_strings = |strings, anchors, prefilter| (
-        prefilter.set_forced_count(strings.@size)
-            .set_forced_strings(strings)
-            .set_forced_anchors(anchors)
+        prefilter.set__forced_count(strings.@size)
+            .set__forced_strings(strings)
+            .set__forced_anchors(anchors)
     );
 
     // What to look for, told to look for a set of forced byte strings.
@@ -2456,8 +2460,8 @@ namespace Prefilter {
         let counts = _byte_counts(bytes, min(sample, _COUNTED));
         let (back_max, back_class) = _backing_of(set);
         prefilter._set_forced_strings(strings, strings.map(|string| counts._rarest_in(string)))
-            .set_back_max(back_max)
-            .set_back_class(back_class)
+            .set__back_max(back_max)
+            .set__back_class(back_class)
     );
 }
 
@@ -2611,15 +2615,15 @@ _stops_of_string = |bytes, sample, wanted, back_class, back_max| (
 // The scanner reports where a match begins and ends and nothing else. The groups a match captured
 // are read off afterwards by the automaton, over the stretch the match covers.
 type DFA = unbox struct {
-    forward: StateTable,      // the automaton, walked forward to find where a match ends
-    backward: StateTable,     // the automaton of the pattern read from right to left, walked back
-                              // from where a match ends to find where it begins
-    prefilter: Prefilter      // what the forward walk looks for to pass over positions
+    _forward: StateTable,  // the automaton, walked forward to find where a match ends
+    _backward: StateTable, // the automaton of the pattern read from right to left, walked back from
+                           // where a match ends to find where it begins
+    _prefilter: Prefilter  // what the forward walk looks for to pass over positions
 };
 
 namespace DFA {
     // The bytes every match begins with, as far as they are forced. They are worked out once for
-    // the automaton and kept in its `prefix`.
+    // the automaton and kept in its `_prefix`.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
@@ -2649,7 +2653,7 @@ namespace DFA {
     // * `nfa` - The automaton to read.
     _asks_many_rounds: NFA -> Bool;
     _asks_many_rounds = |nfa| (
-        nfa.@quant_bounds.to_iter.check_any(|(least, most)|
+        nfa.@_quant_bounds.to_iter.check_any(|(least, most)|
             least > _MAX_PREFIX_ROUNDS || (most < I64::maximum && most > _MAX_PREFIX_ROUNDS)
         )
     );
@@ -2659,7 +2663,7 @@ namespace DFA {
     // # Parameters
     // * `nfa` - The automaton to walk, compiled by `NFA::compile`.
     make: NFA -> DFA;
-    make = |nfa| nfa.@scanner.as_some;
+    make = |nfa| nfa.@_scanner.as_some;
 
     // How many states of each table a scanner is given before any search. A search over a short
     // string reads few bytes, and what it costs is then mostly the states it works out; working
@@ -2680,26 +2684,26 @@ namespace DFA {
     //   left.
     _worked_out: NFA -> DFA;
     _worked_out = |nfa| (
-        let reversed = nfa.@reversed.as_some;
+        let reversed = nfa.@_reversed.as_some;
         if nfa._asks_many_rounds {
             DFA {
-                forward: StateTable::given_up(nfa),
-                backward: StateTable::given_up(reversed),
-                prefilter: Prefilter::make(_all_bytes, Array::empty(0))
+                _forward: StateTable::given_up(nfa),
+                _backward: StateTable::given_up(reversed),
+                _prefilter: Prefilter::make(_all_bytes, Array::empty(0))
             }
         };
         let forward = StateTable::make_seeking(nfa);
-        let first_bytes = forward._first_bytes_of(forward.@interior);
+        let first_bytes = forward._first_bytes_of(forward.@_interior);
         let backward = StateTable::make(reversed);
         let (at_begin, forward) = forward._start(true, true, false);
-        let forward = forward._worked_out_from([forward.@interior, at_begin], _AHEAD_STATES);
+        let forward = forward._worked_out_from([forward.@_interior, at_begin], _AHEAD_STATES);
         let (at_end, backward) = backward._start(false, true, false);
         let (inside, backward) = backward._start(false, false, false);
         let backward = backward._worked_out_from([at_end, inside], _AHEAD_STATES);
         DFA {
-            forward: forward,
-            backward: backward,
-            prefilter: Prefilter::make(first_bytes, nfa.@prefix)
+            _forward: forward,
+            _backward: backward,
+            _prefilter: Prefilter::make(first_bytes, nfa.@_prefix)
         }
     );
 
@@ -2713,21 +2717,21 @@ namespace DFA {
     find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
     find = |bytes, from, dfa| (
         if from > bytes.@size { (none(), dfa) };
-        let DFA { forward: forward, backward: backward, prefilter: prefilter } = dfa;
-        let nfa = forward.@nfa;
-        let ((end, begin), forward) = if forward.@full {
+        let DFA { _forward: forward, _backward: backward, _prefilter: prefilter } = dfa;
+        let nfa = forward.@_nfa;
+        let ((end, begin), forward) = if forward.@_full {
             ((_GIVEN_UP, -1), forward)
         } else {
             _scan_forward(bytes, from, prefilter, forward)
         };
         let (begin, backward) = if end < 0 || begin >= 0 {
             (begin, backward)
-        } else if backward.@full {
+        } else if backward.@_full {
             (_GIVEN_UP, backward)
         } else {
             _scan_backward(bytes, from, end, backward)
         };
-        let dfa = DFA { forward: forward, backward: backward, prefilter: prefilter };
+        let dfa = DFA { _forward: forward, _backward: backward, _prefilter: prefilter };
         if end == _GIVEN_UP || begin == _GIVEN_UP { (NFA::_search_threads(bytes, from, nfa), dfa) };
         if end < 0 { (none(), dfa) };
         // The match that ends at `end` begins at or after `from`, and read from right to left it is
@@ -2760,11 +2764,11 @@ namespace DFA {
         let (start, table) = if from == 0 || from == length {
             table._start(true, from == 0, from == length)
         } else {
-            (table.@interior, table)
+            (table.@_interior, table)
         };
         if start < 0 { ((_GIVEN_UP, -1), table) };
-        let best = if table.@accepts.@(start) { from } else { -1 };
-        let fresh = table.@fresh;
+        let best = if table.@_accepts.@(start) { from } else { -1 };
+        let fresh = table.@_fresh;
         let fresh_row = if fresh < 0 { -1 } else { 256 * fresh };
         // The walk stops before entering the fresh state where looking for the next position a
         // match may begin at passes over positions faster than walking over them.
@@ -2773,7 +2777,7 @@ namespace DFA {
         let at = if skip_first { prefilter._skip(bytes, length, from) } else { from };
         // The walk holds the transitions apart from the table while it reads them, so that reading
         // them costs no reference count, and hands them back to the table to work out a new one.
-        let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+        let (table, transitions) = table[^_transitions].ixchg(StateTable::_HELD_APART);
         let (found, table, transitions) = loop(
             (at, 256 * start, best, at, table, transitions),
             |(at, row, best, begin, table, transitions)|
@@ -2789,9 +2793,9 @@ namespace DFA {
             };
             let entry = transitions.@(row + bytes.@(at).i64);
             if entry == StateTable::_UNTAKEN {
-                let table = table.set_transitions(transitions);
+                let table = table.set__transitions(transitions);
                 let (next, table) = table._next(row / 256, bytes.@(at));
-                let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+                let (table, transitions) = table[^_transitions].ixchg(StateTable::_HELD_APART);
                 if next < 0 { break $ ((_GIVEN_UP, -1), table, transitions) };
                 continue $ (at, row, best, begin, table, transitions)
             };
@@ -2807,7 +2811,7 @@ namespace DFA {
             // no longer where rank 0 began.
             continue $ (at, row, best, -1, table, transitions)
         );
-        (found, table.set_transitions(transitions))
+        (found, table.set__transitions(transitions))
     );
 
     // Walks the automaton of the pattern read from right to left back from where a match ends, and
@@ -2826,8 +2830,8 @@ namespace DFA {
         // holds where `^` would and `^` where `$` would.
         let (start, table) = table._start(false, end == bytes.@size, end == 0);
         if start < 0 { (_GIVEN_UP, table) };
-        let best = if table.@accepts.@(start) { end } else { -1 };
-        let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+        let best = if table.@_accepts.@(start) { end } else { -1 };
+        let (table, transitions) = table[^_transitions].ixchg(StateTable::_HELD_APART);
         let (found, table, transitions) = loop(
             (end, 256 * start, best, table, transitions), |(at, row, best, table, transitions)|
             let (at, row, best) = _walk_backward(bytes, transitions, floor, at, row, best);
@@ -2840,9 +2844,9 @@ namespace DFA {
             };
             let entry = transitions.@(row + bytes.@(at - 1).i64);
             if entry == StateTable::_UNTAKEN {
-                let table = table.set_transitions(transitions);
+                let table = table.set__transitions(transitions);
                 let (next, table) = table._next(row / 256, bytes.@(at - 1));
-                let (table, transitions) = table[^transitions].ixchg(StateTable::_HELD_APART);
+                let (table, transitions) = table[^_transitions].ixchg(StateTable::_HELD_APART);
                 if next < 0 { break $ (_GIVEN_UP, table, transitions) };
                 continue $ (at, row, best, table, transitions)
             };
@@ -2852,7 +2856,7 @@ namespace DFA {
             if row == 256 * StateTable::_DEAD_STATE { break $ (best, table, transitions) };
             continue $ (at, row, best, table, transitions)
         );
-        (found, table.set_transitions(transitions))
+        (found, table.set__transitions(transitions))
     );
 
     // The leftmost match beginning at or after a position, taking the longest of those that begin
@@ -2885,8 +2889,8 @@ namespace DFA {
     // * `dfa` - The scanner.
     _fit: Array U8 -> DFA -> DFA;
     _fit = |bytes, dfa| (
-        let sets = dfa.@forward.@nfa.@forced_sets;
-        dfa.mod_prefilter(Prefilter::_fit(bytes, sets))
+        let sets = dfa.@_forward.@_nfa.@_forced_sets;
+        dfa.mod__prefilter(Prefilter::_fit(bytes, sets))
     );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
@@ -2923,7 +2927,7 @@ namespace DFA {
     // * `nfa` - The automaton the match was found with.
     _match_with_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
     _match_with_groups = |bytes, begin, end, nfa| (
-        if nfa.@group_count <= 1 { some $ [(begin, end)] };
+        if nfa.@_group_count <= 1 { some $ [(begin, end)] };
         NFA::_capture_groups(bytes, begin, end, nfa)
     );
 }
