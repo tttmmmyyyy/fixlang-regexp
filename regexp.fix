@@ -21,14 +21,16 @@
 module RegExp;
 
 import RegExp.RegExpNFA::{
-    DFA, Group, NFA, DFA::{find, make, search_every, search_from}, NFA::compile, 
+    DFA, Group, NFA, 
+    DFA::{_search_every_within, _search_from_within, find, make, search_every, search_from}, 
+    NFA::compile, 
     Replacement::{calc_replacement, compile}
 };
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
     Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, U8, 
-    Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 
+    Array::{@, @size, empty, is_empty, push_back, to_iter}, Functor::map, 
     Iterator::{Item, fold, map, to_array}, LessThan::max, 
     Option::{as_some, is_none, is_some, none, some}, 
     Result::{err, ok}, 
@@ -252,16 +254,19 @@ namespace Matcher {
     // * `matcher` - The regular expression and its scanner.
     match_one: String -> Matcher -> (Result ErrMsg (Array String), Matcher);
     match_one = |target, matcher| (
-        let bytes = target.get_bytes.pop_back;
+        // The search reads the string's own bytes up to its length, which leaves the null byte that
+        // ends them beyond the text. Dropping that byte would copy the bytes, since the string
+        // still holds them.
+        let (bytes, length) = (target.get_bytes, target.@size);
         if matcher.@global {
-            let (matches, dfa) = matcher.@dfa.search_every(bytes);
+            let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
             let matcher = matcher.set_dfa(dfa);
             if matches.is_empty {
                 (err $ "NotMatch", matcher)
             };
             (ok $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
         } else {
-            let (opt, dfa) = matcher.@dfa.search_from(bytes, 0);
+            let (opt, dfa) = matcher.@dfa._search_from_within(bytes, length, 0);
             let matcher = matcher.set_dfa(dfa);
             if opt.is_none {
                 (err $ "NotMatch", matcher)
@@ -280,8 +285,9 @@ namespace Matcher {
     // * `matcher` - The regular expression and its scanner.
     match_all: String -> Matcher -> (Array (Array String), Matcher);
     match_all = |target, matcher| (
-        let bytes = target.get_bytes.pop_back;
-        let (matches, dfa) = matcher.@dfa.search_every(bytes);
+        // See `match_one` for how the string's bytes are read.
+        let (bytes, length) = (target.get_bytes, target.@size);
+        let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
         (matches.map(|groups| target._groups_to_strings(groups)), matcher.set_dfa(dfa))
     );
 
@@ -296,8 +302,9 @@ namespace Matcher {
     // * `matcher` - The regular expression and its scanner.
     replace_all: String -> String -> Matcher -> (String, Matcher);
     replace_all = |target, replacement, matcher| (
-        let bytes = target.get_bytes.pop_back;
-        let (matches, dfa) = matcher.@dfa.search_every(bytes);
+        // See `match_one` for how the string's bytes are read.
+        let (bytes, length) = (target.get_bytes, target.@size);
+        let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
         let matcher = matcher.set_dfa(dfa);
         let rep_frags = Replacement::compile(replacement);
         let output: Array String = Array::empty(matches.@size * 2 + 1);
