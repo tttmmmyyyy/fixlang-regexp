@@ -97,9 +97,9 @@ Type: `Std::String -> Std::String -> Std::String -> Std::Result Std::ErrMsg Std:
 `str.replace_suffix(from, to)` replaces `from` at the end of `str` with `to`.
 if `str` does not end with `from`, an error occurs.
 Example:
-```
-"test.txt".replace_suffix(".txt", ".tmp")  ==> ok("test.tmp")
-"test.jpg".replace_suffix(".txt", ".tmp")  ==> err("suffix does not match: test.jpg")
+```fix
+assert_eq(|_|"", "test.txt".replace_suffix(".txt", ".tmp"), ok("test.tmp"));;
+assert(|_|"", "test.jpg".replace_suffix(".txt", ".tmp").is_err)
 ```
 
 #### split_by
