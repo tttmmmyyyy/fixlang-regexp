@@ -1,6 +1,6 @@
 # RegExp.SimpleParser
 
-Defined in regexp@1.2.0
+Defined in regexp@1.3.0
 
 Simple text parser. Customizable by monadic operations.
 - Stream of characters
