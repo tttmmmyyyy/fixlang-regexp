@@ -254,14 +254,6 @@ Defined as: `type Matcher = unbox struct { ...fields... }`
 A compiled regular expression together with the scanner it has built so far. See
 `RegExp::matcher`.
 
-##### field `global`
-
-Type: `Std::Bool`
-
-##### field `dfa`
-
-Type: `RegExp.RegExpNFA::DFA`
-
 #### Matches
 
 Defined as: `type Matches = unbox struct { ...fields... }`
@@ -273,14 +265,6 @@ The matches `RegExp::find_all` reports, each looked for when the iterator is adv
 Defined as: `type RegExp = unbox struct { ...fields... }`
 
 Type of a compiled regular expression.
-
-##### field `flags`
-
-Type: `Std::String`
-
-##### field `nfa`
-
-Type: `RegExp.RegExpNFA::NFA`
 
 ## Traits and aliases
 

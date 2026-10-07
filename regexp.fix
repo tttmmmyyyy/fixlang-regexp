@@ -39,8 +39,8 @@ import Std::{
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
-    flags: String,   // the flags it was compiled with, of which `g` is read
-    nfa: NFA         // the automaton the pattern compiled to
+    _flags: String,  // the flags it was compiled with, of which `g` is read
+    _nfa: NFA        // the automaton the pattern compiled to
 };
 
 namespace RegExp {
@@ -53,7 +53,7 @@ namespace RegExp {
         let pattern = *Pattern::parse(pattern_str);
         let pattern = pgroup $ (0, pattern); // since whole pattern is group 0
         let nfa = NFA::compile(pattern);
-        ok $ RegExp { flags: flags, nfa:nfa }
+        ok $ RegExp { _flags: flags, _nfa: nfa }
     );
 
     // `regexp.matcher` is the regular expression together with a scanner of its own.
@@ -77,7 +77,7 @@ namespace RegExp {
     // ```
     matcher: RegExp -> Matcher;
     matcher = |regexp| Matcher {
-        global: regexp.@flags.find_byte('g').is_some, dfa: DFA::make(regexp.@nfa)
+        _global: regexp.@_flags.find_byte('g').is_some, _dfa: DFA::make(regexp.@_nfa)
     };
 
     // `regexp.match(target)` matches `target` against `regexp`.
@@ -189,7 +189,7 @@ namespace RegExp {
     // * `regexp` - The regular expression.
     find_all: [?it : Iterator, Item ?it = Array (I64, I64)] Array U8 -> RegExp -> ?it;
     find_all = |bytes, regexp| Matches {
-        _bytes: bytes, _from: 0, _dfa: DFA::make(regexp.@nfa), _fitted: false
+        _bytes: bytes, _from: 0, _dfa: DFA::make(regexp.@_nfa), _fitted: false
     };
 
     // `regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
@@ -264,8 +264,8 @@ impl Matches : Iterator {
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
-    global: Bool,   // whether the global flag was given, which `match_one` reads
-    dfa: DFA        // the automaton, and what the scanner has worked out of it so far
+    _global: Bool,  // whether the global flag was given, which `match_one` reads
+    _dfa: DFA       // the automaton, and what the scanner has worked out of it so far
 };
 
 namespace Matcher {
@@ -284,16 +284,16 @@ namespace Matcher {
         // ends them beyond the text. Dropping that byte would copy the bytes, since the string
         // still holds them.
         let (bytes, length) = (target.get_bytes, target.@size);
-        if matcher.@global {
-            let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
-            let matcher = matcher.set_dfa(dfa);
+        if matcher.@_global {
+            let (matches, dfa) = matcher.@_dfa._search_every_within(bytes, length);
+            let matcher = matcher.set__dfa(dfa);
             if matches.is_empty {
                 (err $ "NotMatch", matcher)
             };
             (ok $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
         } else {
-            let (opt, dfa) = matcher.@dfa._search_from_within(bytes, length, 0);
-            let matcher = matcher.set_dfa(dfa);
+            let (opt, dfa) = matcher.@_dfa._search_from_within(bytes, length, 0);
+            let matcher = matcher.set__dfa(dfa);
             if opt.is_none {
                 (err $ "NotMatch", matcher)
             };
@@ -313,8 +313,8 @@ namespace Matcher {
     match_all = |target, matcher| (
         // See `match_one` for how the string's bytes are read.
         let (bytes, length) = (target.get_bytes, target.@size);
-        let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
-        (matches.map(|groups| target._groups_to_strings(groups)), matcher.set_dfa(dfa))
+        let (matches, dfa) = matcher.@_dfa._search_every_within(bytes, length);
+        (matches.map(|groups| target._groups_to_strings(groups)), matcher.set__dfa(dfa))
     );
 
     // `matcher.replace_all(target, replacement)` replaces every stretch of `target` the regular
@@ -330,8 +330,8 @@ namespace Matcher {
     replace_all = |target, replacement, matcher| (
         // See `match_one` for how the string's bytes are read.
         let (bytes, length) = (target.get_bytes, target.@size);
-        let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
-        let matcher = matcher.set_dfa(dfa);
+        let (matches, dfa) = matcher.@_dfa._search_every_within(bytes, length);
+        let matcher = matcher.set__dfa(dfa);
         let rep_frags = Replacement::compile(replacement);
         let output: Array String = Array::empty(matches.@size * 2 + 1);
         let (output, last) = matches.to_iter.fold(
@@ -355,8 +355,8 @@ namespace Matcher {
     // * `matcher` - The regular expression and its scanner.
     find_all: Array U8 -> Matcher -> (Array (Array (I64, I64)), Matcher);
     find_all = |bytes, matcher| (
-        let (matches, dfa) = matcher.@dfa.search_every(bytes);
-        (matches, matcher.set_dfa(dfa))
+        let (matches, dfa) = matcher.@_dfa.search_every(bytes);
+        (matches, matcher.set__dfa(dfa))
     );
 
     // `matcher.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
@@ -370,7 +370,7 @@ namespace Matcher {
     // * `matcher` - The regular expression and its scanner.
     find_from: I64 -> Array U8 -> Matcher -> (Option (Array (I64, I64)), Matcher);
     find_from = |from, bytes, matcher| (
-        let (found, dfa) = matcher.@dfa.search_from(bytes, max(from, 0));
-        (found, matcher.set_dfa(dfa))
+        let (found, dfa) = matcher.@_dfa.search_from(bytes, max(from, 0));
+        (found, matcher.set__dfa(dfa))
     );
 }

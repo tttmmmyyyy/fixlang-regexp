@@ -2,7 +2,7 @@ module Test;
 
 import RegExp::{
     Matcher::{find_all, find_from, match_all, match_one, replace_all}, 
-    RegExp::{@nfa, compile, find_all, find_from, match_all, match_one, matcher, replace_all}
+    RegExp::{@_nfa, compile, find_all, find_from, match_all, match_one, matcher, replace_all}
 };
 import RegExp.RegExpNFA::{
     _holds_byte, DFA, Groups, NFA, 
@@ -497,7 +497,7 @@ _test_posix_suite = (
         let result = RegExp::compile(pattern, "");
         assert(|_| "/" + pattern + "/ compiles", result.is_ok);;
         let bytes = text.get_bytes.pop_back;
-        let found = result.as_ok.@nfa.search(bytes, 0);
+        let found = result.as_ok.@_nfa.search(bytes, 0);
         let where = if found.is_none { (-1, -1) } else { found.as_some.@(0) };
         assert_eq(|_| _named(pattern, "", text) + " POSIX suite", where, (begin, end));;
         pure $ met + (if found.is_none { 0 } else { 1 })
@@ -536,7 +536,7 @@ _test_against_threads = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, compiled, found) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
         let matches = nfa.search_all(bytes);
@@ -578,7 +578,7 @@ _test_forced_sets = (
         if result.is_err { pure $ (draws, tried) };
         // The text is written out twice over, so that a string the pattern forces stands in it more
         // than once and the scanner has to go on after the first match it finds.
-        let tried = *_forced_sets_agree(result.as_ok.@nfa, pattern, target + target, tried);
+        let tried = *_forced_sets_agree(result.as_ok.@_nfa, pattern, target + target, tried);
         pure $ (draws, tried)
     );
     // The draws are held to producing work. A generator that stopped producing patterns that force
@@ -639,7 +639,7 @@ _repeat_bound_cases = [
 _test_repeat_bound: IO ();
 _test_repeat_bound = (
     _repeat_bound_cases.to_iter.fold_m((), |(pattern, longest), _|
-        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let nfa = RegExp::compile(pattern, "g").as_ok.@_nfa;
         nfa.@_forced_sets.to_iter.fold_m((), |set, _|
             set.to_iter.fold_m((), |run, _|
                 assert_eq(
@@ -656,7 +656,7 @@ _test_repeat_bound = (
 _test_forced_shapes: IO ();
 _test_forced_shapes = (
     _forced_shape_cases.to_iter.fold_m(0, |(pattern, target), tried|
-        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let nfa = RegExp::compile(pattern, "g").as_ok.@_nfa;
         let next = *_forced_sets_agree(nfa, pattern, target, tried);
         // Each case is written to force byte strings, so one that stopped forcing any would say so
         // here rather than go on passing with nothing looked for.
@@ -741,7 +741,7 @@ _test_forced_sets_stand_in_matches = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, held) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
         let sets = nfa.@_forced_sets;
@@ -777,7 +777,7 @@ _test_first_bytes = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, held) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
         let first_bytes = DFA::make(nfa).@_prefilter.@_first_bytes;
@@ -816,7 +816,7 @@ _test_forced_beginning = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, checked) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let prefix = nfa.@_prefix;
         if prefix.@size == 0 { pure $ (draws, checked) };
         let bytes = target.get_bytes.pop_back;
@@ -958,7 +958,7 @@ _beyond_bounds_cases = [
 _test_beyond_bounds: IO ();
 _test_beyond_bounds = (
     _beyond_bounds_cases.to_iter.fold_m((), |(pattern, target, matches), _|
-        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let nfa = RegExp::compile(pattern, "g").as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         assert_eq(
             |_| "/" + pattern + "/ over " + bytes.@size.to_string + " bytes",
