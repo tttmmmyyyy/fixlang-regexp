@@ -1155,16 +1155,16 @@ namespace NFA {
     //
     // # Parameters
     // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position to begin at.
     // * `stop` - The position to stop at.
     // * `anchored` - Whether the match has to begin where the walk does.
     // * `nfa` - The automaton to run.
-    _walk_threads: Array U8 -> I64 -> I64 -> Bool -> NFA -> Option Groups;
-    _walk_threads = |bytes, from, stop, anchored, nfa| (
+    _walk_threads: Array U8 -> I64 -> I64 -> I64 -> Bool -> NFA -> Option Groups;
+    _walk_threads = |bytes, length, from, stop, anchored, nfa| (
         let node_count = nfa.@_nodes.@size;
         let initial = nfa.@_initial_node.@val;
         let accepting = nfa.@_accepting_node.@val;
-        let length = bytes.@size;
         let walk = Walk::make(nfa);
         let (spare_nodes, spare_slots, spare_counts) = (
             Array::empty(node_count),
@@ -1201,12 +1201,13 @@ namespace NFA {
     //
     // # Parameters
     // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `nfa` - The automaton to run.
-    _search_threads: Array U8 -> I64 -> NFA -> Option Groups;
-    _search_threads = |bytes, from, nfa| (
-        if from > bytes.@size { none() };
-        _walk_threads(bytes, from, bytes.@size, false, nfa)
+    _search_threads: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
+    _search_threads = |bytes, length, from, nfa| (
+        if from > length { none() };
+        _walk_threads(bytes, length, from, length, false, nfa)
     );
 
     // Follows the empty-string transitions from a node, gathering the ways on that the node the
@@ -1317,14 +1318,14 @@ namespace NFA {
     //
     // # Parameters
     // * `bytes` - The bytes the match was found in.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `begin` - Where the match begins.
     // * `end` - Where it ends.
     // * `nfa` - The automaton the match was found with.
-    _one_way_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
-    _one_way_groups = |bytes, begin, end, nfa| (
+    _one_way_groups: Array U8 -> I64 -> I64 -> I64 -> NFA -> Option Groups;
+    _one_way_groups = |bytes, length, begin, end, nfa| (
         let table = nfa.@_one_way;
         if table.@bounds.@size == 0 { none() };
-        let length = bytes.@size;
         let slot_width = 2 * max(1, nfa.@_group_count);
         // Each of these is a field of a boxed value, so reading one raises and lowers a reference
         // count. They are read once here and stand for every byte the walk reads.
@@ -1365,14 +1366,15 @@ namespace NFA {
     //
     // # Parameters
     // * `bytes` - The bytes the match was found in.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `begin` - Where the match begins.
     // * `end` - Where it ends.
     // * `nfa` - The automaton the match was found with.
-    _capture_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
-    _capture_groups = |bytes, begin, end, nfa| (
-        let one_way = nfa._one_way_groups(bytes, begin, end);
+    _capture_groups: Array U8 -> I64 -> I64 -> I64 -> NFA -> Option Groups;
+    _capture_groups = |bytes, length, begin, end, nfa| (
+        let one_way = nfa._one_way_groups(bytes, length, begin, end);
         if one_way.is_some { one_way };
-        _walk_threads(bytes, begin, end, true, nfa)
+        _walk_threads(bytes, length, begin, end, true, nfa)
     );
 }
 
@@ -2193,6 +2195,7 @@ _follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
 //
 // # Parameters
 // * `bytes` - The bytes to read.
+// * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
 // * `transitions` - The transitions of the table.
 // * `fresh_row` - The row of the fresh state, or `-1` where the table has none.
 // * `skipping` - Whether the walk stops before entering the fresh state, so that the search can
@@ -2201,11 +2204,12 @@ _follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
 // * `row` - The row of the state the walk stands in: the state times 256.
 // * `best` - How far the longest match seen so far reaches, or `-1`.
 // * `begin` - Where rank 0 began, or `-1` where the walk cannot tell.
-_walk_forward: Array U8 -> Array I64 -> I64 -> Bool -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64, I64);
-_walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| (
-    let length = bytes.@size;
+_walk_forward: Array U8 -> I64 -> Array I64 -> I64 -> Bool -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64, I64);
+_walk_forward = |bytes, length, transitions, fresh_row, skipping, at, row, best, begin| (
     loop((at, row, best, begin), |(at, row, best, begin)|
-        let at = if row != fresh_row { at } else { _fresh_until(bytes, transitions, fresh_row, at) };
+        let at = if row != fresh_row { at } else {
+            _fresh_until(bytes, length, transitions, fresh_row, at)
+        };
         if at >= length { break $ (at, row, best, begin) };
         let entry = transitions.@(row + bytes.@(at).i64);
         if entry >= 0 {
@@ -2220,8 +2224,8 @@ _walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| 
     )
 );
 
-// Where the bytes from a position on first lead the walk out of the fresh state, or the length of
-// the input where they never do.
+// Where the bytes from a position on first lead the walk out of the fresh state, or the end of the
+// text where they never do.
 //
 // Each byte read in the fresh state leads back into it or elsewhere, so the row read is the fresh
 // state's whatever the bytes before were, and the reading of one byte waits on nothing read
@@ -2229,12 +2233,12 @@ _walk_forward = |bytes, transitions, fresh_row, skipping, at, row, best, begin| 
 //
 // # Parameters
 // * `bytes` - The bytes to read.
+// * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
 // * `transitions` - The transitions of the table.
 // * `fresh_row` - The row of the fresh state.
 // * `at` - The position to read from.
-_fresh_until: Array U8 -> Array I64 -> I64 -> I64 -> I64;
-_fresh_until = |bytes, transitions, fresh_row, at| (
-    let length = bytes.@size;
+_fresh_until: Array U8 -> I64 -> Array I64 -> I64 -> I64 -> I64;
+_fresh_until = |bytes, length, transitions, fresh_row, at| (
     loop(at, |at|
         if at >= length { break $ at };
         if transitions.@(fresh_row + bytes.@(at).i64) != fresh_row { break $ at };
@@ -2325,16 +2329,17 @@ namespace Prefilter {
         prefilter.@_forced_count > 0 || prefilter.@_prefix_size >= 2 || prefilter.@_first_byte >= 0
     );
 
-    // The next position at or after a position where a match may begin, or the length of the input
-    // where none does before it ends. It is asked only where `_skips` holds.
+    // The next position at or after a position where a match may begin, or the end of the text
+    // where none does before it. It is asked only where `_skips` holds.
     //
     // Where the search has been told which byte strings every match holds, it looks for those.
     // Otherwise every match begins with the same two or more bytes, or a match may begin with one
-    // byte alone, and the C library looks for that.
+    // byte alone, and the C library looks for that. The C library reads to the end of the bytes, so
+    // a place it finds beyond the end of the text stands for none.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
-    // * `length` - How many bytes there are.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `at` - The position to look from.
     // * `prefilter` - What to look for.
     _skip: Array U8 -> I64 -> I64 -> Prefilter -> I64;
@@ -2344,7 +2349,7 @@ namespace Prefilter {
             let anchor = prefilter.@_prefix_anchor;
             bytes.find_bytes_by(anchor, prefilter.@_prefix, at, length).as_some_or(length)
         };
-        bytes.find_byte(prefilter.@_first_byte.u8, at).as_some_or(length)
+        min(bytes.find_byte(prefilter.@_first_byte.u8, at).as_some_or(length), length)
     );
 
     // The next position at or after a position where a match may begin, found by looking for the
@@ -2393,20 +2398,21 @@ namespace Prefilter {
     // the bytes a match may begin with.
     //
     // # Parameters
-    // * `bytes` - The text the search is over.
+    // * `bytes` - The bytes the search is over.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `sets` - The sets of forced byte strings the pattern offers.
     // * `prefilter` - What to look for so far.
-    _fit: Array U8 -> Array (Array ForcedRun) -> Prefilter -> Prefilter;
-    _fit = |bytes, sets, prefilter| (
+    _fit: Array U8 -> I64 -> Array (Array ForcedRun) -> Prefilter -> Prefilter;
+    _fit = |bytes, length, sets, prefilter| (
         // A forced beginning stands where every match begins, so it needs no backing up and nothing
         // read from inside the pattern beats it.
         if prefilter.@_prefix_size >= 2 {
-            let sample = min(bytes.@size, _FORCED_SAMPLE);
+            let sample = min(length, _FORCED_SAMPLE);
             let anchor = _byte_counts(bytes, min(sample, _COUNTED))._rarest_in(prefilter.@_prefix);
             prefilter.set__prefix_anchor(anchor)
         };
         if sets.@size == 0 { prefilter };
-        let sample = min(bytes.@size, _FORCED_SAMPLE);
+        let sample = min(length, _FORCED_SAMPLE);
         let stops = _stops_of_first_bytes(bytes, sample, prefilter.@_first_bytes);
         // Looking for a string costs a reading of its own on top of the walking, so a set is taken
         // only where it rules out enough more than the bytes a match may begin with to pay for it.
@@ -2416,7 +2422,7 @@ namespace Prefilter {
             (i, cost)
         );
         if best < 0 { prefilter._without_forced_set };
-        prefilter._with_forced_set(bytes, sets.@(best))
+        prefilter._with_forced_set(bytes, length, sets.@(best))
     );
 
     // What to look for, told to read for the bytes a match may begin with. A scanner kept from one
@@ -2450,12 +2456,13 @@ namespace Prefilter {
     // What to look for, told to look for a set of forced byte strings.
     //
     // # Parameters
-    // * `bytes` - The text the search is over, which the strings are ordered against.
+    // * `bytes` - The bytes the search is over, which the strings are ordered against.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `set` - The set to look for.
     // * `prefilter` - What to look for so far.
-    _with_forced_set: Array U8 -> Array ForcedRun -> Prefilter -> Prefilter;
-    _with_forced_set = |bytes, set, prefilter| (
-        let sample = min(bytes.@size, _FORCED_SAMPLE);
+    _with_forced_set: Array U8 -> I64 -> Array ForcedRun -> Prefilter -> Prefilter;
+    _with_forced_set = |bytes, length, set, prefilter| (
+        let sample = min(length, _FORCED_SAMPLE);
         let strings = _by_falling_count(bytes, sample, set).map(@bytes);
         let counts = _byte_counts(bytes, min(sample, _COUNTED));
         let (back_max, back_class) = _backing_of(set);
@@ -2715,29 +2722,41 @@ namespace DFA {
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner.
     find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    find = |bytes, from, dfa| (
-        if from > bytes.@size { (none(), dfa) };
+    find = |bytes, from, dfa| dfa._find(bytes, bytes.@size, from);
+
+    // What `find` reports for a text that is the first `length` of the bytes.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
+    // * `from` - The position at or after which the match has to begin.
+    // * `dfa` - The scanner.
+    _find: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    _find = |bytes, length, from, dfa| (
+        if from > length { (none(), dfa) };
         let DFA { _forward: forward, _backward: backward, _prefilter: prefilter } = dfa;
         let nfa = forward.@_nfa;
         let ((end, begin), forward) = if forward.@_full {
             ((_GIVEN_UP, -1), forward)
         } else {
-            _scan_forward(bytes, from, prefilter, forward)
+            _scan_forward(bytes, length, from, prefilter, forward)
         };
         let (begin, backward) = if end < 0 || begin >= 0 {
             (begin, backward)
         } else if backward.@_full {
             (_GIVEN_UP, backward)
         } else {
-            _scan_backward(bytes, from, end, backward)
+            _scan_backward(bytes, length, from, end, backward)
         };
         let dfa = DFA { _forward: forward, _backward: backward, _prefilter: prefilter };
-        if end == _GIVEN_UP || begin == _GIVEN_UP { (NFA::_search_threads(bytes, from, nfa), dfa) };
+        if end == _GIVEN_UP || begin == _GIVEN_UP {
+            (NFA::_search_threads(bytes, length, from, nfa), dfa)
+        };
         if end < 0 { (none(), dfa) };
         // The match that ends at `end` begins at or after `from`, and read from right to left it is
         // a match of the reversed pattern, so the walk back reaches a match.
         if begin < 0 { undefined("the walk back from where a match ends reached no beginning") };
-        (_match_with_groups(bytes, begin, end, nfa), dfa)
+        (_match_with_groups(bytes, length, begin, end, nfa), dfa)
     );
 
     // What a walk reports where the states outgrew what its table may take, and the search is given
@@ -2755,12 +2774,12 @@ namespace DFA {
     //
     // # Parameters
     // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `prefilter` - What to look for to pass over positions.
     // * `table` - The table of the automaton.
-    _scan_forward: Array U8 -> I64 -> Prefilter -> StateTable -> ((I64, I64), StateTable);
-    _scan_forward = |bytes, from, prefilter, table| (
-        let length = bytes.@size;
+    _scan_forward: Array U8 -> I64 -> I64 -> Prefilter -> StateTable -> ((I64, I64), StateTable);
+    _scan_forward = |bytes, length, from, prefilter, table| (
         let (start, table) = if from == 0 || from == length {
             table._start(true, from == 0, from == length)
         } else {
@@ -2782,7 +2801,7 @@ namespace DFA {
             (at, 256 * start, best, at, table, transitions),
             |(at, row, best, begin, table, transitions)|
             let (at, row, best, begin) = _walk_forward(
-                bytes, transitions, fresh_row, skipping, at, row, best, begin
+                bytes, length, transitions, fresh_row, skipping, at, row, best, begin
             );
             if at == length {
                 let (rank, table) = table._accepts_at_end(row / 256);
@@ -2821,14 +2840,15 @@ namespace DFA {
     //
     // # Parameters
     // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `floor` - The position at or after which the match has to begin.
     // * `end` - Where the match ends.
     // * `table` - The table of the reversed automaton.
-    _scan_backward: Array U8 -> I64 -> I64 -> StateTable -> (I64, StateTable);
-    _scan_backward = |bytes, floor, end, table| (
+    _scan_backward: Array U8 -> I64 -> I64 -> I64 -> StateTable -> (I64, StateTable);
+    _scan_backward = |bytes, length, floor, end, table| (
         // Read from right to left, the input begins where it ends and ends where it begins, so `$`
         // holds where `^` would and `^` where `$` would.
-        let (start, table) = table._start(false, end == bytes.@size, end == 0);
+        let (start, table) = table._start(false, end == length, end == 0);
         if start < 0 { (_GIVEN_UP, table) };
         let best = if table.@_accepts.@(start) { end } else { -1 };
         let (table, transitions) = table[^_transitions].ixchg(StateTable::_HELD_APART);
@@ -2871,7 +2891,21 @@ namespace DFA {
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
     search_from: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    search_from = |bytes, from, dfa| dfa._fit(bytes).find(bytes, from);
+    search_from = |bytes, from, dfa| dfa._search_from_within(bytes, bytes.@size, from);
+
+    // What `search_from` reports for a text that is the first `length` of the bytes. A string's
+    // bytes are searched this way, with the null byte that ends them left beyond the text, where
+    // dropping it would copy them.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
+    // * `from` - The position at or after which the match has to begin.
+    // * `dfa` - The scanner to search with.
+    _search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    _search_from_within = |bytes, length, from, dfa| (
+        dfa._fit(bytes, length)._find(bytes, length, from)
+    );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
     // with the scanner as the search left it.
@@ -2880,17 +2914,28 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `dfa` - The scanner to search with.
     search_every: Array U8 -> DFA -> (Array Groups, DFA);
-    search_every = |bytes, dfa| dfa._fit(bytes)._every_match(bytes);
+    search_every = |bytes, dfa| dfa._search_every_within(bytes, bytes.@size);
+
+    // What `search_every` reports for a text that is the first `length` of the bytes. See
+    // `_search_from_within`.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
+    // * `dfa` - The scanner to search with.
+    _search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
+    _search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
 
     // The scanner told what to look for over a text. See `Prefilter::_fit`.
     //
     // # Parameters
-    // * `bytes` - The text the search is over.
+    // * `bytes` - The bytes the search is over.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `dfa` - The scanner.
-    _fit: Array U8 -> DFA -> DFA;
-    _fit = |bytes, dfa| (
+    _fit: Array U8 -> I64 -> DFA -> DFA;
+    _fit = |bytes, length, dfa| (
         let sets = dfa.@_forward.@_nfa.@_forced_sets;
-        dfa.mod__prefilter(Prefilter::_fit(bytes, sets))
+        dfa.mod__prefilter(Prefilter::_fit(bytes, length, sets))
     );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
@@ -2899,14 +2944,14 @@ namespace DFA {
     //
     // # Parameters
     // * `bytes` - The bytes to read.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `dfa` - The scanner to search with.
-    _every_match: Array U8 -> DFA -> (Array Groups, DFA);
-    _every_match = |bytes, dfa| (
-        let length = bytes.@size;
+    _every_match: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
+    _every_match = |bytes, length, dfa| (
         let (matches, _, dfa) = loop(
             (Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
-            let (opt, dfa) = dfa.find(bytes, from);
+            let (opt, dfa) = dfa._find(bytes, length, from);
             if opt.is_none { break $ (matches, from, dfa) };
             let groups = opt.as_some;
             let (begin, end) = groups.@(0);
@@ -2922,13 +2967,14 @@ namespace DFA {
     //
     // # Parameters
     // * `bytes` - The bytes the match was found in.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `begin` - Where the match begins.
     // * `end` - Where it ends.
     // * `nfa` - The automaton the match was found with.
-    _match_with_groups: Array U8 -> I64 -> I64 -> NFA -> Option Groups;
-    _match_with_groups = |bytes, begin, end, nfa| (
+    _match_with_groups: Array U8 -> I64 -> I64 -> I64 -> NFA -> Option Groups;
+    _match_with_groups = |bytes, length, begin, end, nfa| (
         if nfa.@_group_count <= 1 { some $ [(begin, end)] };
-        NFA::_capture_groups(bytes, begin, end, nfa)
+        NFA::_capture_groups(bytes, length, begin, end, nfa)
     );
 }
 

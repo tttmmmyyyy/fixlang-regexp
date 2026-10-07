@@ -6,7 +6,7 @@ import RegExp::{
 };
 import RegExp.RegExpNFA::{
     _holds_byte, DFA, Groups, NFA, 
-    DFA::{@_prefilter, _every_match, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
+    DFA::{@_prefilter, _every_match, _search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
     StateTable::_insert_at, 
     NFA::{@_forced_sets, @_prefix, _search_threads, search, search_all}
 };
@@ -345,7 +345,7 @@ _search_all_threads = |bytes, nfa| (
     let length = bytes.@size;
     let (matches, _) = loop((Array::empty(8), 0), |(matches, from)|
         if from > length { break $ (matches, from) };
-        let opt = NFA::_search_threads(bytes, from, nfa);
+        let opt = NFA::_search_threads(bytes, bytes.@size, from, nfa);
         if opt.is_none { break $ (matches, from) };
         let groups = opt.as_some;
         let (begin, end) = groups.@(0);
@@ -541,11 +541,15 @@ _test_against_threads = (
         let name = _named(pattern, "g", target);
         let matches = nfa.search_all(bytes);
         assert_eq(|_| name + " search_all", matches, _search_all_threads(bytes, nfa));;
+        // A string's bytes are searched up to its length, with the null byte that ends them left
+        // beyond the text, and the search answers as it does over the bytes without that null.
+        let (within, _) = DFA::make(nfa)._search_every_within(target.get_bytes, bytes.@size);
+        assert_eq(|_| name + " search within a string's bytes", within, matches);;
         range(0, bytes.@size + 1).fold_m((), |from, _|
             assert_eq(
                 |_| name + " search from " + from.to_string,
                 nfa.search(bytes, from),
-                NFA::_search_threads(bytes, from, nfa)
+                NFA::_search_threads(bytes, bytes.@size, from, nfa)
             )
         );;
         pure $ (draws, compiled + 1, found + matches.@size)
@@ -597,7 +601,7 @@ _forced_sets_agree = |nfa, pattern, target, tried| (
     let by_threads = _search_all_threads(bytes, nfa);
     let sets = nfa.@_forced_sets;
     range(0, sets.@size).fold_m(tried, |i, tried|
-        let dfa = DFA::make(nfa).mod__prefilter(_with_forced_set(bytes, sets.@(i)));
+        let dfa = DFA::make(nfa).mod__prefilter(_with_forced_set(bytes, bytes.@size, sets.@(i)));
         assert_eq(|_| name + " forced set " + i.to_string, _search_all_scanner(bytes, dfa), by_threads);;
         pure $ tried + 1
     )
@@ -898,7 +902,7 @@ _test_kept_scanner = (
 // * `dfa` - The scanner to search with.
 _search_all_scanner: Array U8 -> DFA -> Array Groups;
 _search_all_scanner = |bytes, dfa| (
-    let (matches, _) = dfa._every_match(bytes);
+    let (matches, _) = dfa._every_match(bytes, bytes.@size);
     matches
 );
 
