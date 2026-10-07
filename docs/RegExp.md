@@ -125,10 +125,10 @@ next byte. The global flag (`"g"`) makes no difference here.
 A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
 
 Example:
-```
+```fix
 let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
 let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
-// found == [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
+assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]])
 ```
 
 ##### Parameters
@@ -146,10 +146,10 @@ its groups stands, as `find_all` reports them. It reports `none()` where no matc
 or after `from`. A negative `from` counts as `0`.
 
 Example:
-```
+```fix
 let regexp = RegExp::compile("[0-9]+", "").as_ok;
 let found = regexp.find_from(4, "abc012 def345".get_bytes.pop_back);
-// found == some([(4, 6)])
+assert_eq(|_|"", found, some([(4, 6)]))
 ```
 
 ##### Parameters
@@ -181,19 +181,19 @@ Group 0 is a substring that matches the entire regular expression.
 Group 1 and beyond are the captured substrings in each group. If not captured, the group will be an empty string.
 
 Example:
-```
+```fix
 let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
 let groups = regexp.match_one("abc012 def345").as_ok;
-// groups == ["abc012", "012"]
+assert_eq(|_|"", groups, ["abc012", "012"])
 ```
 
 If the global flag (`"g"`) is set, all matching results will be returned, but captured groups will not be included.
 
 Example:
-```
+```fix
 let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
 let groups = regexp.match_one("abc012 def345").as_ok;
-// groups == ["abc012", "def345"]
+assert_eq(|_|"", groups, ["abc012", "def345"])
 ```
 
 If the match against the regular expression fails, an error `"NotMatch"` is reported.
@@ -213,10 +213,12 @@ program that matches many strings against one regular expression pays for the wo
 once, where `RegExp`'s own matching functions make a scanner for each match and let it go.
 
 Example:
-```
+```fix
 let matcher = RegExp::compile("[a-z]+", "g").as_ok.matcher;
 let (first, matcher) = matcher.match_all("abc def");
 let (second, matcher) = matcher.match_all("ghi jkl");
+assert_eq(|_|"", first, [["abc"], ["def"]]);;
+assert_eq(|_|"", second, [["ghi"], ["jkl"]])
 ```
 
 #### replace_all
@@ -231,10 +233,10 @@ the captured group.
 If `replacement` contains `$$`, it is substituted with single `$`.
 
 Example:
-```
+```fix
 let regexp = RegExp::compile("(\\w\\w)(\\w)", "").as_ok;
 let result = regexp.replace_all("abc def ijk", "$2$1");
-// result == "cab fde kij"
+assert_eq(|_|"", result, "cab fde kij")
 ```
 
 This function is similar to [String.replaceAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
