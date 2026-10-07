@@ -26,6 +26,35 @@ U+0080 upward as two or more bytes, and a Fix string holds no null character (U+
 
 ### namespace RegExp::Matcher
 
+#### find_all
+
+Type: `Std::Array Std::U8 -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+
+`matcher.find_all(bytes)` finds every match in `bytes`, and reports the scanner as the search
+left it.
+
+What it reports is what `RegExp::find_all` reports.
+
+##### Parameters
+
+* `bytes` - The bytes to search.
+* `matcher` - The regular expression and its scanner.
+
+#### find_from
+
+Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+
+`matcher.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
+byte position `from`, and reports the scanner as the search left it.
+
+What it reports is what `RegExp::find_from` reports.
+
+##### Parameters
+
+* `from` - The byte position the match has to begin at or after.
+* `bytes` - The bytes to search.
+* `matcher` - The regular expression and its scanner.
+
 #### match_all
 
 Type: `Std::String -> RegExp::Matcher -> (Std::Array (Std::Array Std::String), RegExp::Matcher)`
@@ -78,6 +107,56 @@ Type: `Std::String -> Std::String -> Std::Result Std::ErrMsg RegExp::RegExp`
 `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
 `flags` change behavior of regular expression matching.
 Currently only global flag (`"g"`) is supported.
+
+#### find_all
+
+Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::Array Std::U8 -> RegExp::RegExp -> ?it`
+
+`regexp.find_all(bytes)` is an iterator over the matches in `bytes`, taken left to right,
+none of them overlapping another, each reported as where its groups stand. Each match is
+looked for when the iterator is advanced to it, so a program that stops early does not pay
+for the matches after.
+
+A match is reported as one `(begin, end)` pair of byte positions per group, the whole match
+first. A group that captured nothing stands as `(-1, -1)`. Where several matches begin at one
+place, the longest is taken, and after a match that holds no byte the search goes on from the
+next byte. The global flag (`"g"`) makes no difference here.
+
+A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
+
+Example:
+```
+let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
+let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
+// found == [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
+```
+
+##### Parameters
+
+* `bytes` - The bytes to search.
+* `regexp` - The regular expression.
+
+#### find_from
+
+Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
+
+`regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
+byte position `from`, taking the longest of those that begin there, and reports where each of
+its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
+or after `from`. A negative `from` counts as `0`.
+
+Example:
+```
+let regexp = RegExp::compile("[0-9]+", "").as_ok;
+let found = regexp.find_from(4, "abc012 def345".get_bytes.pop_back);
+// found == some([(4, 6)])
+```
+
+##### Parameters
+
+* `from` - The byte position the match has to begin at or after.
+* `bytes` - The bytes to search.
+* `regexp` - The regular expression.
 
 #### match_all
 
@@ -181,6 +260,12 @@ Type: `Std::Bool`
 
 Type: `RegExp.RegExpNFA::DFA`
 
+#### Matches
+
+Defined as: `type Matches = unbox struct { ...fields... }`
+
+The matches `RegExp::find_all` reports, each looked for when the iterator is advanced to it.
+
 #### RegExp
 
 Defined as: `type RegExp = unbox struct { ...fields... }`
@@ -198,3 +283,5 @@ Type: `RegExp.RegExpNFA::NFA`
 ## Traits and aliases
 
 ## Trait implementations
+
+### impl `RegExp::Matches : Std::Iterator`
