@@ -1,8 +1,8 @@
 module Test;
 
 import RegExp::{
-    Matcher::{match_all, match_one, replace_all}, 
-    RegExp::{@nfa, compile, match_all, match_one, matcher, replace_all}
+    Matcher::{find_all, find_from, match_all, match_one, replace_all}, 
+    RegExp::{@nfa, compile, find_all, find_from, match_all, match_one, matcher, replace_all}
 };
 import RegExp.RegExpNFA::{
     _holds_byte, DFA, Groups, NFA, 
@@ -1041,6 +1041,40 @@ _test_ordered_insertion = (
     assert_eq(|_| "a state taken in at the end", _insert_at(3, 60, [10, 30, 50]), [10, 30, 50, 60])
 );
 
+// The cases `find_all` and `find_from` are held to: the pattern, the text, every match with the
+// positions of its groups, and what `find_from` reports from a position.
+_find_cases: Array (String, String, Array (Array (I64, I64)), I64, Option (Array (I64, I64)));
+_find_cases = [
+    // Each group stands where it matched, the whole match first.
+    ("([a-z]+)([0-9]+)", "abc012 def345", [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]],
+        4, some([(7, 13), (7, 10), (10, 13)])),
+    // A group that captured nothing stands as `(-1, -1)`.
+    ("(a)|b", "ba", [[(0, 1), (-1, -1)], [(1, 2), (1, 2)]], 1, some([(1, 2), (1, 2)])),
+    // After a match holding no byte the search goes on from the next byte.
+    ("a*", "baa", [[(0, 0)], [(1, 3)], [(3, 3)]], 2, some([(2, 3)])),
+    // A position past the end of the text holds no match, and a negative one counts as `0`.
+    ("b", "abab", [[(1, 2)], [(3, 4)]], 9, none()),
+    ("a", "abab", [[(0, 1)], [(2, 3)]], -3, some([(0, 1)]))
+];
+
+// `find_all` and `find_from` report where the groups of the matches stand, and a matcher kept
+// from one text to the next reports what a regular expression reports for each.
+_test_find_positions: IO ();
+_test_find_positions = (
+    _find_cases.to_iter.fold_m((), |(pattern, text, all, from, first), _|
+        let regexp = RegExp::compile(pattern, "").as_ok;
+        let bytes = text.get_bytes.pop_back;
+        let name = _named(pattern, "", text);
+        assert_eq(|_| name + " find_all", regexp.find_all(bytes), all);;
+        assert_eq(|_| name + " find_from " + from.to_string, regexp.find_from(from, bytes), first);;
+        let (kept_all, matcher) = regexp.matcher.find_all("xyz".get_bytes.pop_back);
+        let (kept_all, matcher) = matcher.find_all(bytes);
+        assert_eq(|_| name + " kept find_all", kept_all, all);;
+        let (kept_first, _) = matcher.find_from(from, bytes);
+        assert_eq(|_| name + " kept find_from " + from.to_string, kept_first, first)
+    )
+);
+
 // Runs the whole suite: the matching and replacing cases written out above, then the sections that
 // hold the scanner to the automaton.
 test: IO ();
@@ -1076,5 +1110,6 @@ test = (
     _test_many_rounds;;
     _test_beyond_bounds;;
     _test_ordered_insertion;;
+    _test_find_positions;;
     pure()
 );

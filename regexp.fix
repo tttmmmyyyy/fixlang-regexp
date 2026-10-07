@@ -27,9 +27,10 @@ import RegExp.RegExpNFA::{
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, Bool, ErrMsg, Result, String, 
+    Array, Bool, ErrMsg, I64, Option, Result, String, U8, 
     Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 
-    Iterator::{fold, map, to_array}, Option::{as_some, is_none, is_some}, Result::{err, ok}, 
+    Iterator::{fold, map, to_array}, LessThan::max, Option::{as_some, is_none, is_some}, 
+    Result::{err, ok}, 
     String::{@size, concat_iter, get_bytes}
 };
 
@@ -138,6 +139,54 @@ namespace RegExp {
         let (replaced, _) = regexp.matcher.replace_all(target, replacement);
         replaced
     );
+
+    // `regexp.find_all(bytes)` finds every match in `bytes`, taken left to right, none of them
+    // overlapping another, and reports where each group of each match stands.
+    //
+    // A match is reported as one `(begin, end)` pair of byte positions per group, the whole match
+    // first. A group that captured nothing stands as `(-1, -1)`. Where several matches begin at one
+    // place, the longest is taken, and after a match that holds no byte the search goes on from the
+    // next byte. The global flag (`"g"`) makes no difference here.
+    //
+    // A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
+    //
+    // Example:
+    // ```
+    // let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
+    // let found = regexp.find_all("abc012 def345".get_bytes.pop_back);
+    // // found == [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
+    // ```
+    //
+    // # Parameters
+    // * `bytes` - The bytes to search.
+    // * `regexp` - The regular expression.
+    find_all: Array U8 -> RegExp -> Array (Array (I64, I64));
+    find_all = |bytes, regexp| (
+        let (found, _) = regexp.matcher.find_all(bytes);
+        found
+    );
+
+    // `regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
+    // byte position `from`, taking the longest of those that begin there, and reports where each of
+    // its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
+    // or after `from`. A negative `from` counts as `0`.
+    //
+    // Example:
+    // ```
+    // let regexp = RegExp::compile("[0-9]+", "").as_ok;
+    // let found = regexp.find_from(4, "abc012 def345".get_bytes.pop_back);
+    // // found == some([(4, 6)])
+    // ```
+    //
+    // # Parameters
+    // * `from` - The byte position the match has to begin at or after.
+    // * `bytes` - The bytes to search.
+    // * `regexp` - The regular expression.
+    find_from: I64 -> Array U8 -> RegExp -> Option (Array (I64, I64));
+    find_from = |from, bytes, regexp| (
+        let (found, _) = regexp.matcher.find_from(from, bytes);
+        found
+    );
 }
 
 // The stretches of a string the groups of a match cover, a group that captured nothing giving the
@@ -231,5 +280,34 @@ namespace Matcher {
         );
         let output = output.push_back(target.substring(last, target.@size));
         (output.to_iter.concat_iter, matcher)
+    );
+
+    // `matcher.find_all(bytes)` finds every match in `bytes`, and reports the scanner as the search
+    // left it.
+    //
+    // What it reports is what `RegExp::find_all` reports.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to search.
+    // * `matcher` - The regular expression and its scanner.
+    find_all: Array U8 -> Matcher -> (Array (Array (I64, I64)), Matcher);
+    find_all = |bytes, matcher| (
+        let (matches, dfa) = matcher.@dfa.search_every(bytes);
+        (matches, matcher.set_dfa(dfa))
+    );
+
+    // `matcher.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
+    // byte position `from`, and reports the scanner as the search left it.
+    //
+    // What it reports is what `RegExp::find_from` reports.
+    //
+    // # Parameters
+    // * `from` - The byte position the match has to begin at or after.
+    // * `bytes` - The bytes to search.
+    // * `matcher` - The regular expression and its scanner.
+    find_from: I64 -> Array U8 -> Matcher -> (Option (Array (I64, I64)), Matcher);
+    find_from = |from, bytes, matcher| (
+        let (found, dfa) = matcher.@dfa.search_from(bytes, max(from, 0));
+        (found, matcher.set_dfa(dfa))
     );
 }
