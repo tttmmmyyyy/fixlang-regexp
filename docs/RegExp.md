@@ -110,10 +110,12 @@ Currently only global flag (`"g"`) is supported.
 
 #### find_all
 
-Type: `Std::Array Std::U8 -> RegExp::RegExp -> Std::Array (Std::Array (Std::I64, Std::I64))`
+Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::Array Std::U8 -> RegExp::RegExp -> ?it`
 
-`regexp.find_all(bytes)` finds every match in `bytes`, taken left to right, none of them
-overlapping another, and reports where each group of each match stands.
+`regexp.find_all(bytes)` is an iterator over the matches in `bytes`, taken left to right,
+none of them overlapping another, each reported as where its groups stand. Each match is
+looked for when the iterator is advanced to it, so a program that stops early does not pay
+for the matches after.
 
 A match is reported as one `(begin, end)` pair of byte positions per group, the whole match
 first. A group that captured nothing stands as `(-1, -1)`. Where several matches begin at one
@@ -125,7 +127,7 @@ A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
 Example:
 ```
 let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
-let found = regexp.find_all("abc012 def345".get_bytes.pop_back);
+let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
 // found == [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
 ```
 
@@ -258,6 +260,12 @@ Type: `Std::Bool`
 
 Type: `RegExp.RegExpNFA::DFA`
 
+#### Matches
+
+Defined as: `type Matches = unbox struct { ...fields... }`
+
+The matches `RegExp::find_all` reports, each looked for when the iterator is advanced to it.
+
 #### RegExp
 
 Defined as: `type RegExp = unbox struct { ...fields... }`
@@ -275,3 +283,5 @@ Type: `RegExp.RegExpNFA::NFA`
 ## Traits and aliases
 
 ## Trait implementations
+
+### impl `RegExp::Matches : Std::Iterator`
