@@ -21,15 +21,15 @@
 module RegExp;
 
 import RegExp.RegExpNFA::{
-    DFA, Group, NFA, DFA::{make, search_every, search_from}, NFA::compile, 
+    DFA, Group, NFA, DFA::{find, make, search_every, search_from}, NFA::compile, 
     Replacement::{calc_replacement, compile}
 };
 import RegExp.RegExpPattern::Pattern::{parse, pgroup};
 import RegExp.StringEx::{find_byte, substring};
 import Std::{
-    Array, Bool, ErrMsg, I64, Option, Result, String, U8, 
+    Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, U8, 
     Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 
-    Iterator::{fold, map, to_array}, LessThan::max, Option::{as_some, is_none, is_some}, 
+    Iterator::{Item, fold, map, to_array}, LessThan::max, Option::{as_some, is_none, is_some, none, some}, 
     Result::{err, ok}, 
     String::{@size, concat_iter, get_bytes}
 };
@@ -140,8 +140,10 @@ namespace RegExp {
         replaced
     );
 
-    // `regexp.find_all(bytes)` finds every match in `bytes`, taken left to right, none of them
-    // overlapping another, and reports where each group of each match stands.
+    // `regexp.find_all(bytes)` is an iterator over the matches in `bytes`, taken left to right,
+    // none of them overlapping another, each reported as where its groups stand. Each match is
+    // looked for when the iterator is advanced to it, so a program that stops early does not pay
+    // for the matches after.
     //
     // A match is reported as one `(begin, end)` pair of byte positions per group, the whole match
     // first. A group that captured nothing stands as `(-1, -1)`. Where several matches begin at one
@@ -153,18 +155,17 @@ namespace RegExp {
     // Example:
     // ```
     // let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
-    // let found = regexp.find_all("abc012 def345".get_bytes.pop_back);
+    // let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
     // // found == [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
     // ```
     //
     // # Parameters
     // * `bytes` - The bytes to search.
     // * `regexp` - The regular expression.
-    find_all: Array U8 -> RegExp -> Array (Array (I64, I64));
-    find_all = |bytes, regexp| (
-        let (found, _) = regexp.matcher.find_all(bytes);
-        found
-    );
+    find_all: [?it : Iterator, Item ?it = Array (I64, I64)] Array U8 -> RegExp -> ?it;
+    find_all = |bytes, regexp| Matches {
+        _bytes: bytes, _from: 0, _dfa: DFA::make(regexp.@nfa), _fitted: false
+    };
 
     // `regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
     // byte position `from`, taking the longest of those that begin there, and reports where each of
@@ -202,6 +203,30 @@ _groups_to_strings = |groups, target| (
         target.substring(begin, end)
     ).to_array
 );
+
+// The matches `RegExp::find_all` reports, each looked for when the iterator is advanced to it.
+type Matches = unbox struct {
+    _bytes: Array U8,   // the bytes searched
+    _from: I64,         // the position the next match has to begin at or after
+    _dfa: DFA,          // the scanner, and what it has worked out so far
+    // Whether the scanner has been told what to look for over these bytes. The first search tells
+    // it, and the searches after it search as it stands.
+    _fitted: Bool
+};
+
+impl Matches : Iterator {
+    type Item Matches = Array (I64, I64);
+    advance = |matches| (
+        let Matches { _bytes: bytes, _from: from, _dfa: dfa, _fitted: fitted } = matches;
+        let (found, dfa) = if fitted { dfa.find(bytes, from) } else { dfa.search_from(bytes, from) };
+        if found.is_none { none() };
+        let groups = found.as_some;
+        let (begin, end) = groups.@(0);
+        // A match that read nothing would be found again where it was found.
+        let next = if end > begin { end } else { begin + 1 };
+        some $ (Matches { _bytes: bytes, _from: next, _dfa: dfa, _fitted: true }, groups)
+    );
+}
 
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.

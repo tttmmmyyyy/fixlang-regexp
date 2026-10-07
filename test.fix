@@ -14,7 +14,7 @@ import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
     Array::{@, @size, empty, pop_back, push_back, to_iter}, Debug::{assert, assert_eq}, 
-    Iterator::{fold, fold_m, range}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
+    Iterator::{fold, fold_m, range, to_array}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
     Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, String::get_bytes, 
     ToI64::i64, ToString::to_string, ToU8::u8
 };
@@ -540,6 +540,7 @@ _test_against_threads = (
         let name = _named(pattern, "g", target);
         let matches = nfa.search_all(bytes);
         assert_eq(|_| name + " search_all", matches, _search_all_threads(bytes, nfa));;
+        assert_eq(|_| name + " find_all", result.as_ok.find_all(bytes).to_array, matches);;
         range(0, bytes.@size + 1).fold_m((), |from, _|
             assert_eq(
                 |_| name + " search from " + from.to_string,
@@ -1065,7 +1066,7 @@ _test_find_positions = (
         let regexp = RegExp::compile(pattern, "").as_ok;
         let bytes = text.get_bytes.pop_back;
         let name = _named(pattern, "", text);
-        assert_eq(|_| name + " find_all", regexp.find_all(bytes), all);;
+        assert_eq(|_| name + " find_all", regexp.find_all(bytes).to_array, all);;
         assert_eq(|_| name + " find_from " + from.to_string, regexp.find_from(from, bytes), first);;
         let (kept_all, matcher) = regexp.matcher.find_all("xyz".get_bytes.pop_back);
         let (kept_all, matcher) = matcher.find_all(bytes);
