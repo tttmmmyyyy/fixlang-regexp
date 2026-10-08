@@ -229,12 +229,14 @@ assert_eq(|_|"", second, [["ghi"], ["jkl"]])
 
 Type: `Std::String -> Std::String -> RegExp::RegExp -> Std::String`
 
-`regexp.replace_all(target, replacement)` matches `target` against `regexp`,
-and replace all matching substrings with `replacement`.
-If `replacement` contains `$&`, it is substituted with entire matched substring.
-If `replacement` contains `$n` where `n` is an integer, it is substituted with
-the captured group.
-If `replacement` contains `$$`, it is substituted with single `$`.
+`regexp.replace_all(target, replacement)` replaces every match of `regexp` in `target` with
+`replacement`, reading `replacement` as JavaScript's `String.prototype.replaceAll` reads it:
+- `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
+  `$'` for the text after it.
+- `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string where
+  the group captured nothing. Two digits are read as one group number where the pattern has
+  that group; otherwise the first digit is, and the second stands for itself.
+- `$0`, the number of a group the pattern lacks, and every other text stand for themselves.
 
 Example:
 ```fix
@@ -243,9 +245,8 @@ let result = regexp.replace_all("abc def ijk", "$2$1");
 assert_eq(|_|"", result, "cab fde kij")
 ```
 
-This function is similar to [String.replaceAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
-function of JavaScript.
-Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
+See [String.replaceAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
+of JavaScript.
 
 ## Types and aliases
 

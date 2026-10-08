@@ -145,7 +145,29 @@ _replace_cases = [
                   replacement: "-", result: "b\n-\n-" },
     ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
                   replacement: "$2$1", result: "baba" },
-    ReplaceCase { pattern: "x", flags: "g", target: "abc", replacement: "-", result: "abc" }
+    ReplaceCase { pattern: "x", flags: "g", target: "abc", replacement: "-", result: "abc" },
+    // The replacement read as JavaScript reads it; the results are what `replaceAll` gives.
+    ReplaceCase { pattern: "b", flags: "g", target: "abc", replacement: "[$&$$]", result: "a[b$]c" },
+    ReplaceCase { pattern: "b", flags: "g", target: "abc", replacement: "[$`|$']", result: "a[a|c]c" },
+    ReplaceCase { pattern: "a", flags: "g", target: "bab", replacement: "$", result: "b$b" },
+    ReplaceCase { pattern: "a", flags: "g", target: "bab", replacement: "[$x]", result: "b[$x]b" },
+    ReplaceCase { pattern: "a", flags: "g", target: "a", replacement: "$$1", result: "$1" },
+    ReplaceCase { pattern: "(a)", flags: "g", target: "a", replacement: "[$<n>]", result: "[$<n>]" },
+    ReplaceCase { pattern: "(a)|(b)", flags: "g", target: "ab", replacement: "[$1$2]", result: "[a][b]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$0]", result: "[$0][$0]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$3]", result: "[$3][$3]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$10]", result: "[a0][a0]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$01]", result: "[a][a]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$00]", result: "[$00][$00]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab", replacement: "[$99999999999999999999]",
+                  result: "[$99999999999999999999][$99999999999999999999]" },
+    ReplaceCase { pattern: "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)", flags: "g", target: "abcdefghij",
+                  replacement: "$10$1", result: "ja" }
 ];
 
 // A case for the byte searches the automaton reads text with.
