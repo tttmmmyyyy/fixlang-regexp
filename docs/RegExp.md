@@ -75,7 +75,7 @@ What it reports is what `RegExp::match_all` reports.
 
 #### match_one
 
-Type: `Std::String -> RegExp::Matcher -> (Std::Result Std::ErrMsg (Std::Array Std::String), RegExp::Matcher)`
+Type: `Std::String -> RegExp::Matcher -> (Std::Option (Std::Array Std::String), RegExp::Matcher)`
 
 `matcher.match_one(target)` matches `target` against the regular expression, and reports the
 scanner as the match left it.
@@ -172,14 +172,14 @@ All matching results will be returned including captured groups.
 
 If the match against the regular expression fails, an empty array is returned.
 
-This function is similar to [String.matchAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
+This function is similar to [String.matchAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
 function of JavaScript.
 
 #### match_one
 
-Type: `Std::String -> RegExp::RegExp -> Std::Result Std::ErrMsg (Std::Array Std::String)`
+Type: `Std::String -> RegExp::RegExp -> Std::Option (Std::Array Std::String)`
 
-`regexp.match(target)` matches `target` against `regexp`.
+`regexp.match_one(target)` matches `target` against `regexp`.
 
 If the global flag (`"g"`) is not set, it returns an array of the groups of the first match.
 Group 0 is a substring that matches the entire regular expression.
@@ -188,7 +188,7 @@ Group 1 and beyond are the captured substrings in each group. If not captured, t
 Example:
 ```fix
 let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
-let groups = regexp.match_one("abc012 def345").as_ok;
+let groups = regexp.match_one("abc012 def345").as_some;
 assert_eq(|_|"", groups, ["abc012", "012"])
 ```
 
@@ -197,13 +197,13 @@ If the global flag (`"g"`) is set, all matching results will be returned, but ca
 Example:
 ```fix
 let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
-let groups = regexp.match_one("abc012 def345").as_ok;
+let groups = regexp.match_one("abc012 def345").as_some;
 assert_eq(|_|"", groups, ["abc012", "def345"])
 ```
 
-If the match against the regular expression fails, an error `"NotMatch"` is reported.
+Where `regexp` matches nowhere in `target`, it returns `none()`.
 
-This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
+This function is similar to [String.match()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/match)
 function of JavaScript.
 
 #### matcher

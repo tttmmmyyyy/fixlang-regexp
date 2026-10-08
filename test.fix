@@ -25,7 +25,7 @@ type MatchCase = unbox struct {
     pattern: String,            // the pattern to compile
     flags: String,              // the flags to compile it with
     target: String,             // the string to match against
-    one: Array String,          // what `match_one` gives, an empty array standing for `NotMatch`
+    one: Array String,          // what `match_one` gives, an empty array standing for `none()`
     all: Array (Array String)   // what `match_all` gives
 };
 
@@ -1054,7 +1054,7 @@ test = (
         let name = _named(case.@pattern, case.@flags, case.@target);
         let regexp = RegExp::compile(case.@pattern, case.@flags).as_ok;
         let one = regexp.match_one(case.@target);
-        let one = if one.is_err { [] } else { one.as_ok };
+        let one = if one.is_none { [] } else { one.as_some };
         assert_eq(|_| name + " match_one", one, case.@one);;
         assert_eq(|_| name + " match_all", regexp.match_all(case.@target), case.@all)
     );;
