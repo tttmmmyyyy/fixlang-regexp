@@ -4,20 +4,20 @@ import RegExp::{
     Matcher::{find_all, find_from, match_all, match_one, replace_all}, 
     RegExp::{@_nfa, compile, find_all, find_from, match_all, match_one, matcher, replace_all}
 };
-import RegExp.RegExpNFA::{
+import RegExp.Internal.NFA::{
     _holds_byte, DFA, Groups, NFA, 
     DFA::{@_prefilter, _every_match, _search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
     StateTable::_insert_at, 
     NFA::{@_forced_sets, @_prefix, _search_threads, search, search_all}
 };
-import RegExp.RegExpPattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
-import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
+import RegExp.Internal.Pattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
+import RegExp.Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
     Array::{@, @size, empty, pop_back, push_back, to_iter}, Debug::{assert, assert_eq}, 
     Iterator::{fold, fold_m, range, to_array}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
     Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, String::get_bytes, 
-    ToI64::i64, ToString::to_string, ToU8::u8
+    ToString::to_string
 };
 
 // A case for `match_one` and `match_all`.

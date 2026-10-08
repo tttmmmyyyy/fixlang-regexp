@@ -4,9 +4,9 @@
 // - https://swtch.com/~rsc/regexp/regexp1.html
 // - https://zenn.dev/canalun/articles/regexp_and_automaton
 //
-module RegExp.RegExpNFA;
+module RegExp.Internal.NFA;
 
-import RegExp.RegExpPattern::{
+import RegExp.Internal.Pattern::{
     _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
     Pattern, Forced::@sets, ForcedRun::{@back_class, @back_max, @bytes}, 
     PAssertion::{is_pa_begin, is_pa_end}, 
@@ -15,17 +15,17 @@ import RegExp.RegExpPattern::{
         is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, psequence, reverse
     }
 };
-import RegExp.SimpleParser::{
+import RegExp.Internal.SimpleParser::{
     Parser, 
     Parser::{
         match_any_char, match_char, match_char_if_exists, match_integer, not_match, or_else, repeat, 
         run_parser_str
     }
 };
-import RegExp.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
-import RegExp.StringEx::{_unsafe_to_string, substring};
+import RegExp.Internal.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
+import RegExp.Internal.StringEx::{_unsafe_to_string, substring};
 import Std::{
-    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
+    loop, undefined, Array, Bool, I64, Option, String, U64, U8, 
     Array::{
         @, @size, append, empty, fill, from_map, get_last, mod, pop_back, push_back, set, sort_by, to_iter, 
         truncate
@@ -34,7 +34,7 @@ import Std::{
     Iterator::{check_any, fold, map, range}, 
     LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
     Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
-    String::{@size, concat_iter, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
+    String::{@size, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
     U64::{bit_and, bit_or, shift_right}
 };
 
@@ -305,18 +305,6 @@ namespace NFA {
 
 }
 
-impl NFA: ToString {
-    to_string = |nfa| (
-        "NFA { nodes=\n"
-        + range(0, nfa.@_nodes.@size).map(|i|
-            "  " + nfa.@_nodes.@(i).to_string + "\n"
-        ).concat_iter
-        + "  initial_node=" + nfa.@_initial_node.to_string + "\n"
-        + "  accepting_node=" + nfa.@_accepting_node.to_string + "\n"
-        +"}"
-    );
-}
-
 // What a thread has to do, or what has to hold, before it may take a node's `output_on_action`.
 type NFANodeAction = unbox union {
     sa_none: (),                            // nothing, so the action output is never taken
@@ -328,20 +316,6 @@ type NFANodeAction = unbox union {
     sa_quant_loop: QuantID,                 // count one more round of a special quantifier
     sa_quant_end: (QuantID, I64, I64)       // leave a special quantifier: its id, then its bounds
 };
-
-impl NFANodeAction: ToString {
-    to_string = |action| (
-        if action.is_sa_none { "none" };
-        if action.is_sa_char_match { "class@" + action.as_sa_char_match.to_string };
-        if action.is_sa_assert { action.as_sa_assert.to_string };
-        if action.is_sa_group_begin { "<g" + action.as_sa_group_begin.to_string + ">" };
-        if action.is_sa_group_end { "</g" + action.as_sa_group_end.to_string + ">" };
-        if action.is_sa_quant_begin { "<q" + action.as_sa_quant_begin.to_string + ">" };
-        if action.is_sa_quant_loop { "<ql" + action.as_sa_quant_loop.to_string + ">" };
-        if action.is_sa_quant_end { "</q" + action.as_sa_quant_end.to_string + ">" };
-        ""
-    );
-}
 
 // What a node's action lets a thread standing at it do. See `NFA::action_step`.
 type ActionStep = unbox struct {
@@ -367,14 +341,6 @@ type NodeID = unbox struct {
     val: I64   // the place in `_nodes`, or `-1` for no node
 };
 
-impl NodeID: ToString {
-    to_string = |id| id.@val.to_string;
-}
-
-impl NodeID: Eq {
-    eq = |a, b| a.@val == b.@val;
-}
-
 namespace NFANode {
     // The id standing for no node.
     _INVALID_NODE_ID: NodeID;
@@ -390,19 +356,6 @@ namespace NFANode {
         output2: _INVALID_NODE_ID
     };
 }
-
-impl NFANode: ToString {
-    to_string = |node| (
-        "("
-        + node.@id.to_string + ":"
-        + node.@action.to_string + ":"
-        + node.@output_on_action.to_string + ","
-        + node.@output.to_string + ","
-        + node.@output2.to_string
-        + ")"
-    );
-}
-
 
 // A stretch of the automaton, compiled from a stretch of the pattern. A thread enters it at one
 // node and may leave it from several, so where it leads onward is held as a function that points
@@ -3062,7 +3015,7 @@ namespace Replacement {
     _parse_dollar: Parser ReplaceFrag;
     _parse_dollar = do {
         let _ = *match_char('$');
-        
+
         let dollar = *match_char_if_exists('$');    // $$
         if dollar.is_some {
             pure $ rep_literal('$')

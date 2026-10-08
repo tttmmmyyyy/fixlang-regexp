@@ -17,6 +17,10 @@ longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
 For what the pattern syntax above means, see
 [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 
+This module is the whole interface of the library, and its version number follows this module
+alone. The modules under `RegExp.Internal` are the parts the library is built from, and any
+version may change them.
+
 LIMITATION:
 
 A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from

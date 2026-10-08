@@ -13,6 +13,10 @@
 // For what the pattern syntax above means, see
 // [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 //
+// This module is the whole interface of the library, and its version number follows this module
+// alone. The modules under `RegExp.Internal` are the parts the library is built from, and any
+// version may change them.
+//
 // LIMITATION:
 //
 // A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
@@ -20,21 +24,21 @@
 //
 module RegExp;
 
-import RegExp.RegExpNFA::{
+import RegExp.Internal.NFA::{
     DFA, Group, NFA, 
     DFA::{_search_every_within, _search_from_within, find, make, search_every, search_from}, 
     NFA::compile, 
     Replacement::{calc_replacement, compile}
 };
-import RegExp.RegExpPattern::Pattern::{parse, pgroup};
-import RegExp.StringEx::{find_byte, substring};
+import RegExp.Internal.Pattern::Pattern::{parse, pgroup};
+import RegExp.Internal.StringEx::substring;
 import Std::{
     Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, U8, 
     Array::{@, @size, empty, is_empty, push_back, to_iter}, Functor::map, 
     Iterator::{Item, fold, map, to_array}, LessThan::max, 
     Option::{as_some, is_none, is_some, none, some}, 
     Result::{err, ok}, 
-    String::{@size, concat_iter, get_bytes}
+    String::{@size, concat_iter, find, get_bytes}
 };
 
 // Type of a compiled regular expression.
@@ -77,7 +81,7 @@ namespace RegExp {
     // ```
     matcher: RegExp -> Matcher;
     matcher = |regexp| Matcher {
-        _global: regexp.@_flags.find_byte('g').is_some, _dfa: DFA::make(regexp.@_nfa)
+        _global: regexp.@_flags.find("g", 0).is_some, _dfa: DFA::make(regexp.@_nfa)
     };
 
     // `regexp.match(target)` matches `target` against `regexp`.
