@@ -1034,6 +1034,18 @@ _test_find_positions = (
     )
 );
 
+// `compile` takes the flags `""` and `"g"`, and reports any other flag, or `g` given twice, as an
+// error.
+_test_flags: IO ();
+_test_flags = (
+    ["", "g"].to_iter.fold_m((), |flags, _|
+        assert(|_| "flags \"" + flags + "\" are taken", RegExp::compile("a", flags).is_ok)
+    );;
+    ["i", "gi", "ig", "gg", "y"].to_iter.fold_m((), |flags, _|
+        assert(|_| "flags \"" + flags + "\" are refused", RegExp::compile("a", flags).is_err)
+    )
+);
+
 // Runs the whole suite: the matching and replacing cases written out above, then the sections that
 // hold the scanner to the automaton.
 test: IO ();
@@ -1069,5 +1081,6 @@ test = (
     _test_beyond_bounds;;
     _test_ordered_insertion;;
     _test_find_positions;;
+    _test_flags;;
     pure()
 );

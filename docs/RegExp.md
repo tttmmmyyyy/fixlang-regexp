@@ -109,8 +109,9 @@ What it reports is what `RegExp::replace_all` reports.
 Type: `Std::String -> Std::String -> Std::Result Std::ErrMsg RegExp::RegExp`
 
 `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
-`flags` change behavior of regular expression matching.
-Currently only global flag (`"g"`) is supported.
+`flags` change behavior of regular expression matching. The only flag is the global
+flag `g`, which `match_one` reads, so `flags` is `""` or `"g"`. Any other flag, or `g`
+given twice, is reported as an error.
 
 #### find_all
 

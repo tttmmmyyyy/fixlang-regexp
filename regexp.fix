@@ -34,30 +34,32 @@ import RegExp.Internal.Pattern::Pattern::{parse, pgroup};
 import RegExp.Internal.StringEx::substring;
 import Std::{
     Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, U8, 
-    Array::{@, @size, empty, is_empty, push_back, to_iter}, Functor::map, 
-    Iterator::{Item, fold, map, to_array}, LessThan::max, 
+    Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 
+    Iterator::{Item, fold, fold_m, map, to_array}, LessThan::max, 
     Option::{as_some, is_none, is_some, none, some}, 
     Result::{err, ok}, 
-    String::{@size, concat_iter, find, get_bytes}
+    String::{@size, concat_iter, get_bytes}
 };
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
-    _flags: String,  // the flags it was compiled with, of which `g` is read
-    _nfa: NFA        // the automaton the pattern compiled to
+    _global: Bool,  // whether the global flag `g` was given
+    _nfa: NFA       // the automaton the pattern compiled to
 };
 
 namespace RegExp {
 
     // `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
-    // `flags` change behavior of regular expression matching.
-    // Currently only global flag (`"g"`) is supported.
+    // `flags` change behavior of regular expression matching. The only flag is the global
+    // flag `g`, which `match_one` reads, so `flags` is `""` or `"g"`. Any other flag, or `g`
+    // given twice, is reported as an error.
     compile: String -> String -> Result ErrMsg RegExp;
     compile = |pattern_str, flags| (
+        let global = *_read_flags(flags);
         let pattern = *Pattern::parse(pattern_str);
         let pattern = pgroup $ (0, pattern); // since whole pattern is group 0
         let nfa = NFA::compile(pattern);
-        ok $ RegExp { _flags: flags, _nfa: nfa }
+        ok $ RegExp { _global: global, _nfa: nfa }
     );
 
     // `regexp.matcher` is the regular expression together with a scanner of its own.
@@ -81,7 +83,7 @@ namespace RegExp {
     // ```
     matcher: RegExp -> Matcher;
     matcher = |regexp| Matcher {
-        _global: regexp.@_flags.find("g", 0).is_some, _dfa: DFA::make(regexp.@_nfa)
+        _global: regexp.@_global, _dfa: DFA::make(regexp.@_nfa)
     };
 
     // `regexp.match(target)` matches `target` against `regexp`.
@@ -223,6 +225,20 @@ namespace RegExp {
         found
     );
 }
+
+// Whether `flags` holds the global flag `g`, or an error where it holds another flag or `g` twice.
+//
+// # Parameters
+// * `flags` - The flags given to `RegExp::compile`.
+_read_flags: String -> Result ErrMsg Bool;
+_read_flags = |flags| (
+    flags.get_bytes.pop_back.to_iter.fold_m(false, |flag, global|
+        if flag != 'g' || global {
+            err $ "Unsupported flags \"" + flags + "\": the only flag is `g`, given at most once"
+        };
+        ok $ true
+    )
+);
 
 // The stretches of a string the groups of a match cover, a group that captured nothing giving the
 // empty string.
