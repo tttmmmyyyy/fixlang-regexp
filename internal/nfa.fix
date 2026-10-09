@@ -2667,17 +2667,9 @@ namespace DFA {
         }
     );
 
-    // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place, together with the scanner as the search left it.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `from` - The position at or after which the match has to begin.
-    // * `dfa` - The scanner.
-    find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    find = |bytes, from, dfa| dfa._find(bytes, bytes.@size, from);
-
-    // What `find` reports for a text that is the first `length` of the bytes.
+    // The leftmost match in the text that is the first `length` of the bytes, beginning at or after
+    // a position and taking the longest of those that begin at the same place, together with the
+    // scanner as the search left it.
     //
     // # Parameters
     // * `bytes` - The bytes to read.

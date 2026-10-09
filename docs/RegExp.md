@@ -32,12 +32,23 @@ U+0080 upward as two or more bytes, and a Fix string holds no null character (U+
 
 #### find_all
 
-Type: `Std::Array Std::U8 -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+Type: `Std::String -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
 
-`matcher.find_all(bytes)` finds every match in `bytes`, and reports the scanner as the search
-left it.
+`matcher.find_all(target)` finds every match in `target`, and reports the scanner as the
+search left it.
 
 What it reports is what `RegExp::find_all` reports.
+
+##### Parameters
+
+* `target` - The string to search.
+* `matcher` - The regular expression and its scanner.
+
+#### find_all_in_bytes
+
+Type: `Std::Array Std::U8 -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+
+`matcher.find_all_in_bytes(bytes)` is `find_all` over an array of bytes.
 
 ##### Parameters
 
@@ -46,16 +57,28 @@ What it reports is what `RegExp::find_all` reports.
 
 #### find_from
 
-Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+Type: `Std::I64 -> Std::String -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
 
-`matcher.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
-byte position `from`, and reports the scanner as the search left it.
+`matcher.find_from(from, target)` finds the match in `target` that begins first at or after
+the byte position `from`, and reports the scanner as the search left it.
 
 What it reports is what `RegExp::find_from` reports.
 
 ##### Parameters
 
 * `from` - The byte position the match has to begin at or after.
+* `target` - The string to search.
+* `matcher` - The regular expression and its scanner.
+
+#### find_from_in_bytes
+
+Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+
+`matcher.find_from_in_bytes(from, bytes)` is `find_from` over an array of bytes.
+
+##### Parameters
+
+* `from` - The position the match has to begin at or after.
 * `bytes` - The bytes to search.
 * `matcher` - The regular expression and its scanner.
 
@@ -115,9 +138,9 @@ given twice, is reported as an error.
 
 #### find_all
 
-Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::Array Std::U8 -> RegExp::RegExp -> ?it`
+Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::String -> RegExp::RegExp -> ?it`
 
-`regexp.find_all(bytes)` is an iterator over the matches in `bytes`, taken left to right,
+`regexp.find_all(target)` is an iterator over the matches in `target`, taken left to right,
 none of them overlapping another, each reported as where its groups stand. Each match is
 looked for when the iterator is advanced to it, so a program that stops early does not pay
 for the matches after.
@@ -127,14 +150,24 @@ first. A group that captured nothing stands as `(-1, -1)`. Where several matches
 place, the longest is taken, and after a match that holds no byte the search goes on from the
 next byte. The global flag (`"g"`) makes no difference here.
 
-A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
-
 Example:
 ```fix
 let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
-let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
+let found = regexp.find_all("abc012 def345").to_array;
 assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]])
 ```
+
+##### Parameters
+
+* `target` - The string to search.
+* `regexp` - The regular expression.
+
+#### find_all_in_bytes
+
+Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::Array Std::U8 -> RegExp::RegExp -> ?it`
+
+`regexp.find_all_in_bytes(bytes)` is `find_all` over an array of bytes: an iterator over the
+matches in `bytes`, each reported as where its groups stand.
 
 ##### Parameters
 
@@ -143,9 +176,9 @@ assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
 
 #### find_from
 
-Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
+Type: `Std::I64 -> Std::String -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
 
-`regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
+`regexp.find_from(from, target)` finds the match in `target` that begins first at or after the
 byte position `from`, taking the longest of those that begin there, and reports where each of
 its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
 or after `from`. A negative `from` counts as `0`.
@@ -153,13 +186,26 @@ or after `from`. A negative `from` counts as `0`.
 Example:
 ```fix
 let regexp = RegExp::compile("[0-9]+", "").as_ok;
-let found = regexp.find_from(4, "abc012 def345".get_bytes.pop_back);
+let found = regexp.find_from(4, "abc012 def345");
 assert_eq(|_|"", found, some([(4, 6)]))
 ```
 
 ##### Parameters
 
 * `from` - The byte position the match has to begin at or after.
+* `target` - The string to search.
+* `regexp` - The regular expression.
+
+#### find_from_in_bytes
+
+Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
+
+`regexp.find_from_in_bytes(from, bytes)` is `find_from` over an array of bytes: the match in
+`bytes` that begins first at or after the position `from`.
+
+##### Parameters
+
+* `from` - The position the match has to begin at or after.
 * `bytes` - The bytes to search.
 * `regexp` - The regular expression.
 
@@ -264,7 +310,8 @@ A compiled regular expression together with the scanner it has built so far. See
 
 Defined as: `type Matches = unbox struct { ...fields... }`
 
-The matches `RegExp::find_all` reports, each looked for when the iterator is advanced to it.
+The matches `RegExp::find_all` and `RegExp::find_all_in_bytes` report, each looked for when the
+iterator is advanced to it.
 
 #### RegExp
 

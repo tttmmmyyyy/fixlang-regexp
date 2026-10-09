@@ -1,8 +1,11 @@
 module Test;
 
 import RegExp::{
-    Matcher::{find_all, find_from, match_all, match_one, replace_all}, 
-    RegExp::{@_nfa, compile, find_all, find_from, match_all, match_one, matcher, replace_all}
+    Matcher::{find_all, find_all_in_bytes, find_from, find_from_in_bytes, match_all, match_one, replace_all}, 
+    RegExp::{
+        @_nfa, compile, find_all, find_all_in_bytes, find_from, find_from_in_bytes, match_all, match_one, 
+        matcher, replace_all
+    }
 };
 import RegExp.Internal.NFA::{
     _holds_byte, DFA, Groups, NFA, 
@@ -563,7 +566,8 @@ _test_against_threads = (
         let name = _named(pattern, "g", target);
         let matches = nfa.search_all(bytes);
         assert_eq(|_| name + " search_all", matches, _search_all_threads(bytes, nfa));;
-        assert_eq(|_| name + " find_all", result.as_ok.find_all(bytes).to_array, matches);;
+        assert_eq(|_| name + " find_all", result.as_ok.find_all(target).to_array, matches);;
+        assert_eq(|_| name + " find_all_in_bytes", result.as_ok.find_all_in_bytes(bytes).to_array, matches);;
         // A string's bytes are searched up to its length, with the null byte that ends them left
         // beyond the text, and the search answers as it does over the bytes without that null.
         let (within, _) = DFA::make(nfa)._search_every_within(target.get_bytes, bytes.@size);
@@ -1013,24 +1017,35 @@ _find_cases = [
     ("a*", "baa", [[(0, 0)], [(1, 3)], [(3, 3)]], 2, some([(2, 3)])),
     // A position past the end of the text holds no match, and a negative one counts as `0`.
     ("b", "abab", [[(1, 2)], [(3, 4)]], 9, none()),
-    ("a", "abab", [[(0, 1)], [(2, 3)]], -3, some([(0, 1)]))
+    ("a", "abab", [[(0, 1)], [(2, 3)]], -3, some([(0, 1)])),
+    // The text of a string ends where its null byte begins.
+    ("a$", "ba", [[(1, 2)]], 0, some([(1, 2)]))
 ];
 
-// `find_all` and `find_from` report where the groups of the matches stand, and a matcher kept
-// from one text to the next reports what a regular expression reports for each.
+// `find_all` and `find_from` report where the groups of the matches stand in a string, their
+// `_in_bytes` versions report the same over the string's bytes, and a matcher kept from one text to
+// the next reports what a regular expression reports for each.
 _test_find_positions: IO ();
 _test_find_positions = (
     _find_cases.to_iter.fold_m((), |(pattern, text, all, from, first), _|
         let regexp = RegExp::compile(pattern, "").as_ok;
         let bytes = text.get_bytes.pop_back;
         let name = _named(pattern, "", text);
-        assert_eq(|_| name + " find_all", regexp.find_all(bytes).to_array, all);;
-        assert_eq(|_| name + " find_from " + from.to_string, regexp.find_from(from, bytes), first);;
-        let (kept_all, matcher) = regexp.matcher.find_all("xyz".get_bytes.pop_back);
-        let (kept_all, matcher) = matcher.find_all(bytes);
+        assert_eq(|_| name + " find_all", regexp.find_all(text).to_array, all);;
+        assert_eq(|_| name + " find_all_in_bytes", regexp.find_all_in_bytes(bytes).to_array, all);;
+        assert_eq(|_| name + " find_from " + from.to_string, regexp.find_from(from, text), first);;
+        assert_eq(
+            |_| name + " find_from_in_bytes " + from.to_string, regexp.find_from_in_bytes(from, bytes), first
+        );;
+        let (kept_all, matcher) = regexp.matcher.find_all("xyz");
+        let (kept_all, matcher) = matcher.find_all(text);
         assert_eq(|_| name + " kept find_all", kept_all, all);;
-        let (kept_first, _) = matcher.find_from(from, bytes);
-        assert_eq(|_| name + " kept find_from " + from.to_string, kept_first, first)
+        let (kept_all, matcher) = matcher.find_all_in_bytes(bytes);
+        assert_eq(|_| name + " kept find_all_in_bytes", kept_all, all);;
+        let (kept_first, matcher) = matcher.find_from(from, text);
+        assert_eq(|_| name + " kept find_from " + from.to_string, kept_first, first);;
+        let (kept_first, _) = matcher.find_from_in_bytes(from, bytes);
+        assert_eq(|_| name + " kept find_from_in_bytes " + from.to_string, kept_first, first)
     )
 );
 
