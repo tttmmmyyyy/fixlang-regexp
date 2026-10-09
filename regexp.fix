@@ -26,10 +26,11 @@ module RegExp;
 
 import RegExp.Internal.NFA::{
     DFA, Group, NFA, 
-    DFA::{_find, _search_every_within, _search_from_within, capture_count, make, search_every, search_from}, 
+    DFA::{capture_count, make, search_every, search_every_within, search_from, search_from_within}, 
     NFA::compile, 
     Replacement::{calc_replacement, compile}
 };
+import RegExp.Internal.Matches::Matches::make;
 import RegExp.Internal.Pattern::Pattern::{parse, pgroup};
 import RegExp.Internal.StringEx::substring;
 import Std::{
@@ -173,7 +174,7 @@ namespace RegExp {
     // * `target` - The string to search.
     // * `regexp` - The regular expression.
     find_all: [?it : Iterator, Item ?it = Array (I64, I64)] String -> RegExp -> ?it;
-    find_all = |target, regexp| regexp._matches(target.get_bytes, target.@size);
+    find_all = |target, regexp| Matches::make(target.get_bytes, target.@size, DFA::make(regexp.@_nfa));
 
     // `regexp.find_all_in_bytes(bytes)` is `find_all` over an array of bytes: an iterator over the
     // matches in `bytes`, each reported as where its groups stand.
@@ -182,7 +183,7 @@ namespace RegExp {
     // * `bytes` - The bytes to search.
     // * `regexp` - The regular expression.
     find_all_in_bytes: [?it : Iterator, Item ?it = Array (I64, I64)] Array U8 -> RegExp -> ?it;
-    find_all_in_bytes = |bytes, regexp| regexp._matches(bytes, bytes.@size);
+    find_all_in_bytes = |bytes, regexp| Matches::make(bytes, bytes.@size, DFA::make(regexp.@_nfa));
 
     // `regexp.find_from(from, target)` finds the match in `target` that begins first at or after the
     // byte position `from`, taking the longest of those that begin there, and reports where each of
@@ -218,17 +219,6 @@ namespace RegExp {
         let (found, _) = regexp.matcher.find_from_in_bytes(from, bytes);
         found
     );
-
-    // The matches `find_all` and `find_all_in_bytes` report: those in `bytes` up to `length`.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to search.
-    // * `length` - Where the text in `bytes` ends.
-    // * `regexp` - The regular expression.
-    _matches: Array U8 -> I64 -> RegExp -> Matches;
-    _matches = |bytes, length, regexp| Matches {
-        _bytes: bytes, _length: length, _from: 0, _dfa: DFA::make(regexp.@_nfa), _fitted: false
-    };
 }
 
 // Whether `flags` holds the global flag `g`, or an error where it holds another flag or `g` twice.
@@ -259,36 +249,6 @@ _groups_to_strings = |groups, target| (
     ).to_array
 );
 
-// The matches `RegExp::find_all` and `RegExp::find_all_in_bytes` report, each looked for when the
-// iterator is advanced to it.
-type Matches = unbox struct {
-    _bytes: Array U8,   // the bytes searched
-    _length: I64,       // where the text in `_bytes` ends
-    _from: I64,         // the position the next match has to begin at or after
-    _dfa: DFA,          // the scanner, and what it has worked out so far
-    // Whether the scanner has been told what to look for over these bytes. The first search tells
-    // it, and the searches after it search as it stands.
-    _fitted: Bool
-};
-
-impl Matches : Iterator {
-    type Item Matches = Array (I64, I64);
-    advance = |matches| (
-        let Matches { _bytes: bytes, _length: length, _from: from, _dfa: dfa, _fitted: fitted } = matches;
-        let (found, dfa) = if fitted {
-            dfa._find(bytes, length, from)
-        } else {
-            dfa._search_from_within(bytes, length, from)
-        };
-        if found.is_none { none() };
-        let groups = found.as_some;
-        let (begin, end) = groups.@(0);
-        // A match that read nothing would be found again where it was found.
-        let next = if end > begin { end } else { begin + 1 };
-        some $ (Matches { _bytes: bytes, _length: length, _from: next, _dfa: dfa, _fitted: true }, groups)
-    );
-}
-
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
@@ -313,14 +273,14 @@ namespace Matcher {
         // still holds them.
         let (bytes, length) = (target.get_bytes, target.@size);
         if matcher.@_global {
-            let (matches, dfa) = matcher.@_dfa._search_every_within(bytes, length);
+            let (matches, dfa) = matcher.@_dfa.search_every_within(bytes, length);
             let matcher = matcher.set__dfa(dfa);
             if matches.is_empty {
                 (none(), matcher)
             };
             (some $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
         } else {
-            let (opt, dfa) = matcher.@_dfa._search_from_within(bytes, length, 0);
+            let (opt, dfa) = matcher.@_dfa.search_from_within(bytes, length, 0);
             let matcher = matcher.set__dfa(dfa);
             if opt.is_none {
                 (none(), matcher)
@@ -341,7 +301,7 @@ namespace Matcher {
     match_all = |target, matcher| (
         // See `match_one` for how the string's bytes are read.
         let (bytes, length) = (target.get_bytes, target.@size);
-        let (matches, dfa) = matcher.@_dfa._search_every_within(bytes, length);
+        let (matches, dfa) = matcher.@_dfa.search_every_within(bytes, length);
         (matches.map(|groups| target._groups_to_strings(groups)), matcher.set__dfa(dfa))
     );
 
@@ -358,7 +318,7 @@ namespace Matcher {
     replace_all = |target, replacement, matcher| (
         // See `match_one` for how the string's bytes are read.
         let (bytes, length) = (target.get_bytes, target.@size);
-        let (matches, dfa) = matcher.@_dfa._search_every_within(bytes, length);
+        let (matches, dfa) = matcher.@_dfa.search_every_within(bytes, length);
         let matcher = matcher.set__dfa(dfa);
         let rep_frags = Replacement::compile(matcher.@_dfa.capture_count, replacement);
         let output: Array String = Array::empty(matches.@size * 2 + 1);
@@ -384,7 +344,7 @@ namespace Matcher {
     find_all: String -> Matcher -> (Array (Array (I64, I64)), Matcher);
     find_all = |target, matcher| (
         // See `match_one` for how the string's bytes are read.
-        let (matches, dfa) = matcher.@_dfa._search_every_within(target.get_bytes, target.@size);
+        let (matches, dfa) = matcher.@_dfa.search_every_within(target.get_bytes, target.@size);
         (matches, matcher.set__dfa(dfa))
     );
 
@@ -411,7 +371,7 @@ namespace Matcher {
     find_from: I64 -> String -> Matcher -> (Option (Array (I64, I64)), Matcher);
     find_from = |from, target, matcher| (
         // See `match_one` for how the string's bytes are read.
-        let (found, dfa) = matcher.@_dfa._search_from_within(target.get_bytes, target.@size, max(from, 0));
+        let (found, dfa) = matcher.@_dfa.search_from_within(target.get_bytes, target.@size, max(from, 0));
         (found, matcher.set__dfa(dfa))
     );
 

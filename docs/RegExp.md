@@ -306,13 +306,6 @@ Defined as: `type Matcher = unbox struct { ...fields... }`
 A compiled regular expression together with the scanner it has built so far. See
 `RegExp::matcher`.
 
-#### Matches
-
-Defined as: `type Matches = unbox struct { ...fields... }`
-
-The matches `RegExp::find_all` and `RegExp::find_all_in_bytes` report, each looked for when the
-iterator is advanced to it.
-
 #### RegExp
 
 Defined as: `type RegExp = unbox struct { ...fields... }`
@@ -322,5 +315,3 @@ Type of a compiled regular expression.
 ## Traits and aliases
 
 ## Trait implementations
-
-### impl `RegExp::Matches : Std::Iterator`

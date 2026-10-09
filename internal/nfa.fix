@@ -2676,8 +2676,8 @@ namespace DFA {
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner.
-    _find: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
-    _find = |bytes, length, from, dfa| (
+    find_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    find_within = |bytes, length, from, dfa| (
         if from > length { (none(), dfa) };
         let DFA { _forward: forward, _backward: backward, _prefilter: prefilter } = dfa;
         let nfa = forward.@_nfa;
@@ -2836,7 +2836,7 @@ namespace DFA {
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
     search_from: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    search_from = |bytes, from, dfa| dfa._search_from_within(bytes, bytes.@size, from);
+    search_from = |bytes, from, dfa| dfa.search_from_within(bytes, bytes.@size, from);
 
     // What `search_from` reports for a text that is the first `length` of the bytes. A string's
     // bytes are searched this way, with the null byte that ends them left beyond the text, where
@@ -2847,9 +2847,9 @@ namespace DFA {
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
-    _search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
-    _search_from_within = |bytes, length, from, dfa| (
-        dfa._fit(bytes, length)._find(bytes, length, from)
+    search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    search_from_within = |bytes, length, from, dfa| (
+        dfa._fit(bytes, length).find_within(bytes, length, from)
     );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
@@ -2859,17 +2859,17 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `dfa` - The scanner to search with.
     search_every: Array U8 -> DFA -> (Array Groups, DFA);
-    search_every = |bytes, dfa| dfa._search_every_within(bytes, bytes.@size);
+    search_every = |bytes, dfa| dfa.search_every_within(bytes, bytes.@size);
 
     // What `search_every` reports for a text that is the first `length` of the bytes. See
-    // `_search_from_within`.
+    // `search_from_within`.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `dfa` - The scanner to search with.
-    _search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
-    _search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
+    search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
+    search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
 
     // The scanner told what to look for over a text. See `Prefilter::_fit`.
     //
@@ -2896,7 +2896,7 @@ namespace DFA {
         let (matches, _, dfa) = loop(
             (Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
-            let (opt, dfa) = dfa._find(bytes, length, from);
+            let (opt, dfa) = dfa.find_within(bytes, length, from);
             if opt.is_none { break $ (matches, from, dfa) };
             let groups = opt.as_some;
             let (begin, end) = groups.@(0);

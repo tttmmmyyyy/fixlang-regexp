@@ -9,7 +9,7 @@ import RegExp::{
 };
 import RegExp.Internal.NFA::{
     _holds_byte, DFA, Groups, NFA, 
-    DFA::{@_prefilter, _every_match, _search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
+    DFA::{@_prefilter, _every_match, search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
     StateTable::_insert_at, 
     NFA::{@_forced_sets, @_prefix, _search_threads, search, search_all}
 };
@@ -570,7 +570,7 @@ _test_against_threads = (
         assert_eq(|_| name + " find_all_in_bytes", result.as_ok.find_all_in_bytes(bytes).to_array, matches);;
         // A string's bytes are searched up to its length, with the null byte that ends them left
         // beyond the text, and the search answers as it does over the bytes without that null.
-        let (within, _) = DFA::make(nfa)._search_every_within(target.get_bytes, bytes.@size);
+        let (within, _) = DFA::make(nfa).search_every_within(target.get_bytes, bytes.@size);
         assert_eq(|_| name + " search within a string's bytes", within, matches);;
         range(0, bytes.@size + 1).fold_m((), |from, _|
             assert_eq(
