@@ -71,15 +71,11 @@ namespace RegExp {
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let matcher = RegExp::compile("[a-z]+", "g").as_ok.matcher;
     // let (first, matcher) = matcher.match_all("abc def");
     // let (second, matcher) = matcher.match_all("ghi jkl");
     // assert_eq(|_|"", first, [["abc"], ["def"]]);;
     // assert_eq(|_|"", second, [["ghi"], ["jkl"]])
-    // # );
     // ```
     matcher: RegExp -> Matcher;
     matcher = |regexp| Matcher {
@@ -94,26 +90,18 @@ namespace RegExp {
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
     // let groups = regexp.match_one("abc012 def345").as_some;
     // assert_eq(|_|"", groups, ["abc012", "012"])
-    // # );
     // ```
     //
     // If the global flag (`"g"`) is set, all matching results will be returned, but captured groups will not be included.
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
     // let groups = regexp.match_one("abc012 def345").as_some;
     // assert_eq(|_|"", groups, ["abc012", "def345"])
-    // # );
     // ```
     //
     // Where `regexp` matches nowhere in `target`, it returns `none()`.
@@ -151,13 +139,9 @@ namespace RegExp {
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("(\\w\\w)(\\w)", "").as_ok;
     // let result = regexp.replace_all("abc def ijk", "$2$1");
     // assert_eq(|_|"", result, "cab fde kij")
-    // # );
     // ```
     //
     // See [String.replaceAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
@@ -180,13 +164,9 @@ namespace RegExp {
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
     // let found = regexp.find_all("abc012 def345").to_array;
     // assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]])
-    // # );
     // ```
     //
     // # Parameters
@@ -211,13 +191,9 @@ namespace RegExp {
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("[0-9]+", "").as_ok;
     // let found = regexp.find_from(4, "abc012 def345");
     // assert_eq(|_|"", found, some([(4, 6)]))
-    // # );
     // ```
     //
     // # Parameters
