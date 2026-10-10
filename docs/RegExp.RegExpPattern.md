@@ -1,6 +1,6 @@
 # RegExp.RegExpPattern
 
-Defined in regexp@1.3.0
+Defined in regexp@1.3.1
 
 Character class and Pattern parser. This is internal module of `RegExp`.
 
@@ -198,7 +198,7 @@ sets, so a search is free to take whichever set it likes and look for that set a
 
 Type: `Std::I64`
 
-The most bytes the pattern may read, or `_UNBOUNDED_READ` where it may read any number.
+The most bytes the pattern may read, or `__UNBOUNDED_READ` where it may read any number.
 
 ##### field `read_bytes`
 
