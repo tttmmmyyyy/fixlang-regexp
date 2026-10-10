@@ -1392,6 +1392,123 @@ namespace NFA {
         Array::from_map(slot_width / 2, |k| (slots.@(base + 2 * k), slots.@(base + 2 * k + 1)))
     );
 
+    // How many marks the reading of a match's groups by trying its ways may take: one per node and
+    // position the match covers. A longer match is read by walking the threads, which takes room by
+    // the nodes alone.
+    __TRIAL_MARKS: I64;
+    __TRIAL_MARKS = 1 * 1024 * 1024;
+
+    // The groups a match captured, read by trying the ways through the automaton over the stretch
+    // the match covers in the order JavaScript tries them, and taking the first way that reaches the
+    // accepting node where the match ends. That is the way JavaScript takes, since the match is the
+    // one JavaScript finds. Reports `none` where the stretch would take more marks than
+    // `__TRIAL_MARKS`.
+    //
+    // A way is tried by taking the ways on from each node depth first, the one the automaton
+    // prefers first. What a thread standing at a node has captured does not change where it may
+    // go, so a node reached at a position having counted the same rounds as once before leads
+    // nowhere the first reaching did not, and is not tried again: every node and position is tried
+    // once for each count, which bounds the work as walking the threads bounds it. The captures and
+    // the counts are written in one place, and a way that writes them puts on the stack the work of
+    // writing back what it overwrote, which is taken when the ways under it have all been tried.
+    //
+    // # Parameters
+    // * `bytes` - The bytes the match was found in.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
+    // * `begin` - Where the match begins.
+    // * `end` - Where it ends.
+    // * `nfa` - The automaton the match was found with.
+    _trial_groups: Array U8 -> I64 -> I64 -> I64 -> NFA -> Option Groups;
+    _trial_groups = |bytes, length, begin, end, nfa| (
+        let node_count = nfa.@_nodes.@size;
+        let span = end - begin + 1;
+        if node_count > __TRIAL_MARKS / span { none() };
+        let count_width = nfa.@_quant_bounds.@size;
+        let slot_width = 2 * max(1, nfa.@_group_count);
+        let accepting = nfa.@_accepting_node.@val;
+        // The work is three numbers each: `0`, a node and a position for trying that node there;
+        // `1`, a slot and a number for writing the number back to the slot; `2`, a quantifier and
+        // a number for writing it back to the quantifier's count.
+        let jobs = Array::empty(64).push_back(0).push_back(nfa.@_initial_node.@val).push_back(begin);
+        // Where the automaton counts, a node and position are marked once for each count, and the
+        // marks are numbers held in a table: the place, then each count, in a number wide enough
+        // for the counts the quantifier can hold. A pattern whose counts do not fit in one number is
+        // read by walking the threads.
+        let widths = nfa.@_quant_bounds.map(|(least, most, _)|
+            // A count is `-1`, or `2 * rounds + read` with the rounds held at most at the bound.
+            2 * (if most == I64::maximum { least } else { most }) + 3
+        );
+        let room = widths.to_iter.fold(node_count * span, |width, room|
+            if room < 0 || room > I64::maximum / width { -1 } else { room * width }
+        );
+        if room < 0 { none() };
+        let marks = if count_width == 0 { Array::fill(node_count * span, false) } else { Array::empty(0) };
+        let counted = MarkTable::empty;
+        let start = (jobs, Array::fill(slot_width, -1), Array::fill(count_width, -1), marks, counted);
+        loop(start, |(jobs, slots, counts, marks, counted)|
+            if jobs.@size == 0 { break $ none() };
+            let base = jobs.@size - 3;
+            let (kind, first, second) = (jobs.@(base), jobs.@(base + 1), jobs.@(base + 2));
+            let jobs = jobs.truncate(base);
+            if kind == 1 { continue $ (jobs, slots.set(first, second), counts, marks, counted) };
+            if kind == 2 { continue $ (jobs, slots, counts.set(first, second), marks, counted) };
+            let (node, at) = (first, second);
+            let place = node * span + (at - begin);
+            let (fresh, marks, counted) = if count_width == 0 {
+                if marks.@(place) { (false, marks, counted) };
+                (true, marks.set(place, true), counted)
+            } else {
+                let key = range(0, count_width).fold(place, |j, key| key * widths.@(j) + counts.@(j) + 1);
+                let (fresh, counted) = counted.insert(key);
+                (fresh, marks, counted)
+            };
+            if !fresh { continue $ (jobs, slots, counts, marks, counted) };
+            if node == accepting {
+                if at == end { break $ some $ _groups_of(0, slot_width, slots) };
+                continue $ (jobs, slots, counts, marks, counted)
+            };
+            let node = nfa.get_node(NodeID { val: node });
+            let action = node.@action;
+            if action.is_sa_char_match {
+                let next = node.@output_on_action.@val;
+                if at >= end || next < 0 || !nfa.class_holds(action.as_sa_char_match, bytes.@(at)) {
+                    continue $ (jobs, slots, counts, marks, counted)
+                };
+                let (jobs, counts) = range(0, count_width).fold((jobs, counts), |j, (jobs, counts)|
+                    let held = counts.@(j);
+                    let read = nfa.count_after_byte(j, held);
+                    if read == held { (jobs, counts) };
+                    (jobs.push_back(2).push_back(j).push_back(held), counts.set(j, read))
+                );
+                continue $ (jobs.push_back(0).push_back(next).push_back(at + 1), slots, counts, marks, counted)
+            };
+            // The way the automaton prefers goes on the stack last, so that it is tried first. A node
+            // offers its action's way or its plain outputs, not both.
+            let try_out = |out, jobs| if out < 0 { jobs } else { jobs.push_back(0).push_back(out).push_back(at) };
+            let jobs = try_out(node.@output.@val, try_out(node.@output2.@val, jobs));
+            let qid = action_quant(action);
+            let step = nfa.action_step(at == 0, at == length, if qid < 0 { 0 } else { counts.@(qid) }, node);
+            if step.@next < 0 { continue $ (jobs, slots, counts, marks, counted) };
+            let write = |(slot, value), (jobs, slots)| (
+                (jobs.push_back(1).push_back(slot).push_back(slots.@(slot)), slots.set(slot, value))
+            );
+            let (jobs, slots) = if step.@opens < 0 { (jobs, slots) } else {
+                let (jobs, slots) = write((2 * step.@opens, at), (jobs, slots));
+                write((2 * step.@opens + 1, -1), (jobs, slots))
+            };
+            let (jobs, slots) = if step.@closes < 0 { (jobs, slots) } else {
+                write((2 * step.@closes + 1, at), (jobs, slots))
+            };
+            let (jobs, slots) = range(2 * step.@clears_from, 2 * step.@clears_to).fold((jobs, slots), |slot, written|
+                write((slot, -1), written)
+            );
+            let (jobs, counts) = if step.@quant < 0 { (jobs, counts) } else {
+                (jobs.push_back(2).push_back(step.@quant).push_back(counts.@(step.@quant)), counts.set(step.@quant, step.@round))
+            };
+            continue $ (jobs.push_back(0).push_back(step.@next).push_back(at), slots, counts, marks, counted)
+        )
+    );
+
     // The groups a match captured, read off by walking the automaton over the stretch it covers.
     //
     // # Parameters
@@ -1404,9 +1521,68 @@ namespace NFA {
     _capture_groups = |bytes, length, begin, end, nfa| (
         let one_way = nfa._one_way_groups(bytes, length, begin, end);
         if one_way.is_some { one_way };
+        let tried = nfa._trial_groups(bytes, length, begin, end);
+        if tried.is_some { tried };
         _walk_threads(bytes, length, begin, end, true, nfa)
     );
 }
+
+// A set of numbers that are `0` or more, held by open addressing in an array whose size is a power
+// of two, `-1` standing for an empty place. It is kept at most half full.
+type MarkTable = unbox struct {
+    _places: Array I64,  // the numbers, each at the place its hash leads to or the first empty one after
+    _count: I64          // how many numbers it holds
+};
+
+namespace MarkTable {
+    // A table holding no number.
+    empty: MarkTable;
+    empty = MarkTable { _places: Array::fill(64, -1), _count: 0 };
+
+    // Puts a number in the table, and reports whether it was not there before.
+    //
+    // # Parameters
+    // * `key` - The number, `0` or more.
+    // * `table` - The table.
+    insert: I64 -> MarkTable -> (Bool, MarkTable);
+    insert = |key, table| (
+        let table = if 2 * (table.@_count + 1) <= table.@_places.@size { table } else { table._grown };
+        let MarkTable { _places: places, _count: count } = table;
+        let mask = places.@size - 1;
+        let place = loop(_mark_hash(key).bit_and(mask), |i|
+            let held = places.@(i);
+            if held == -1 || held == key { break $ i };
+            continue $ (i + 1).bit_and(mask)
+        );
+        if places.@(place) == key { (false, MarkTable { _places: places, _count: count }) };
+        (true, MarkTable { _places: places.set(place, key), _count: count + 1 })
+    );
+
+    // The table with its numbers moved into an array twice as large.
+    //
+    // # Parameters
+    // * `table` - The table.
+    _grown: MarkTable -> MarkTable;
+    _grown = |table| (
+        let larger = MarkTable { _places: Array::fill(2 * table.@_places.@size, -1), _count: 0 };
+        table.@_places.to_iter.fold(larger, |key, larger|
+            if key < 0 { larger };
+            let (_, larger) = larger.insert(key);
+            larger
+        )
+    );
+}
+
+// Where a number is first looked for in a `MarkTable`, before it is reduced to the table's size:
+// the number mixed so that numbers close together land apart.
+//
+// # Parameters
+// * `key` - The number.
+_mark_hash: I64 -> I64;
+_mark_hash = |key| (
+    let mixed = key.u64 * 0x9E3779B97F4A7C15_U64;
+    mixed.shift_right(17_U64).i64
+);
 
 // How many states a table may take before the search is given back to the automaton. Each state
 // costs a row of 256 transitions, which bounds the table a search builds.

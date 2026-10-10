@@ -1086,6 +1086,16 @@ _test_js_cases = (
     )
 );
 
+// A match too long for its groups to be read by trying its ways, over a pattern that offers two
+// ways on a byte, has them read by walking the threads, which reports the same groups.
+_test_long_match_groups: IO ();
+_test_long_match_groups = (
+    let length = 400000;
+    let text = Iterator::range(0, length).fold("", |_, text| text + "ab") + "c";
+    let found = RegExp::compile("(a|ab)*c", "").as_ok.find_from(0, text);
+    assert_eq(|_| "/(a|ab)*c/ over a long text", found, some([(0, 2 * length + 1), (2 * length - 2, 2 * length)]))
+);
+
 // Runs the whole suite: the matching and replacing cases written out above, then the sections that
 // hold the scanner to the automaton.
 test: IO ();
@@ -1123,5 +1133,6 @@ test = (
     _test_find_positions;;
     _test_flags;;
     _test_js_cases;;
+    _test_long_match_groups;;
     pure()
 );
