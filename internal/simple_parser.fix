@@ -86,8 +86,8 @@ impl Stream: FromString {
 type ParseResult a = Result ErrMsg (a, Stream);
 
 // A special error message that represents the parser is not matched.
-_NotMatch: ErrMsg;
-_NotMatch = "NotMatch";
+__NotMatch: ErrMsg;
+__NotMatch = "NotMatch";
 
 // A structure with a function that receive a stream, parse it, and
 // return the parsed result and the next stream position.
@@ -146,17 +146,17 @@ namespace Parser {
     get_stream = parser $ |s| ok $ (s, s);
 
     // Checks whether the parsed result of the specified Parser satisfies the specified conditions.
-    // Raises a `_NotMatch` error if the specified condition is not met.
+    // Raises a `__NotMatch` error if the specified condition is not met.
     filter: (a -> Bool) -> Parser a -> Parser a;
     filter = |f, p| parser $ |s| (
         let (c, next) = *(p.run_parser(s));
         if !f(c) {
-            err $ _NotMatch
+            err $ __NotMatch
         };
         pure $ (c, next)
     );
 
-    // If the first Parser raises a `_NotMatch` error, tries the second Parser.
+    // If the first Parser raises a `__NotMatch` error, tries the second Parser.
     // Note that `pa1.or_else(pa2)` is interpreted as `or_else(pa2, pa1)`, 
     // and  that `pa1.or_else $ pa2` is interpreted as `or_else(pa1, pa2)`.
     or_else: Parser a -> Parser a -> Parser a;
@@ -165,13 +165,13 @@ namespace Parser {
         if res.is_ok {
             pure $ res.as_ok
         };
-        if res.as_err != _NotMatch {
+        if res.as_err != __NotMatch {
             err $ res.as_err
         };
         pa2.run_parser(s)
     );
 
-    // If the Parser reports any error (including `_NotMatch`),
+    // If the Parser reports any error (including `__NotMatch`),
     // raises the specified string as an error.
     or_error: String -> Parser a -> Parser a;
     or_error = |msg, p| parser $ |s| (
@@ -188,16 +188,16 @@ namespace Parser {
         s.error(msg)
     );
 
-    // Raises a `_NotMatch` error.
+    // Raises a `__NotMatch` error.
     not_match: Parser a;
     not_match = parser $ |s| (
-        err $ _NotMatch
+        err $ __NotMatch
     );
 
     // Repeats matches as many as possible. The parse result is
     // an array of successful matches.
-    // If a _NotMatch error is raised, returns as success.
-    // If an error other than _NotMatch is raised, reports that error.
+    // If a __NotMatch error is raised, returns as success.
+    // If an error other than __NotMatch is raised, reports that error.
     repeat: Parser a -> Parser (Array a);
     repeat = |p| parser $ |s| (
         let array = Array::empty(100);
@@ -206,7 +206,7 @@ namespace Parser {
             let old_position = s.@position;
             let res = p.run_parser(s);
             if res.is_err {
-                if res.as_err != _NotMatch {
+                if res.as_err != __NotMatch {
                     break $ err $ res.as_err
                 };
                 break $ pure $ (array, s)
@@ -236,23 +236,23 @@ namespace Parser {
 
     // Matches any single character. The parsed result is
     // a single matched character.
-    // If the match fails (eg. the end of stream), a `_NotMatch` error is raised.
+    // If the match fails (eg. the end of stream), a `__NotMatch` error is raised.
     match_any_char: Parser Char;
     match_any_char = parser $ |s| (
         s.advance.map_or(
-            err $ _NotMatch,
+            err $ __NotMatch,
             |(c, next)| pure $ (c, next)
         )
     );
 
     // Matches a single character specified by the argument.
     // The parsed result is nothing.
-    // If the match fails, a `_NotMatch` error is raised.
+    // If the match fails, a `__NotMatch` error is raised.
     match_char: Char -> Parser ();
     match_char = |chr| parser $ |s| (
         s.advance.map_or(
-            err $ _NotMatch,
-            |(c, next)| if c != chr { err $ _NotMatch } else { pure $ ((), next) }
+            err $ __NotMatch,
+            |(c, next)| if c != chr { err $ __NotMatch } else { pure $ ((), next) }
         )
     );
 
