@@ -8,7 +8,7 @@
 // the same reading costs five instructions a byte against half an instruction, and no compiler
 // closes that gap: a search that reads several bytes at once reads past the byte it stops at, which
 // a C library may do because it reads inside page boundaries, and a Fix program may not.
-module RegExp.StdBytes;
+module RegExp.Internal.StdBytes;
 
 import Std::{
     loop, Array, Bool, I64, Option, U8, Array::{@, @size, borrow_elements}, LessThan::min, 

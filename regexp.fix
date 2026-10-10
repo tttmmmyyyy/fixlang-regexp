@@ -13,6 +13,10 @@
 // For what the pattern syntax above means, see
 // [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 //
+// This module is the whole interface of the library, and its version number follows this module
+// alone. The modules under `RegExp.Internal` are the parts the library is built from, and any
+// version may change them.
+//
 // LIMITATION:
 //
 // A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
@@ -20,40 +24,43 @@
 //
 module RegExp;
 
-import RegExp.RegExpNFA::{
+import RegExp.Internal.NFA::{
     DFA, Group, NFA, 
-    DFA::{_search_every_within, _search_from_within, find, make, search_every, search_from}, 
+    DFA::{capture_count, make, search_every, search_every_within, search_from, search_from_within}, 
     NFA::compile, 
     Replacement::{calc_replacement, compile}
 };
-import RegExp.RegExpPattern::Pattern::{parse, pgroup};
-import RegExp.StringEx::{find_byte, substring};
+import RegExp.Internal.Matches::Matches::make;
+import RegExp.Internal.Pattern::Pattern::{parse, pgroup};
+import RegExp.Internal.StringEx::substring;
 import Std::{
     Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, U8, 
-    Array::{@, @size, empty, is_empty, push_back, to_iter}, Functor::map, 
-    Iterator::{Item, fold, map, to_array}, LessThan::max, 
-    Option::{as_some, is_none, is_some, none, some}, 
+    Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 
+    Iterator::{Item, fold, fold_m, map, to_array}, LessThan::max, 
+    Option::{as_some, is_none, none, some}, 
     Result::{err, ok}, 
     String::{@size, concat_iter, get_bytes}
 };
 
 // Type of a compiled regular expression.
 type RegExp = unbox struct {
-    flags: String,   // the flags it was compiled with, of which `g` is read
-    nfa: NFA         // the automaton the pattern compiled to
+    _global: Bool,  // whether the global flag `g` was given
+    _nfa: NFA       // the automaton the pattern compiled to
 };
 
 namespace RegExp {
 
     // `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
-    // `flags` change behavior of regular expression matching.
-    // Currently only global flag (`"g"`) is supported.
+    // `flags` change behavior of regular expression matching. The only flag is the global
+    // flag `g`, which `match_one` reads, so `flags` is `""` or `"g"`. Any other flag, or `g`
+    // given twice, is reported as an error.
     compile: String -> String -> Result ErrMsg RegExp;
     compile = |pattern_str, flags| (
+        let global = *_read_flags(flags);
         let pattern = *Pattern::parse(pattern_str);
         let pattern = pgroup $ (0, pattern); // since whole pattern is group 0
         let nfa = NFA::compile(pattern);
-        ok $ RegExp { flags: flags, nfa:nfa }
+        ok $ RegExp { _global: global, _nfa: nfa }
     );
 
     // `regexp.matcher` is the regular expression together with a scanner of its own.
@@ -65,56 +72,44 @@ namespace RegExp {
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let matcher = RegExp::compile("[a-z]+", "g").as_ok.matcher;
     // let (first, matcher) = matcher.match_all("abc def");
     // let (second, matcher) = matcher.match_all("ghi jkl");
     // assert_eq(|_|"", first, [["abc"], ["def"]]);;
     // assert_eq(|_|"", second, [["ghi"], ["jkl"]])
-    // # );
     // ```
     matcher: RegExp -> Matcher;
     matcher = |regexp| Matcher {
-        global: regexp.@flags.find_byte('g').is_some, dfa: DFA::make(regexp.@nfa)
+        _global: regexp.@_global, _dfa: DFA::make(regexp.@_nfa)
     };
 
-    // `regexp.match(target)` matches `target` against `regexp`.
+    // `regexp.match_one(target)` matches `target` against `regexp`. What it returns depends on
+    // whether `regexp` was compiled with the global flag `g`, as with `String.prototype.match` of
+    // JavaScript. This is the one function the flag changes.
     //
-    // If the global flag (`"g"`) is not set, it returns an array of the groups of the first match.
-    // Group 0 is a substring that matches the entire regular expression.
-    // Group 1 and beyond are the captured substrings in each group. If not captured, the group will be an empty string.
+    // Without `g`, it returns the groups of the first match. Group 0 is the substring the whole
+    // regular expression matches, and group 1 and beyond are the substrings each group captured,
+    // the empty string standing for a group that captured nothing.
     //
-    // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
-    // let groups = regexp.match_one("abc012 def345").as_ok;
+    // let groups = regexp.match_one("abc012 def345").as_some;
     // assert_eq(|_|"", groups, ["abc012", "012"])
-    // # );
     // ```
     //
-    // If the global flag (`"g"`) is set, all matching results will be returned, but captured groups will not be included.
+    // With `g`, it returns the substring of every match, without the groups.
     //
-    // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
-    // let groups = regexp.match_one("abc012 def345").as_ok;
+    // let groups = regexp.match_one("abc012 def345").as_some;
     // assert_eq(|_|"", groups, ["abc012", "def345"])
-    // # );
     // ```
     //
-    // If the match against the regular expression fails, an error `"NotMatch"` is reported.
+    // Where `regexp` matches nowhere in `target`, it returns `none()`.
     //
-    // This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
-    // function of JavaScript.
-    match_one: String -> RegExp -> Result ErrMsg (Array String);
+    // See [String.match()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/match)
+    // of JavaScript.
+    match_one: String -> RegExp -> Option (Array String);
     match_one = |target, regexp| (
         let (found, _) = regexp.matcher.match_one(target);
         found
@@ -126,7 +121,7 @@ namespace RegExp {
     //
     // If the match against the regular expression fails, an empty array is returned.
     //
-    // This function is similar to [String.matchAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
+    // This function is similar to [String.matchAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
     // function of JavaScript.
     match_all: String -> RegExp -> Array (Array String);
     match_all = |target, regexp| (
@@ -134,34 +129,31 @@ namespace RegExp {
         found
     );
 
-    // `regexp.replace_all(target, replacement)` matches `target` against `regexp`,
-    // and replace all matching substrings with `replacement`.
-    // If `replacement` contains `$&`, it is substituted with entire matched substring.
-    // If `replacement` contains `$n` where `n` is an integer, it is substituted with
-    // the captured group.
-    // If `replacement` contains `$$`, it is substituted with single `$`.
+    // `regexp.replace_all(target, replacement)` replaces every match of `regexp` in `target` with
+    // `replacement`, reading `replacement` as JavaScript's `String.prototype.replaceAll` reads it:
+    // - `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
+    //   `$'` for the text after it.
+    // - `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string where
+    //   the group captured nothing. Two digits are read as one group number where the pattern has
+    //   that group; otherwise the first digit is, and the second stands for itself.
+    // - `$0`, the number of a group the pattern lacks, and every other text stand for themselves.
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("(\\w\\w)(\\w)", "").as_ok;
     // let result = regexp.replace_all("abc def ijk", "$2$1");
     // assert_eq(|_|"", result, "cab fde kij")
-    // # );
     // ```
     //
-    // This function is similar to [String.replaceAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
-    // function of JavaScript.
-    // Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
+    // See [String.replaceAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
+    // of JavaScript.
     replace_all: String -> String -> RegExp -> String;
     replace_all = |target, replacement, regexp| (
         let (replaced, _) = regexp.matcher.replace_all(target, replacement);
         replaced
     );
 
-    // `regexp.find_all(bytes)` is an iterator over the matches in `bytes`, taken left to right,
+    // `regexp.find_all(target)` is an iterator over the matches in `target`, taken left to right,
     // none of them overlapping another, each reported as where its groups stand. Each match is
     // looked for when the iterator is advanced to it, so a program that stops early does not pay
     // for the matches after.
@@ -171,53 +163,77 @@ namespace RegExp {
     // place, the longest is taken, and after a match that holds no byte the search goes on from the
     // next byte. The global flag (`"g"`) makes no difference here.
     //
-    // A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
-    //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
-    // let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
+    // let found = regexp.find_all("abc012 def345").to_array;
     // assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]])
-    // # );
     // ```
+    //
+    // # Parameters
+    // * `target` - The string to search.
+    // * `regexp` - The regular expression.
+    find_all: [?it : Iterator, Item ?it = Array (I64, I64)] String -> RegExp -> ?it;
+    find_all = |target, regexp| Matches::make(target.get_bytes, target.@size, DFA::make(regexp.@_nfa));
+
+    // `regexp.find_all_in_bytes(bytes)` is `find_all` over an array of bytes: an iterator over the
+    // matches in `bytes`, each reported as where its groups stand.
     //
     // # Parameters
     // * `bytes` - The bytes to search.
     // * `regexp` - The regular expression.
-    find_all: [?it : Iterator, Item ?it = Array (I64, I64)] Array U8 -> RegExp -> ?it;
-    find_all = |bytes, regexp| Matches {
-        _bytes: bytes, _from: 0, _dfa: DFA::make(regexp.@nfa), _fitted: false
-    };
+    find_all_in_bytes: [?it : Iterator, Item ?it = Array (I64, I64)] Array U8 -> RegExp -> ?it;
+    find_all_in_bytes = |bytes, regexp| Matches::make(bytes, bytes.@size, DFA::make(regexp.@_nfa));
 
-    // `regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
+    // `regexp.find_from(from, target)` finds the match in `target` that begins first at or after the
     // byte position `from`, taking the longest of those that begin there, and reports where each of
     // its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
     // or after `from`. A negative `from` counts as `0`.
     //
     // Example:
     // ```fix
-    // # module DocTest;
-    // # import RegExp;
-    // # main : IO () = (
     // let regexp = RegExp::compile("[0-9]+", "").as_ok;
-    // let found = regexp.find_from(4, "abc012 def345".get_bytes.pop_back);
+    // let found = regexp.find_from(4, "abc012 def345");
     // assert_eq(|_|"", found, some([(4, 6)]))
-    // # );
     // ```
     //
     // # Parameters
     // * `from` - The byte position the match has to begin at or after.
+    // * `target` - The string to search.
+    // * `regexp` - The regular expression.
+    find_from: I64 -> String -> RegExp -> Option (Array (I64, I64));
+    find_from = |from, target, regexp| (
+        let (found, _) = regexp.matcher.find_from(from, target);
+        found
+    );
+
+    // `regexp.find_from_in_bytes(from, bytes)` is `find_from` over an array of bytes: the match in
+    // `bytes` that begins first at or after the position `from`.
+    //
+    // # Parameters
+    // * `from` - The position the match has to begin at or after.
     // * `bytes` - The bytes to search.
     // * `regexp` - The regular expression.
-    find_from: I64 -> Array U8 -> RegExp -> Option (Array (I64, I64));
-    find_from = |from, bytes, regexp| (
-        let (found, _) = regexp.matcher.find_from(from, bytes);
+    find_from_in_bytes: I64 -> Array U8 -> RegExp -> Option (Array (I64, I64));
+    find_from_in_bytes = |from, bytes, regexp| (
+        let (found, _) = regexp.matcher.find_from_in_bytes(from, bytes);
         found
     );
 }
+
+// Whether `flags` holds the global flag `g`, or an error where it holds another flag or `g` twice.
+//
+// # Parameters
+// * `flags` - The flags given to `RegExp::compile`.
+_read_flags: String -> Result ErrMsg Bool;
+_read_flags = |flags| (
+    flags.get_bytes.pop_back.to_iter.fold_m(false, |flag, global|
+        if flag != 'g' || global {
+            err $ "Unsupported flags \"" + flags + "\": the only flag is `g`, given at most once"
+        };
+        ok $ true
+    )
+);
 
 // The stretches of a string the groups of a match cover, a group that captured nothing giving the
 // empty string.
@@ -233,39 +249,11 @@ _groups_to_strings = |groups, target| (
     ).to_array
 );
 
-// The matches `RegExp::find_all` reports, each looked for when the iterator is advanced to it.
-type Matches = unbox struct {
-    _bytes: Array U8,   // the bytes searched
-    _from: I64,         // the position the next match has to begin at or after
-    _dfa: DFA,          // the scanner, and what it has worked out so far
-    // Whether the scanner has been told what to look for over these bytes. The first search tells
-    // it, and the searches after it search as it stands.
-    _fitted: Bool
-};
-
-impl Matches : Iterator {
-    type Item Matches = Array (I64, I64);
-    advance = |matches| (
-        let Matches { _bytes: bytes, _from: from, _dfa: dfa, _fitted: fitted } = matches;
-        let (found, dfa) = if fitted {
-            dfa.find(bytes, from)
-        } else {
-            dfa.search_from(bytes, from)
-        };
-        if found.is_none { none() };
-        let groups = found.as_some;
-        let (begin, end) = groups.@(0);
-        // A match that read nothing would be found again where it was found.
-        let next = if end > begin { end } else { begin + 1 };
-        some $ (Matches { _bytes: bytes, _from: next, _dfa: dfa, _fitted: true }, groups)
-    );
-}
-
 // A compiled regular expression together with the scanner it has built so far. See
 // `RegExp::matcher`.
 type Matcher = unbox struct {
-    global: Bool,   // whether the global flag was given, which `match_one` reads
-    dfa: DFA        // the automaton, and what the scanner has worked out of it so far
+    _global: Bool,  // whether the global flag was given, which `match_one` reads
+    _dfa: DFA       // the automaton, and what the scanner has worked out of it so far
 };
 
 namespace Matcher {
@@ -278,26 +266,26 @@ namespace Matcher {
     // # Parameters
     // * `target` - The string to match against.
     // * `matcher` - The regular expression and its scanner.
-    match_one: String -> Matcher -> (Result ErrMsg (Array String), Matcher);
+    match_one: String -> Matcher -> (Option (Array String), Matcher);
     match_one = |target, matcher| (
         // The search reads the string's own bytes up to its length, which leaves the null byte that
         // ends them beyond the text. Dropping that byte would copy the bytes, since the string
         // still holds them.
         let (bytes, length) = (target.get_bytes, target.@size);
-        if matcher.@global {
-            let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
-            let matcher = matcher.set_dfa(dfa);
+        if matcher.@_global {
+            let (matches, dfa) = matcher.@_dfa.search_every_within(bytes, length);
+            let matcher = matcher.set__dfa(dfa);
             if matches.is_empty {
-                (err $ "NotMatch", matcher)
+                (none(), matcher)
             };
-            (ok $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
+            (some $ target._groups_to_strings(matches.map(|groups| groups.@(0))), matcher)
         } else {
-            let (opt, dfa) = matcher.@dfa._search_from_within(bytes, length, 0);
-            let matcher = matcher.set_dfa(dfa);
+            let (opt, dfa) = matcher.@_dfa.search_from_within(bytes, length, 0);
+            let matcher = matcher.set__dfa(dfa);
             if opt.is_none {
-                (err $ "NotMatch", matcher)
+                (none(), matcher)
             };
-            (ok $ target._groups_to_strings(opt.as_some), matcher)
+            (some $ target._groups_to_strings(opt.as_some), matcher)
         }
     );
 
@@ -313,8 +301,8 @@ namespace Matcher {
     match_all = |target, matcher| (
         // See `match_one` for how the string's bytes are read.
         let (bytes, length) = (target.get_bytes, target.@size);
-        let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
-        (matches.map(|groups| target._groups_to_strings(groups)), matcher.set_dfa(dfa))
+        let (matches, dfa) = matcher.@_dfa.search_every_within(bytes, length);
+        (matches.map(|groups| target._groups_to_strings(groups)), matcher.set__dfa(dfa))
     );
 
     // `matcher.replace_all(target, replacement)` replaces every stretch of `target` the regular
@@ -330,9 +318,9 @@ namespace Matcher {
     replace_all = |target, replacement, matcher| (
         // See `match_one` for how the string's bytes are read.
         let (bytes, length) = (target.get_bytes, target.@size);
-        let (matches, dfa) = matcher.@dfa._search_every_within(bytes, length);
-        let matcher = matcher.set_dfa(dfa);
-        let rep_frags = Replacement::compile(replacement);
+        let (matches, dfa) = matcher.@_dfa.search_every_within(bytes, length);
+        let matcher = matcher.set__dfa(dfa);
+        let rep_frags = Replacement::compile(matcher.@_dfa.capture_count, replacement);
         let output: Array String = Array::empty(matches.@size * 2 + 1);
         let (output, last) = matches.to_iter.fold(
             (output, 0), |groups, (output, last)|
@@ -345,32 +333,57 @@ namespace Matcher {
         (output.to_iter.concat_iter, matcher)
     );
 
-    // `matcher.find_all(bytes)` finds every match in `bytes`, and reports the scanner as the search
-    // left it.
+    // `matcher.find_all(target)` finds every match in `target`, and reports the scanner as the
+    // search left it.
     //
     // What it reports is what `RegExp::find_all` reports.
     //
     // # Parameters
-    // * `bytes` - The bytes to search.
+    // * `target` - The string to search.
     // * `matcher` - The regular expression and its scanner.
-    find_all: Array U8 -> Matcher -> (Array (Array (I64, I64)), Matcher);
-    find_all = |bytes, matcher| (
-        let (matches, dfa) = matcher.@dfa.search_every(bytes);
-        (matches, matcher.set_dfa(dfa))
+    find_all: String -> Matcher -> (Array (Array (I64, I64)), Matcher);
+    find_all = |target, matcher| (
+        // See `match_one` for how the string's bytes are read.
+        let (matches, dfa) = matcher.@_dfa.search_every_within(target.get_bytes, target.@size);
+        (matches, matcher.set__dfa(dfa))
     );
 
-    // `matcher.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
-    // byte position `from`, and reports the scanner as the search left it.
+    // `matcher.find_all_in_bytes(bytes)` is `find_all` over an array of bytes.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to search.
+    // * `matcher` - The regular expression and its scanner.
+    find_all_in_bytes: Array U8 -> Matcher -> (Array (Array (I64, I64)), Matcher);
+    find_all_in_bytes = |bytes, matcher| (
+        let (matches, dfa) = matcher.@_dfa.search_every(bytes);
+        (matches, matcher.set__dfa(dfa))
+    );
+
+    // `matcher.find_from(from, target)` finds the match in `target` that begins first at or after
+    // the byte position `from`, and reports the scanner as the search left it.
     //
     // What it reports is what `RegExp::find_from` reports.
     //
     // # Parameters
     // * `from` - The byte position the match has to begin at or after.
+    // * `target` - The string to search.
+    // * `matcher` - The regular expression and its scanner.
+    find_from: I64 -> String -> Matcher -> (Option (Array (I64, I64)), Matcher);
+    find_from = |from, target, matcher| (
+        // See `match_one` for how the string's bytes are read.
+        let (found, dfa) = matcher.@_dfa.search_from_within(target.get_bytes, target.@size, max(from, 0));
+        (found, matcher.set__dfa(dfa))
+    );
+
+    // `matcher.find_from_in_bytes(from, bytes)` is `find_from` over an array of bytes.
+    //
+    // # Parameters
+    // * `from` - The position the match has to begin at or after.
     // * `bytes` - The bytes to search.
     // * `matcher` - The regular expression and its scanner.
-    find_from: I64 -> Array U8 -> Matcher -> (Option (Array (I64, I64)), Matcher);
-    find_from = |from, bytes, matcher| (
-        let (found, dfa) = matcher.@dfa.search_from(bytes, max(from, 0));
-        (found, matcher.set_dfa(dfa))
+    find_from_in_bytes: I64 -> Array U8 -> Matcher -> (Option (Array (I64, I64)), Matcher);
+    find_from_in_bytes = |from, bytes, matcher| (
+        let (found, dfa) = matcher.@_dfa.search_from(bytes, max(from, 0));
+        (found, matcher.set__dfa(dfa))
     );
 }

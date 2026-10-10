@@ -4,9 +4,9 @@
 // - https://swtch.com/~rsc/regexp/regexp1.html
 // - https://zenn.dev/canalun/articles/regexp_and_automaton
 //
-module RegExp.RegExpNFA;
+module RegExp.Internal.NFA;
 
-import RegExp.RegExpPattern::{
+import RegExp.Internal.Pattern::{
     _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
     Pattern, Forced::@sets, ForcedRun::{@back_class, @back_max, @bytes}, 
     PAssertion::{is_pa_begin, is_pa_end}, 
@@ -15,26 +15,19 @@ import RegExp.RegExpPattern::{
         is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, psequence, reverse
     }
 };
-import RegExp.SimpleParser::{
-    Parser, 
-    Parser::{
-        match_any_char, match_char, match_char_if_exists, match_integer, not_match, or_else, repeat, 
-        run_parser_str
-    }
-};
-import RegExp.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
-import RegExp.StringEx::{_unsafe_to_string, substring};
+import RegExp.Internal.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
+import RegExp.Internal.StringEx::{_unsafe_to_string, substring};
 import Std::{
-    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
+    loop, undefined, Array, Bool, I64, Option, String, U64, U8, 
     Array::{
         @, @size, append, empty, fill, from_map, get_last, mod, pop_back, push_back, set, sort_by, to_iter, 
         truncate
     }, 
     Functor::map, I64::{bit_and, bit_or, maximum, shift_right}, Indexable::ixchg, 
     Iterator::{check_any, fold, map, range}, 
-    LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
-    Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
-    String::{@size, concat_iter, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
+    LessThan::{max, min}, LoopState::{break, continue}, 
+    Option::{as_some, as_some_or, is_none, is_some, none, some}, 
+    String::{@size, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
     U64::{bit_and, bit_or, shift_right}
 };
 
@@ -305,18 +298,6 @@ namespace NFA {
 
 }
 
-impl NFA: ToString {
-    to_string = |nfa| (
-        "NFA { nodes=\n"
-        + range(0, nfa.@_nodes.@size).map(|i|
-            "  " + nfa.@_nodes.@(i).to_string + "\n"
-        ).concat_iter
-        + "  initial_node=" + nfa.@_initial_node.to_string + "\n"
-        + "  accepting_node=" + nfa.@_accepting_node.to_string + "\n"
-        +"}"
-    );
-}
-
 // What a thread has to do, or what has to hold, before it may take a node's `output_on_action`.
 type NFANodeAction = unbox union {
     sa_none: (),                            // nothing, so the action output is never taken
@@ -328,20 +309,6 @@ type NFANodeAction = unbox union {
     sa_quant_loop: QuantID,                 // count one more round of a special quantifier
     sa_quant_end: (QuantID, I64, I64)       // leave a special quantifier: its id, then its bounds
 };
-
-impl NFANodeAction: ToString {
-    to_string = |action| (
-        if action.is_sa_none { "none" };
-        if action.is_sa_char_match { "class@" + action.as_sa_char_match.to_string };
-        if action.is_sa_assert { action.as_sa_assert.to_string };
-        if action.is_sa_group_begin { "<g" + action.as_sa_group_begin.to_string + ">" };
-        if action.is_sa_group_end { "</g" + action.as_sa_group_end.to_string + ">" };
-        if action.is_sa_quant_begin { "<q" + action.as_sa_quant_begin.to_string + ">" };
-        if action.is_sa_quant_loop { "<ql" + action.as_sa_quant_loop.to_string + ">" };
-        if action.is_sa_quant_end { "</q" + action.as_sa_quant_end.to_string + ">" };
-        ""
-    );
-}
 
 // What a node's action lets a thread standing at it do. See `NFA::action_step`.
 type ActionStep = unbox struct {
@@ -367,14 +334,6 @@ type NodeID = unbox struct {
     val: I64   // the place in `_nodes`, or `-1` for no node
 };
 
-impl NodeID: ToString {
-    to_string = |id| id.@val.to_string;
-}
-
-impl NodeID: Eq {
-    eq = |a, b| a.@val == b.@val;
-}
-
 namespace NFANode {
     // The id standing for no node.
     __INVALID_NODE_ID: NodeID;
@@ -390,19 +349,6 @@ namespace NFANode {
         output2: __INVALID_NODE_ID
     };
 }
-
-impl NFANode: ToString {
-    to_string = |node| (
-        "("
-        + node.@id.to_string + ":"
-        + node.@action.to_string + ":"
-        + node.@output_on_action.to_string + ","
-        + node.@output.to_string + ","
-        + node.@output2.to_string
-        + ")"
-    );
-}
-
 
 // A stretch of the automaton, compiled from a stretch of the pattern. A thread enters it at one
 // node and may leave it from several, so where it leads onward is held as a function that points
@@ -2629,6 +2575,13 @@ type DFA = unbox struct {
 };
 
 namespace DFA {
+    // How many groups the pattern captures, the whole match left out.
+    //
+    // # Parameters
+    // * `dfa` - The automaton.
+    capture_count: DFA -> I64;
+    capture_count = |dfa| dfa.@_forward.@_nfa.@_group_count - 1;
+
     // The bytes every match begins with, as far as they are forced. They are worked out once for
     // the automaton and kept in its `_prefix`.
     //
@@ -2714,25 +2667,17 @@ namespace DFA {
         }
     );
 
-    // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place, together with the scanner as the search left it.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `from` - The position at or after which the match has to begin.
-    // * `dfa` - The scanner.
-    find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    find = |bytes, from, dfa| dfa._find(bytes, bytes.@size, from);
-
-    // What `find` reports for a text that is the first `length` of the bytes.
+    // The leftmost match in the text that is the first `length` of the bytes, beginning at or after
+    // a position and taking the longest of those that begin at the same place, together with the
+    // scanner as the search left it.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner.
-    _find: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
-    _find = |bytes, length, from, dfa| (
+    find_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    find_within = |bytes, length, from, dfa| (
         if from > length { (none(), dfa) };
         let DFA { _forward: forward, _backward: backward, _prefilter: prefilter } = dfa;
         let nfa = forward.@_nfa;
@@ -2891,7 +2836,7 @@ namespace DFA {
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
     search_from: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    search_from = |bytes, from, dfa| dfa._search_from_within(bytes, bytes.@size, from);
+    search_from = |bytes, from, dfa| dfa.search_from_within(bytes, bytes.@size, from);
 
     // What `search_from` reports for a text that is the first `length` of the bytes. A string's
     // bytes are searched this way, with the null byte that ends them left beyond the text, where
@@ -2902,9 +2847,9 @@ namespace DFA {
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
-    _search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
-    _search_from_within = |bytes, length, from, dfa| (
-        dfa._fit(bytes, length)._find(bytes, length, from)
+    search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    search_from_within = |bytes, length, from, dfa| (
+        dfa._fit(bytes, length).find_within(bytes, length, from)
     );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
@@ -2914,17 +2859,17 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `dfa` - The scanner to search with.
     search_every: Array U8 -> DFA -> (Array Groups, DFA);
-    search_every = |bytes, dfa| dfa._search_every_within(bytes, bytes.@size);
+    search_every = |bytes, dfa| dfa.search_every_within(bytes, bytes.@size);
 
     // What `search_every` reports for a text that is the first `length` of the bytes. See
-    // `_search_from_within`.
+    // `search_from_within`.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `dfa` - The scanner to search with.
-    _search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
-    _search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
+    search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
+    search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
 
     // The scanner told what to look for over a text. See `Prefilter::_fit`.
     //
@@ -2951,7 +2896,7 @@ namespace DFA {
         let (matches, _, dfa) = loop(
             (Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
-            let (opt, dfa) = dfa._find(bytes, length, from);
+            let (opt, dfa) = dfa.find_within(bytes, length, from);
             if opt.is_none { break $ (matches, from, dfa) };
             let groups = opt.as_some;
             let (begin, end) = groups.@(0);
@@ -3004,27 +2949,61 @@ namespace NFA {
     );
 }
 
-// A piece of a replacement string: a byte to write out as it stands, or a group whose captured
-// text to write out.
+// A piece of a replacement string.
 type ReplaceFrag = unbox union {
     rep_literal: U8,   // the byte to write out
-    rep_group: I64     // which group to write the captured text of
+    rep_group: I64,    // which group to write the captured text of, `0` standing for the whole match
+    rep_before: (),    // the text before the match
+    rep_after: ()      // the text after the match
 };
 
 namespace Replacement {
 
-    // Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
-    // `$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
-    compile: String -> Array ReplaceFrag;
-    compile = |replacement| (
-        let parsed = _parse_replacement_seq.run_parser_str(replacement);
-        if parsed.is_err { undefined("_parse_replacement_seq failed") };
-        let (frags, _) = parsed.as_ok;
-        frags
+    // Compiles a replacement string to fragments, reading it as JavaScript reads the replacement
+    // string of `String.prototype.replaceAll`:
+    // - `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
+    //   `$'` for the text after it.
+    // - `$` and two digits stand for the group they number where that group exists; otherwise `$`
+    //   and the first digit stand for the group it numbers, and the second digit for itself. `$0`
+    //   and the number of a group the pattern lacks stand for themselves.
+    // - Every other byte stands for itself, a `$` among them.
+    //
+    // # Parameters
+    // * `group_count` - How many groups the pattern captures, the whole match left out.
+    // * `replacement` - The replacement string.
+    compile: I64 -> String -> Array ReplaceFrag;
+    compile = |group_count, replacement| (
+        let bytes = replacement.get_bytes;
+        let size = replacement.@size;
+        // The number the digit at `at` writes, or `-1` where no digit stands there.
+        let digit = |at| (
+            if at >= size { -1 };
+            let byte = bytes.@(at);
+            if byte < '0' || '9' < byte { -1 };
+            (byte - '0').i64
+        );
+        let names_group = |index| 1 <= index && index <= group_count;
+        loop((Array::empty(size), 0), |(frags, at)|
+            if at >= size { break $ frags };
+            let byte = bytes.@(at);
+            if byte != '$' || at + 1 >= size { continue $ (frags.push_back(rep_literal(byte)), at + 1) };
+            let next = bytes.@(at + 1);
+            if next == '$' { continue $ (frags.push_back(rep_literal('$')), at + 2) };
+            if next == '&' { continue $ (frags.push_back(rep_group(0)), at + 2) };
+            if next == '`' { continue $ (frags.push_back(rep_before()), at + 2) };
+            if next == '\'' { continue $ (frags.push_back(rep_after()), at + 2) };
+            let first = digit(at + 1);
+            let second = digit(at + 2);
+            if first >= 0 && second >= 0 && names_group(first * 10 + second) {
+                continue $ (frags.push_back(rep_group(first * 10 + second)), at + 3)
+            };
+            if names_group(first) { continue $ (frags.push_back(rep_group(first)), at + 2) };
+            continue $ (frags.push_back(rep_literal('$')), at + 1)
+        )
     );
 
     // The text a match is replaced by: the fragments written out one after another, each group
-    // standing for the text it captured.
+    // standing for the text it captured, and a group that captured nothing for the empty string.
     //
     // # Parameters
     // * `target` - The string the match was found in.
@@ -3032,60 +3011,20 @@ namespace Replacement {
     // * `groups` - The groups the match captured.
     calc_replacement: String -> Array ReplaceFrag -> Groups -> String;
     calc_replacement = |target, rep_frags, groups| (
+        let (begin, end) = groups.@(0);
         let output: Array U8 = Array::empty(target.@size + rep_frags.@size);
         let output = rep_frags.to_iter.fold(
             output, |rep, output|
             if rep.is_rep_literal {
                 output.push_back(rep.as_rep_literal)
             };
-            if rep.is_rep_group {
-                let group_idx = rep.as_rep_group;
-                let (begin, end) = groups.group_at(group_idx);
-                let captured = target.substring(begin, end);
-                output.append(captured.get_bytes.pop_back)
-            };
-            undefined("err")
+            let (from, to) = (
+                if rep.is_rep_before { (0, begin) };
+                if rep.is_rep_after { (end, target.@size) };
+                groups.group_at(rep.as_rep_group)
+            );
+            output.append(target.substring(from, to).get_bytes.pop_back)
         );
         output._unsafe_to_string
     );
-
-    // Parses a whole replacement string: every fragment it holds, in the order they stand in.
-    _parse_replacement_seq: Parser (Array ReplaceFrag);
-    _parse_replacement_seq = do {
-        repeat(
-            _parse_dollar
-            .or_else(_parse_literal)
-        )
-    };
-
-    // Parses a `$` escape: `$$` for a `$`, `$&` for the whole match, and `$n` for group `n`.
-    _parse_dollar: Parser ReplaceFrag;
-    _parse_dollar = do {
-        let _ = *match_char('$');
-        
-        let dollar = *match_char_if_exists('$');    // $$
-        if dollar.is_some {
-            pure $ rep_literal('$')
-        };
-
-        let ampersand = *match_char_if_exists('&');    // $&
-        if ampersand.is_some {
-            pure $ rep_group(0)
-        };
-
-        // TODO: support $`, $', $<Name>
-
-        let num = *match_integer.map(some).or_else(pure $ none());    // $n
-        if num.is_some {
-            pure $ rep_group(num.as_some)
-        };
-
-        not_match
-    };
-
-    // Parses one byte, which stands for itself.
-    _parse_literal: Parser ReplaceFrag;
-    _parse_literal = do {
-        match_any_char.map(rep_literal)
-    };
 }

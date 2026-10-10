@@ -2,16 +2,16 @@
 // - Stream of characters
 // - Basic parsers such as character matching
 // - Create complex parsers with composition
-module RegExp.SimpleParser;
+module RegExp.Internal.SimpleParser;
 
-import Character::{is_digit, is_lower, is_space};
-import RegExp.StringEx::{_unsafe_to_string, find_byte, substring};
+import Character::is_digit;
+import RegExp.Internal.StringEx::_unsafe_to_string;
 import Std::{
-    loop, Array, Bool, ErrMsg, FromString, Functor, I64, Monad, Option, Result, String, ToString, U8, 
-    Array::{@size, empty, from_iter, pop_back, push_back, to_iter}, Debug::debug_println, 
-    FromString::from_string, Functor::map, Iterator::{advance, empty, fold, take, to_dyn, DynIterator}, 
-    LoopState::{break, continue}, Monad::pure, Option::{as_some, is_none, is_some, map_or, none, some}, 
-    Result::{as_err, as_ok, err, is_err, is_ok, ok}, String::{@size, get_bytes, get_first_byte}, 
+    loop, Array, Bool, ErrMsg, FromString, Functor, I64, Monad, Option, Result, String, U8, 
+    Array::{@size, empty, from_iter, pop_back, push_back, to_iter}, 
+    FromString::from_string, Functor::map, Iterator::{advance, empty, take, to_dyn, DynIterator}, 
+    LoopState::{break, continue}, Monad::pure, Option::{is_some, map_or, none, some}, 
+    Result::{as_err, as_ok, err, is_err, is_ok, ok}, String::{@size, get_bytes}, 
     ToString::to_string
 };
 
@@ -19,20 +19,18 @@ import Std::{
 type Char = U8;
 
 namespace Stream {
-    // A character iterator that stores the file name, line number, column number,
-    // and offset from the beginning of the file.
+    // A character iterator that stores the line number, column number, and offset from the
+    // beginning of the text.
     type Stream = unbox struct {
-        filename: String,       // File name (empty if no file name is set)
         line: I64,              // Line number
         column: I64,            // Column number
-        position: I64,          // Stream position from the beginning of the file
+        position: I64,          // Stream position from the beginning of the text
         iter: DynIterator Char     // The character iterator
     };
 
     // An empty Stream.
     empty: Stream;
     empty = Stream{
-        filename: "",
         line: 0,
         column: 0,
         position: 0,
@@ -60,22 +58,6 @@ namespace Stream {
         pure $ (c, s)
     );
 
-    // `stream.read_all` reads all characters to the end of stream.
-    read_all: Stream -> (Array Char, Stream);
-    read_all = |s| (
-        let arr = Array::empty(100);
-        loop(
-            (arr, s), |(arr, s)|
-            let opt = s.advance;
-            if opt.is_none {
-                break $ (arr, s)
-            };
-            let (c, s) = opt.as_some;
-            let arr = arr.push_back(c);
-            continue $ (arr, s)
-        )
-    );
-
     // `stream.read_string(n)` reads at most `n` characters and convert them to a string.
     read_string: I64 -> Stream -> String;
     read_string = |n, s| (
@@ -86,7 +68,6 @@ namespace Stream {
     error: String -> Stream -> Result ErrMsg a;
     error = |str, s| (
         let msg =
-            if s.@filename == "" { "" } else { s.@filename + " " } +
             "line " + s.@line.to_string +
             ", column " + s.@column.to_string +
             ": ";
@@ -101,32 +82,12 @@ impl Stream: FromString {
     );
 }
 
-// Converts a stream to a string, for example `"Stream(pos=1001)"`
-impl Stream: ToString {
-    to_string = |s| (
-        "Stream(pos=" + s.@position.to_string + ")"
-    );
-}
-
 // Result type that returns a value of an arbitrary type and a stream.
 type ParseResult a = Result ErrMsg (a, Stream);
-
-/*
-//impl [a: ToString] ParseResult a: ToString {
-    to_string = |res| (
-        if res.is_err {
-            "err $ \"" + res.as_err + "\""
-        };
-        let (c, s) = res.as_ok;
-        "ok $ (" + c.to_string + ", pos=" + s.@position.to_string + ")"
-    );
-}
-*/
 
 // A special error message that represents the parser is not matched.
 __NotMatch: ErrMsg;
 __NotMatch = "NotMatch";
-
 
 // A structure with a function that receive a stream, parse it, and
 // return the parsed result and the next stream position.
@@ -179,19 +140,6 @@ namespace Parser {
             };
             ok $ (res.as_ok, s)
     );
-
-    // Prints the parser result.
-    debug: [a: ToString] String -> Parser a -> Parser a;
-    debug = |msg, p| parser $ |s| (
-        eval debug_println(msg + ": begin");
-        let res = p.run_parser(s);
-        eval debug_println(msg + ": end res=" + res.to_string);
-        res
-    );
-
-    // Match zero-length string.
-    unit: Parser ();
-    unit = pure $ ();
 
     // Returns the current stream position.
     get_stream: Parser Stream;
@@ -277,20 +225,6 @@ namespace Parser {
     zero_or_more: Parser a -> Parser (Array a);
     zero_or_more = repeat;
 
-    // Same as `zero_or_more`, but raises a __NotMatch error
-    // if the array length is zero.
-    one_or_more: Parser a -> Parser (Array a);
-    one_or_more = |p| (
-        repeat(p).filter(|array| array.@size >= 1)
-    );
-
-    // `p.if_exists` returns `some(x)` if `p` returns `x` as a parse result,
-    // or `none()` if `p` does not match.
-    if_exists: Parser a -> Parser (Option a);
-    if_exists = |p| (
-        p.map(some).or_else(pure $ none())
-    );
-
     // Matches zero-length string at the end of stream.
     match_end_of_stream: Parser ();
     match_end_of_stream = parser $ |s| (
@@ -329,49 +263,6 @@ namespace Parser {
     match_char_if_exists = |c| (
         match_any_char.filter(|c1| c1 == c).map(some).or_else(pure $ none())
     );
-    /*
-    match_char_if_exists = |c| (
-        let n: Option U8 = none();
-        let p: Parser (Option U8) = match_any_char.filter(|c1| c1 == c).map(some);
-        p.or_else(pure $ n)
-    );
-    */
-
-    // Matches a character which is included in the specified string.
-    // The parsed result is a string consisting of the single matched character.
-    // If the match fails, a `__NotMatch` error is raised.
-    match_one_of_char: String -> Parser String;
-    match_one_of_char = |str| do {
-        let c = *match_any_char;
-        let opt = str.find_byte(c);
-        if opt.is_none {
-            not_match
-        };
-        let i = opt.as_some;
-        pure $ str.substring(i, i + 1)
-    };
-
-    // Matches a string specified by the argument.
-    // The parsed result is nothing.
-    // If the match fails, a `__NotMatch` error is raised.
-    match_str: String -> Parser ();
-    match_str = |str| (
-        if str.@size == 1 { // Optimization
-            match_char(str.get_first_byte.as_some)
-        };
-        str.get_bytes.pop_back.to_iter.fold(
-            unit,
-            |c, p| do {
-                let _ = *p;
-                let _ = *match_char(c);
-                pure $ ()
-            }
-        )
-    );
-
-    // Matches a zero-length string.
-    match_empty_str: Parser String;
-    match_empty_str = unit.map(|_| "");
 
     // Matches a character satisfying the specified condition.
     match_char_class: (Char -> Bool) -> Parser Char;
@@ -385,18 +276,6 @@ namespace Parser {
         repeat(match_char_class(f))
         .map(_unsafe_to_string)
     );
-
-    // Matches a zero-or-more-length string of whitespace characters.
-    match_str_class_whitespace: Parser String;
-    match_str_class_whitespace = match_str_class(Character::is_space);
-
-    // Matches a zero-or-more-length string of lowercase characters.
-    match_str_class_lower: Parser String;
-    match_str_class_lower = match_str_class(Character::is_lower);
-
-    // Matches a zero-or-more-length string of digit characters.
-    match_str_class_digit: Parser String;
-    match_str_class_digit = match_str_class(Character::is_digit);
 
     // Matches an integer.
     match_integer: Parser I64;

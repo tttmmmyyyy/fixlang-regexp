@@ -1,23 +1,26 @@
 module Test;
 
 import RegExp::{
-    Matcher::{find_all, find_from, match_all, match_one, replace_all}, 
-    RegExp::{@nfa, compile, find_all, find_from, match_all, match_one, matcher, replace_all}
+    Matcher::{find_all, find_all_in_bytes, find_from, find_from_in_bytes, match_all, match_one, replace_all}, 
+    RegExp::{
+        @_nfa, compile, find_all, find_all_in_bytes, find_from, find_from_in_bytes, match_all, match_one, 
+        matcher, replace_all
+    }
 };
-import RegExp.RegExpNFA::{
+import RegExp.Internal.NFA::{
     _holds_byte, DFA, Groups, NFA, 
-    DFA::{@_prefilter, _every_match, _search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
+    DFA::{@_prefilter, _every_match, search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
     StateTable::_insert_at, 
     NFA::{@_forced_sets, @_prefix, _search_threads, search, search_all}
 };
-import RegExp.RegExpPattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
-import RegExp.StdBytes::{find_byte, find_bytes, find_bytes_within};
+import RegExp.Internal.Pattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
+import RegExp.Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
     Array::{@, @size, empty, pop_back, push_back, to_iter}, Debug::{assert, assert_eq}, 
     Iterator::{fold, fold_m, range, to_array}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
     Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, String::get_bytes, 
-    ToI64::i64, ToString::to_string, ToU8::u8
+    ToString::to_string
 };
 
 // A case for `match_one` and `match_all`.
@@ -25,7 +28,7 @@ type MatchCase = unbox struct {
     pattern: String,            // the pattern to compile
     flags: String,              // the flags to compile it with
     target: String,             // the string to match against
-    one: Array String,          // what `match_one` gives, an empty array standing for `NotMatch`
+    one: Array String,          // what `match_one` gives, an empty array standing for `none()`
     all: Array (Array String)   // what `match_all` gives
 };
 
@@ -145,7 +148,29 @@ _replace_cases = [
                   replacement: "-", result: "b\n-\n-" },
     ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
                   replacement: "$2$1", result: "baba" },
-    ReplaceCase { pattern: "x", flags: "g", target: "abc", replacement: "-", result: "abc" }
+    ReplaceCase { pattern: "x", flags: "g", target: "abc", replacement: "-", result: "abc" },
+    // The replacement read as JavaScript reads it; the results are what `replaceAll` gives.
+    ReplaceCase { pattern: "b", flags: "g", target: "abc", replacement: "[$&$$]", result: "a[b$]c" },
+    ReplaceCase { pattern: "b", flags: "g", target: "abc", replacement: "[$`|$']", result: "a[a|c]c" },
+    ReplaceCase { pattern: "a", flags: "g", target: "bab", replacement: "$", result: "b$b" },
+    ReplaceCase { pattern: "a", flags: "g", target: "bab", replacement: "[$x]", result: "b[$x]b" },
+    ReplaceCase { pattern: "a", flags: "g", target: "a", replacement: "$$1", result: "$1" },
+    ReplaceCase { pattern: "(a)", flags: "g", target: "a", replacement: "[$<n>]", result: "[$<n>]" },
+    ReplaceCase { pattern: "(a)|(b)", flags: "g", target: "ab", replacement: "[$1$2]", result: "[a][b]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$0]", result: "[$0][$0]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$3]", result: "[$3][$3]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$10]", result: "[a0][a0]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$01]", result: "[a][a]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab",
+                  replacement: "[$00]", result: "[$00][$00]" },
+    ReplaceCase { pattern: "(a)(b)", flags: "g", target: "abab", replacement: "[$99999999999999999999]",
+                  result: "[$99999999999999999999][$99999999999999999999]" },
+    ReplaceCase { pattern: "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)", flags: "g", target: "abcdefghij",
+                  replacement: "$10$1", result: "ja" }
 ];
 
 // A case for the byte searches the automaton reads text with.
@@ -497,7 +522,7 @@ _test_posix_suite = (
         let result = RegExp::compile(pattern, "");
         assert(|_| "/" + pattern + "/ compiles", result.is_ok);;
         let bytes = text.get_bytes.pop_back;
-        let found = result.as_ok.@nfa.search(bytes, 0);
+        let found = result.as_ok.@_nfa.search(bytes, 0);
         let where = if found.is_none { (-1, -1) } else { found.as_some.@(0) };
         assert_eq(|_| _named(pattern, "", text) + " POSIX suite", where, (begin, end));;
         pure $ met + (if found.is_none { 0 } else { 1 })
@@ -536,15 +561,16 @@ _test_against_threads = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, compiled, found) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
         let matches = nfa.search_all(bytes);
         assert_eq(|_| name + " search_all", matches, _search_all_threads(bytes, nfa));;
-        assert_eq(|_| name + " find_all", result.as_ok.find_all(bytes).to_array, matches);;
+        assert_eq(|_| name + " find_all", result.as_ok.find_all(target).to_array, matches);;
+        assert_eq(|_| name + " find_all_in_bytes", result.as_ok.find_all_in_bytes(bytes).to_array, matches);;
         // A string's bytes are searched up to its length, with the null byte that ends them left
         // beyond the text, and the search answers as it does over the bytes without that null.
-        let (within, _) = DFA::make(nfa)._search_every_within(target.get_bytes, bytes.@size);
+        let (within, _) = DFA::make(nfa).search_every_within(target.get_bytes, bytes.@size);
         assert_eq(|_| name + " search within a string's bytes", within, matches);;
         range(0, bytes.@size + 1).fold_m((), |from, _|
             assert_eq(
@@ -578,7 +604,7 @@ _test_forced_sets = (
         if result.is_err { pure $ (draws, tried) };
         // The text is written out twice over, so that a string the pattern forces stands in it more
         // than once and the scanner has to go on after the first match it finds.
-        let tried = *_forced_sets_agree(result.as_ok.@nfa, pattern, target + target, tried);
+        let tried = *_forced_sets_agree(result.as_ok.@_nfa, pattern, target + target, tried);
         pure $ (draws, tried)
     );
     // The draws are held to producing work. A generator that stopped producing patterns that force
@@ -639,7 +665,7 @@ _repeat_bound_cases = [
 _test_repeat_bound: IO ();
 _test_repeat_bound = (
     _repeat_bound_cases.to_iter.fold_m((), |(pattern, longest), _|
-        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let nfa = RegExp::compile(pattern, "g").as_ok.@_nfa;
         nfa.@_forced_sets.to_iter.fold_m((), |set, _|
             set.to_iter.fold_m((), |run, _|
                 assert_eq(
@@ -656,7 +682,7 @@ _test_repeat_bound = (
 _test_forced_shapes: IO ();
 _test_forced_shapes = (
     _forced_shape_cases.to_iter.fold_m(0, |(pattern, target), tried|
-        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let nfa = RegExp::compile(pattern, "g").as_ok.@_nfa;
         let next = *_forced_sets_agree(nfa, pattern, target, tried);
         // Each case is written to force byte strings, so one that stopped forcing any would say so
         // here rather than go on passing with nothing looked for.
@@ -741,7 +767,7 @@ _test_forced_sets_stand_in_matches = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, held) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
         let sets = nfa.@_forced_sets;
@@ -777,7 +803,7 @@ _test_first_bytes = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, held) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         let name = _named(pattern, "g", target);
         let first_bytes = DFA::make(nfa).@_prefilter.@_first_bytes;
@@ -816,7 +842,7 @@ _test_forced_beginning = (
         let (target, draws) = _draw_target(draws);
         let result = RegExp::compile(pattern, "g");
         if result.is_err { pure $ (draws, checked) };
-        let nfa = result.as_ok.@nfa;
+        let nfa = result.as_ok.@_nfa;
         let prefix = nfa.@_prefix;
         if prefix.@size == 0 { pure $ (draws, checked) };
         let bytes = target.get_bytes.pop_back;
@@ -958,7 +984,7 @@ _beyond_bounds_cases = [
 _test_beyond_bounds: IO ();
 _test_beyond_bounds = (
     _beyond_bounds_cases.to_iter.fold_m((), |(pattern, target, matches), _|
-        let nfa = RegExp::compile(pattern, "g").as_ok.@nfa;
+        let nfa = RegExp::compile(pattern, "g").as_ok.@_nfa;
         let bytes = target.get_bytes.pop_back;
         assert_eq(
             |_| "/" + pattern + "/ over " + bytes.@size.to_string + " bytes",
@@ -991,24 +1017,47 @@ _find_cases = [
     ("a*", "baa", [[(0, 0)], [(1, 3)], [(3, 3)]], 2, some([(2, 3)])),
     // A position past the end of the text holds no match, and a negative one counts as `0`.
     ("b", "abab", [[(1, 2)], [(3, 4)]], 9, none()),
-    ("a", "abab", [[(0, 1)], [(2, 3)]], -3, some([(0, 1)]))
+    ("a", "abab", [[(0, 1)], [(2, 3)]], -3, some([(0, 1)])),
+    // The text of a string ends where its null byte begins.
+    ("a$", "ba", [[(1, 2)]], 0, some([(1, 2)]))
 ];
 
-// `find_all` and `find_from` report where the groups of the matches stand, and a matcher kept
-// from one text to the next reports what a regular expression reports for each.
+// `find_all` and `find_from` report where the groups of the matches stand in a string, their
+// `_in_bytes` versions report the same over the string's bytes, and a matcher kept from one text to
+// the next reports what a regular expression reports for each.
 _test_find_positions: IO ();
 _test_find_positions = (
     _find_cases.to_iter.fold_m((), |(pattern, text, all, from, first), _|
         let regexp = RegExp::compile(pattern, "").as_ok;
         let bytes = text.get_bytes.pop_back;
         let name = _named(pattern, "", text);
-        assert_eq(|_| name + " find_all", regexp.find_all(bytes).to_array, all);;
-        assert_eq(|_| name + " find_from " + from.to_string, regexp.find_from(from, bytes), first);;
-        let (kept_all, matcher) = regexp.matcher.find_all("xyz".get_bytes.pop_back);
-        let (kept_all, matcher) = matcher.find_all(bytes);
+        assert_eq(|_| name + " find_all", regexp.find_all(text).to_array, all);;
+        assert_eq(|_| name + " find_all_in_bytes", regexp.find_all_in_bytes(bytes).to_array, all);;
+        assert_eq(|_| name + " find_from " + from.to_string, regexp.find_from(from, text), first);;
+        assert_eq(
+            |_| name + " find_from_in_bytes " + from.to_string, regexp.find_from_in_bytes(from, bytes), first
+        );;
+        let (kept_all, matcher) = regexp.matcher.find_all("xyz");
+        let (kept_all, matcher) = matcher.find_all(text);
         assert_eq(|_| name + " kept find_all", kept_all, all);;
-        let (kept_first, _) = matcher.find_from(from, bytes);
-        assert_eq(|_| name + " kept find_from " + from.to_string, kept_first, first)
+        let (kept_all, matcher) = matcher.find_all_in_bytes(bytes);
+        assert_eq(|_| name + " kept find_all_in_bytes", kept_all, all);;
+        let (kept_first, matcher) = matcher.find_from(from, text);
+        assert_eq(|_| name + " kept find_from " + from.to_string, kept_first, first);;
+        let (kept_first, _) = matcher.find_from_in_bytes(from, bytes);
+        assert_eq(|_| name + " kept find_from_in_bytes " + from.to_string, kept_first, first)
+    )
+);
+
+// `compile` takes the flags `""` and `"g"`, and reports any other flag, or `g` given twice, as an
+// error.
+_test_flags: IO ();
+_test_flags = (
+    ["", "g"].to_iter.fold_m((), |flags, _|
+        assert(|_| "flags \"" + flags + "\" are taken", RegExp::compile("a", flags).is_ok)
+    );;
+    ["i", "gi", "ig", "gg", "y"].to_iter.fold_m((), |flags, _|
+        assert(|_| "flags \"" + flags + "\" are refused", RegExp::compile("a", flags).is_err)
     )
 );
 
@@ -1020,7 +1069,7 @@ test = (
         let name = _named(case.@pattern, case.@flags, case.@target);
         let regexp = RegExp::compile(case.@pattern, case.@flags).as_ok;
         let one = regexp.match_one(case.@target);
-        let one = if one.is_err { [] } else { one.as_ok };
+        let one = if one.is_none { [] } else { one.as_some };
         assert_eq(|_| name + " match_one", one, case.@one);;
         assert_eq(|_| name + " match_all", regexp.match_all(case.@target), case.@all)
     );;
@@ -1047,5 +1096,6 @@ test = (
     _test_beyond_bounds;;
     _test_ordered_insertion;;
     _test_find_positions;;
+    _test_flags;;
     pure()
 );

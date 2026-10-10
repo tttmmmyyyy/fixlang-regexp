@@ -1,0 +1,50 @@
+// The iterator `RegExp::find_all` and `RegExp::find_all_in_bytes` return.
+module RegExp.Internal.Matches;
+
+import RegExp.Internal.NFA::{DFA, DFA::{find_within, search_from_within}};
+import Std::{
+    Array, Bool, I64, Iterator, U8, Array::@, Option::{as_some, is_none, none, some}
+};
+
+// The matches in a text, each looked for when the iterator is advanced to it.
+type Matches = unbox struct {
+    _bytes: Array U8,   // the bytes searched
+    _length: I64,       // where the text in `_bytes` ends
+    _from: I64,         // the position the next match has to begin at or after
+    _dfa: DFA,          // the scanner, and what it has worked out so far
+    // Whether the scanner has been told what to look for over these bytes. The first search tells
+    // it, and the searches after it search as it stands.
+    _fitted: Bool
+};
+
+namespace Matches {
+    // The matches in the text that is the first `length` of `bytes`, taken left to right, none of
+    // them overlapping another.
+    //
+    // # Parameters
+    // * `bytes` - The bytes to search.
+    // * `length` - Where the text in `bytes` ends.
+    // * `dfa` - The scanner to search with.
+    make: Array U8 -> I64 -> DFA -> Matches;
+    make = |bytes, length, dfa| Matches {
+        _bytes: bytes, _length: length, _from: 0, _dfa: dfa, _fitted: false
+    };
+}
+
+impl Matches : Iterator {
+    type Item Matches = Array (I64, I64);
+    advance = |matches| (
+        let Matches { _bytes: bytes, _length: length, _from: from, _dfa: dfa, _fitted: fitted } = matches;
+        let (found, dfa) = if fitted {
+            dfa.find_within(bytes, length, from)
+        } else {
+            dfa.search_from_within(bytes, length, from)
+        };
+        if found.is_none { none() };
+        let groups = found.as_some;
+        let (begin, end) = groups.@(0);
+        // A match that read nothing would be found again where it was found.
+        let next = if end > begin { end } else { begin + 1 };
+        some $ (Matches { _bytes: bytes, _length: length, _from: next, _dfa: dfa, _fitted: true }, groups)
+    );
+}

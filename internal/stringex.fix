@@ -1,0 +1,22 @@
+// The string operations `Std` does not offer, which the parsers and the matching functions use.
+module RegExp.Internal.StringEx;
+
+import Std::{Array, I64, String, U8, Array::push_back, String::{@size, _unsafe_from_c_str, get_sub}};
+
+// Converts a byte array to a string. Specifically, it calls `String::_unsafe_from_c_str()`
+// after appending a null character to the end of the byte array.
+_unsafe_to_string: Array U8 -> String;
+_unsafe_to_string = |a| (
+    String::_unsafe_from_c_str (a.push_back(0_U8))
+);
+
+// Returns a substring extracted from a specified range from a string.
+// If the specified range exceeds the string, it will be truncated to fit within the string.
+substring: I64 -> I64 -> String -> String;
+substring = |s, e, str| (
+    let size = str.@size;
+    let s = (if s < 0 { 0 }; if s >= size { size }; s);
+    let e = (if e < s { s }; if e >= size { size }; e);
+    if s == 0 && e == size { str };
+    str.get_sub(s, e)
+);

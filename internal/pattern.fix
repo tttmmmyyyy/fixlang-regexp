@@ -1,8 +1,8 @@
 // Character class and Pattern parser. This is internal module of `RegExp`.
-module RegExp.RegExpPattern;
+module RegExp.Internal.Pattern;
 
 import Character::{is_alnum, is_digit, is_space};
-import RegExp.SimpleParser::{
+import RegExp.Internal.SimpleParser::{
     Parser, 
     Parser::{
         error_parser, filter, get_stream, match_any_char, match_char, match_char_if_exists, 
@@ -11,12 +11,12 @@ import RegExp.SimpleParser::{
     }, 
     Stream::{read_string, Stream::@position}
 };
-import RegExp.StringEx::{byte_to_string, find_byte};
+import RegExp.Internal.StdBytes::find_bytes_within;
 import Std::{
     undefined, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
     Array::{@, @size, append, empty, fill, from_map, mod, push_back, set, to_iter}, Functor::map, I64::maximum, 
     Iterator::{count_up, fold, map, range, take}, Monad::pure, 
-    Option::{as_some, is_none, is_some, none, some}, String::{@size, join}, ToI64::i64, 
+    Option::{as_some, is_none, is_some, none, some}, String::{@size, from_U8, get_bytes, join}, ToI64::i64, 
     ToString::to_string, ToU64::u64, ToU8::u8, U64::{bit_or, maximum, shift_left}
 };
 
@@ -47,14 +47,14 @@ namespace CharClass {
     // Creates a character class whose only member is the specified character.
     singleton: U8 -> CharClass;
     singleton = |c| CharClass {
-        label: byte_to_string(c),
+        label: String::from_U8(c),
         f: |c1| c1 == c
     };
 
     // Creates a character class whose members are characters from start to end.
     range: U8 -> U8 -> CharClass;
     range = |start, end| CharClass {
-        label: byte_to_string(start) + "-" + byte_to_string(end),
+        label: String::from_U8(start) + "-" + String::from_U8(end),
         f: |c| start <= c && c <= end
     };
 
@@ -62,7 +62,7 @@ namespace CharClass {
     consists_of: String -> CharClass;
     consists_of = |str| CharClass {
         label: str,
-        f: |c| str.find_byte(c).is_some
+        f: |c| str.get_bytes.find_bytes_within([c], 0, str.@size).is_some
     };
 
     // Negate the member function of a character class.
@@ -134,18 +134,6 @@ namespace CharClass {
     cls_non_whitespace = cls_whitespace.negate.set_label("\\S");
 }
 
-// Converts a character class to a string.
-impl CharClass: ToString {
-    to_string = |cls| (
-        if cls.@label.@size <= 1 {
-            cls.@label
-        } else {
-            "[" + cls.@label + "]"
-        }
-    );
-}
-
-
 // Type of an assertion for regular expressions, such as `^`, `$`.
 type PAssertion = unbox union {
     pa_begin: (),       // beginning of line, ie. '^'
@@ -207,7 +195,6 @@ impl Pattern: ToString {
         undefined("err")
     );
 }
-
 
 namespace Pattern {
 
