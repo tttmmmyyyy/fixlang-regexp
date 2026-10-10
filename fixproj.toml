@@ -16,7 +16,7 @@ files = [
 ]
 
 [build.test]
-files = ["test.fix"]
+files = ["test.fix", "test_js_cases.fix"]
 
 [[dependencies]]
 name = "hashmap"

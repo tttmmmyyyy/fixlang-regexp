@@ -1,11 +1,12 @@
 This is a regular expression (regex) implementation for the [Fix programming language](https://github.com/tttmmmyyyy/fixlang).
 
-It follows JavaScript's regular expressions but for one thing: where several alternatives match at
-one place, the longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
+It follows JavaScript's regular expressions: a search finds the match JavaScript finds, and each
+group captures what it captures in JavaScript. The syntax it reads is listed in
+[docs/RegExp.md](docs/RegExp.md).
 
 The module `RegExp` is the whole interface of the library, and its version number follows that
 module alone. The modules under `RegExp.Internal` are the parts the library is built from, and any
-version may change them. The documentation of `RegExp` is in [docs/RegExp.md](docs/RegExp.md).
+version may change them.
 
 # Acknowledgements
 

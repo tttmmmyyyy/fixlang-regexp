@@ -15,7 +15,7 @@ import RegExp.Internal.StdBytes::find_bytes_within;
 import Std::{
     undefined, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
     Array::{@, @size, append, empty, fill, from_map, mod, push_back, set, to_iter}, Functor::map, I64::maximum, 
-    Iterator::{count_up, fold, map, range, take}, Monad::pure, 
+    Iterator::{count_up, fold, map, range, take}, LessThan::{max, min}, Monad::pure, 
     Option::{as_some, is_none, is_some, none, some}, String::{@size, from_U8, get_bytes, join}, ToI64::i64, 
     ToString::to_string, ToU64::u64, ToU8::u8, U64::{bit_or, maximum, shift_left}
 };
@@ -159,8 +159,9 @@ type Pattern = box union {
     psequence: Array Pattern,
     // Either pattern, eg. `X|Y`
     peither: (Pattern, Pattern),
-    // Quantified pattern, eg. `X?`, `X*`, `X+`, `X{n,m}`
-    pquant: (Pattern, /*min_count:*/ I64, /*max_count:*/ I64),
+    // Quantified pattern, eg. `X?`, `X*`, `X+`, `X{n,m}`: the pattern, the fewest and the most rounds,
+    // and whether a match takes as many rounds as it can (greedy) or as few (`X*?` and the like)
+    pquant: (Pattern, I64, I64, Bool),
     // Grouped pattern, eg. `(X)`
     pgroup: (/* group_number:*/ I64, Pattern)
 };
@@ -183,10 +184,10 @@ impl Pattern: ToString {
             pat1.to_string + "|" + pat2.to_string
         };
         if pat.is_pquant {
-            let (pat1, min, max) = pat.as_pquant;
+            let (pat1, min, max, greedy) = pat.as_pquant;
             pat1.to_string + "{" + min.to_string + "," +
                 if max == I64::maximum { "" } else { max.to_string }
-            + "}"
+            + "}" + if greedy { "" } else { "?" }
         };
         if pat.is_pgroup {
             let (n, pat_inner) = pat.as_pgroup;
@@ -247,32 +248,33 @@ namespace Pattern {
         not_match
     };
 
-    // Parses Quantified Pattern, ie. `X?`, `X*`, `X+`, `X{n}`, `X{n,}`, `X{n,m}`
+    // Parses Quantified Pattern, ie. `X?`, `X*`, `X+`, `X{n}`, `X{n,}`, `X{n,m}`, each of them
+    // followed by `?` where it takes as few rounds as it can.
     _parse_pquant: Parser Pattern;
     _parse_pquant = do {
         let pat = *_parse_quantifiable_item;
+        let bounds = *_parse_quantifier.map(some).or_else(pure $ none());
+        if bounds.is_none { pure $ pat };
+        let (least, most) = bounds.as_some;
+        let lazy = *match_char_if_exists('?');
+        pure $ pquant $ (pat, least, most, lazy.is_none)
+    };
+
+    // Parses a quantifier, ie. `?`, `*`, `+`, `{n}`, `{n,}`, `{n,m}`, as the fewest and the most
+    // rounds it admits.
+    _parse_quantifier: Parser (I64, I64);
+    _parse_quantifier = do {
         let question = *match_char_if_exists('?');
-        if question.is_some {
-            pure $ pquant $ (pat, 0, 1)
-        };
+        if question.is_some { pure $ (0, 1) };
         let asterisk = *match_char_if_exists('*');
-        if asterisk.is_some {
-            // TODO: support non-greedy match
-            pure $ pquant $ (pat, 0, maximum)
-        };
+        if asterisk.is_some { pure $ (0, maximum) };
         let plus = *match_char_if_exists('+');
-        if plus.is_some {
-            // TODO: support non-greedy match
-            pure $ pquant $ (pat, 1, maximum)
-        };
-        // `X{n}`, `X{n,}`, `X{n,m}`
+        if plus.is_some { pure $ (1, maximum) };
         let lbrace = *match_char_if_exists('{');
-        if lbrace.is_some {
-            let (min_count, max_count) = *_parse_pquant_n_m_inner;
-            let _ = *match_char('}').or_error("'}' is missing");
-            pure $ pquant $ (pat, min_count, max_count)
-        };
-        pure $ pat
+        if lbrace.is_none { not_match };
+        let bounds = *_parse_pquant_n_m_inner;
+        let _ = *match_char('}').or_error("'}' is missing");
+        pure $ bounds
     };
 
     // Parses inner of `X{n}`, `X{n,}`, `X{n,m}`
@@ -435,9 +437,9 @@ namespace Pattern {
             (n, pat)
         };
         if pat.is_pquant {
-            let (pat_inner, min, max) = pat.as_pquant;
+            let (pat_inner, min, max, greedy) = pat.as_pquant;
             let (n, pat_inner) = pat_inner._assign_group_number(n);
-            let pat = pquant $ (pat_inner, min, max);
+            let pat = pquant $ (pat_inner, min, max, greedy);
             (n, pat)
         };
         if pat.is_pgroup {
@@ -471,14 +473,68 @@ namespace Pattern {
             peither $ (left.reverse, right.reverse)
         };
         if pat.is_pquant {
-            let (inner, least, most) = pat.as_pquant;
-            pquant $ (inner.reverse, least, most)
+            let (inner, least, most, greedy) = pat.as_pquant;
+            pquant $ (inner.reverse, least, most, greedy)
         };
         if pat.is_pgroup {
             let (_, inner) = pat.as_pgroup;
             inner.reverse
         };
         undefined("reverse: unknown pattern")
+    );
+
+    // Whether a pattern may match while reading no byte.
+    //
+    // # Parameters
+    // * `pat` - The pattern to read.
+    matches_empty: Pattern -> Bool;
+    matches_empty = |pat| (
+        if pat.is_pclass { false };
+        if pat.is_passert { true };
+        if pat.is_psequence { pat.as_psequence.to_iter.fold(true, |inner, all| all && inner.matches_empty) };
+        if pat.is_peither {
+            let (left, right) = pat.as_peither;
+            left.matches_empty || right.matches_empty
+        };
+        if pat.is_pquant {
+            let (inner, least, _, _) = pat.as_pquant;
+            least == 0 || inner.matches_empty
+        };
+        if pat.is_pgroup {
+            let (_, inner) = pat.as_pgroup;
+            inner.matches_empty
+        };
+        undefined("matches_empty: unknown pattern")
+    );
+
+    // The groups a pattern holds, numbered as `_assign_group_number` numbered them: the first
+    // number and one past the last, both `0` where it holds none. The groups a pattern holds are
+    // numbered one after another.
+    //
+    // # Parameters
+    // * `pat` - The pattern to read.
+    groups_within: Pattern -> (I64, I64);
+    groups_within = |pat| (
+        let join = |(first, end), (other_first, other_end)| (
+            if first == end { (other_first, other_end) };
+            if other_first == other_end { (first, end) };
+            (min(first, other_first), max(end, other_end))
+        );
+        if pat.is_pclass || pat.is_passert { (0, 0) };
+        if pat.is_psequence { pat.as_psequence.to_iter.fold((0, 0), |inner, span| join(span, inner.groups_within)) };
+        if pat.is_peither {
+            let (left, right) = pat.as_peither;
+            join(left.groups_within, right.groups_within)
+        };
+        if pat.is_pquant {
+            let (inner, _, _, _) = pat.as_pquant;
+            inner.groups_within
+        };
+        if pat.is_pgroup {
+            let (group, inner) = pat.as_pgroup;
+            join((group, group + 1), inner.groups_within)
+        };
+        undefined("groups_within: unknown pattern")
     );
 }
 // How many bytes a stretch of a pattern may read where it may read any number of them.
@@ -738,7 +794,7 @@ forced_of = |pat| (
         }
     };
     if pat.is_pquant {
-        let (inner, least, most) = pat.as_pquant;
+        let (inner, least, most, _) = pat.as_pquant;
         let forced = forced_of(inner);
         let read_bytes = forced.@read_bytes;
         let max_read = _read_times(forced.@max_read, most);

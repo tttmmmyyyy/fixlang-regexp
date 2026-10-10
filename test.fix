@@ -14,6 +14,7 @@ import RegExp.Internal.NFA::{
     NFA::{@_forced_sets, @_prefix, _search_threads, search, search_all}
 };
 import RegExp.Internal.Pattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
+import Test.JsCases::_js_cases;
 import RegExp.Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
@@ -73,14 +74,26 @@ _match_cases = [
     MatchCase { pattern: ".", flags: "g", target: "ab", one: ["a", "b"], all: [["a"], ["b"]] },
     MatchCase { pattern: ".", flags: "g", target: "a\nb", one: ["a", "b"], all: [["a"], ["b"]] },
 
-    // Where several matches begin at one place the longest is taken, so an alternative is chosen by
-    // how far it reaches rather than by the order it is written in.
-    MatchCase { pattern: "a|ab", flags: "", target: "ab", one: ["ab"], all: [["ab"]] },
+    // Alternatives are tried from the left, as JavaScript tries them, so the first one a match is
+    // reached through is taken whether or not a later one reaches further.
+    MatchCase { pattern: "a|ab", flags: "", target: "ab", one: ["a"], all: [["a"]] },
     MatchCase { pattern: "ab|a", flags: "", target: "ab", one: ["ab"], all: [["ab"]] },
     MatchCase { pattern: "a|ab", flags: "g", target: "ab ab",
-                one: ["ab", "ab"], all: [["ab"], ["ab"]] },
+                one: ["a", "a"], all: [["a"], ["a"]] },
     MatchCase { pattern: "(a|b)+", flags: "", target: "abab",
                 one: ["abab", "b"], all: [["abab", "b"]] },
+    MatchCase { pattern: "(a|ab)(c|bcd)(d*)", flags: "", target: "abcd",
+                one: ["abcd", "a", "bcd", ""], all: [["abcd", "a", "bcd", ""]] },
+
+    // A quantifier followed by `?` takes as few rounds as it can, and as many as the rest of the
+    // pattern needs.
+    MatchCase { pattern: "a+?", flags: "g", target: "aaa",
+                one: ["a", "a", "a"], all: [["a"], ["a"], ["a"]] },
+    MatchCase { pattern: "a*?b", flags: "", target: "aab", one: ["aab"], all: [["aab"]] },
+    MatchCase { pattern: "a{2,3}?", flags: "g", target: "aaaaa",
+                one: ["aa", "aa"], all: [["aa"], ["aa"]] },
+    MatchCase { pattern: "(a+?)(a*)", flags: "", target: "aaa",
+                one: ["aaa", "a", "aa"], all: [["aaa", "a", "aa"]] },
 
     // Quantifiers. A match that reads nothing is taken once at each place it can be taken, and the
     // walk then moves on by one so that it is not taken there again.
@@ -295,12 +308,12 @@ namespace Draws {
 
 // The pieces a drawn pattern is put together from.
 _atoms: Array String;
-_atoms = ["a", "b", "c", ".", "[ab]", "[^a]", "\\d", "\\w", "\\s", "(a|b)", "(ab)", "(a)", "x"];
+_atoms = ["a", "b", "c", ".", "[ab]", "[^a]", "\\d", "\\w", "\\s", "(a|b)", "(ab)", "(a)", "x", "(|a)", "(a*)"];
 
 // The ways a drawn piece may be repeated. Most pieces stand once, so the empty repeat is offered
 // several times over.
 _repeats: Array String;
-_repeats = ["", "", "", "", "*", "+", "?", "{2}", "{1,2}", "{2,}", "{0,2}"];
+_repeats = ["", "", "", "", "*", "+", "?", "{2}", "{1,2}", "{2,}", "{0,2}", "*?", "+?", "??", "{1,2}?"];
 
 // The characters a drawn string is put together from. A line break is among them because a pattern
 // may be read over one, and `.` may not.
@@ -513,9 +526,10 @@ _posix_cases = [
 
 // The match this library finds is the match the POSIX suite names.
 //
-// The suite takes the leftmost match, and the longest of those beginning at the same place, which is
-// what `DFA::find` reports. A pattern the suite writes that this library does not read is one the
-// rows leave out, so a row that stops compiling says the reading of a pattern has changed.
+// The suite takes the leftmost match, and the longest of those beginning at the same place, where
+// this library takes the match JavaScript finds. On every row kept the two are the same match,
+// which Node's `RegExp` confirms. A pattern the suite writes that this library does not read is
+// one the rows leave out, so a row that stops compiling says the reading of a pattern has changed.
 _test_posix_suite: IO ();
 _test_posix_suite = (
     _posix_cases.to_iter.fold_m(0, |(pattern, text, begin, end), met|
@@ -1061,6 +1075,17 @@ _test_flags = (
     )
 );
 
+// What `find_all` reports is what JavaScript's `String.prototype.matchAll` reports, for patterns
+// and strings drawn at random by `tools/js_cases.js`.
+_test_js_cases: IO ();
+_test_js_cases = (
+    _js_cases.to_iter.fold_m((), |(pattern, text, matches), _|
+        let result = RegExp::compile(pattern, "");
+        assert(|_| "/" + pattern + "/ compiles", result.is_ok);;
+        assert_eq(|_| _named(pattern, "", text) + " as JavaScript", result.as_ok.find_all(text).to_array, matches)
+    )
+);
+
 // Runs the whole suite: the matching and replacing cases written out above, then the sections that
 // hold the scanner to the automaton.
 test: IO ();
@@ -1097,5 +1122,6 @@ test = (
     _test_ordered_insertion;;
     _test_find_positions;;
     _test_flags;;
+    _test_js_cases;;
     pure()
 );

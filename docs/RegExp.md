@@ -9,10 +9,13 @@ Currently it only supports patterns below:
   `\S`, `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `x|y`
 - Assertions: `^`, `$`
 - Groups: `(x)`
-- Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`
+- Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`, and `x*?`, `x+?`, `x??`, `x{n}?`,
+  `x{n,}?`, `x{n,m}?`, which take as few rounds as they can
 
-This follows JavaScript but for one thing: where several alternatives match at one place, the
-longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
+A search finds the match JavaScript finds: the one beginning leftmost, and among those beginning
+there, the first JavaScript reaches, trying alternatives from the left and taking as many rounds
+of a quantifier as it can, or as few for one followed by `?`. `a|ab` matched against `ab` gives
+`a`. What each group captured is what JavaScript reports, too.
 
 For what the pattern syntax above means, see
 [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
@@ -146,9 +149,8 @@ looked for when the iterator is advanced to it, so a program that stops early do
 for the matches after.
 
 A match is reported as one `(begin, end)` pair of byte positions per group, the whole match
-first. A group that captured nothing stands as `(-1, -1)`. Where several matches begin at one
-place, the longest is taken, and after a match that holds no byte the search goes on from the
-next byte. The global flag (`"g"`) makes no difference here.
+first. A group that captured nothing stands as `(-1, -1)`. After a match that holds no byte
+the search goes on from the next byte. The global flag (`"g"`) makes no difference here.
 
 Example:
 ```fix
@@ -179,8 +181,7 @@ matches in `bytes`, each reported as where its groups stand.
 Type: `Std::I64 -> Std::String -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
 
 `regexp.find_from(from, target)` finds the match in `target` that begins first at or after the
-byte position `from`, taking the longest of those that begin there, and reports where each of
-its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
+byte position `from`, and reports where each of its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
 or after `from`. A negative `from` counts as `0`.
 
 Example:
