@@ -1,6 +1,6 @@
 # RegExp.SimpleParser
 
-Defined in regexp@1.3.0
+Defined in regexp@1.3.1
 
 Simple text parser. Customizable by monadic operations.
 - Stream of characters
@@ -36,7 +36,7 @@ Raises the specified string as an error.
 Type: `(a -> Std::Bool) -> RegExp.SimpleParser::Parser a -> RegExp.SimpleParser::Parser a`
 
 Checks whether the parsed result of the specified Parser satisfies the specified conditions.
-Raises a `_NotMatch` error if the specified condition is not met.
+Raises a `__NotMatch` error if the specified condition is not met.
 
 #### get_stream
 
@@ -64,7 +64,7 @@ Type: `RegExp.SimpleParser::Parser RegExp.SimpleParser::Char`
 
 Matches any single character. The parsed result is
 a single matched character.
-If the match fails (eg. the end of stream), a `_NotMatch` error is raised.
+If the match fails (eg. the end of stream), a `__NotMatch` error is raised.
 
 #### match_char
 
@@ -72,7 +72,7 @@ Type: `RegExp.SimpleParser::Char -> RegExp.SimpleParser::Parser ()`
 
 Matches a single character specified by the argument.
 The parsed result is nothing.
-If the match fails, a `_NotMatch` error is raised.
+If the match fails, a `__NotMatch` error is raised.
 
 #### match_char_class
 
@@ -112,7 +112,7 @@ Type: `Std::String -> RegExp.SimpleParser::Parser Std::String`
 
 Matches a character which is included in the specified string.
 The parsed result is a string consisting of the single matched character.
-If the match fails, a `_NotMatch` error is raised.
+If the match fails, a `__NotMatch` error is raised.
 
 #### match_str
 
@@ -120,7 +120,7 @@ Type: `Std::String -> RegExp.SimpleParser::Parser ()`
 
 Matches a string specified by the argument.
 The parsed result is nothing.
-If the match fails, a `_NotMatch` error is raised.
+If the match fails, a `__NotMatch` error is raised.
 
 #### match_str_class
 
@@ -150,20 +150,20 @@ Matches a zero-or-more-length string of whitespace characters.
 
 Type: `RegExp.SimpleParser::Parser a`
 
-Raises a `_NotMatch` error.
+Raises a `__NotMatch` error.
 
 #### one_or_more
 
 Type: `RegExp.SimpleParser::Parser a -> RegExp.SimpleParser::Parser (Std::Array a)`
 
-Same as `zero_or_more`, but raises a _NotMatch error
+Same as `zero_or_more`, but raises a __NotMatch error
 if the array length is zero.
 
 #### or_else
 
 Type: `RegExp.SimpleParser::Parser a -> RegExp.SimpleParser::Parser a -> RegExp.SimpleParser::Parser a`
 
-If the first Parser raises a `_NotMatch` error, tries the second Parser.
+If the first Parser raises a `__NotMatch` error, tries the second Parser.
 Note that `pa1.or_else(pa2)` is interpreted as `or_else(pa2, pa1)`,
 and  that `pa1.or_else $ pa2` is interpreted as `or_else(pa1, pa2)`.
 
@@ -171,7 +171,7 @@ and  that `pa1.or_else $ pa2` is interpreted as `or_else(pa1, pa2)`.
 
 Type: `Std::String -> RegExp.SimpleParser::Parser a -> RegExp.SimpleParser::Parser a`
 
-If the Parser reports any error (including `_NotMatch`),
+If the Parser reports any error (including `__NotMatch`),
 raises the specified string as an error.
 
 #### repeat
@@ -180,8 +180,8 @@ Type: `RegExp.SimpleParser::Parser a -> RegExp.SimpleParser::Parser (Std::Array 
 
 Repeats matches as many as possible. The parse result is
 an array of successful matches.
-If a _NotMatch error is raised, returns as success.
-If an error other than _NotMatch is raised, reports that error.
+If a __NotMatch error is raised, returns as success.
+If an error other than __NotMatch is raised, reports that error.
 
 #### run_parser
 

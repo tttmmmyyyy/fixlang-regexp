@@ -1,6 +1,6 @@
 # RegExp.StringEx
 
-Defined in regexp@1.3.0
+Defined in regexp@1.3.1
 
 String extensions, such as:
 - ToString for Tuple, Option, Result, Array, HashMap

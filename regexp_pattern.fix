@@ -499,24 +499,24 @@ namespace Pattern {
 // It stands for "any number", and it is a quarter of the largest number there is, so that the
 // bound a quantifier with no upper bound carries is itself at least this much, and so that two of
 // these added or multiplied together stay a number.
-_UNBOUNDED_READ : I64;
-_UNBOUNDED_READ = I64::maximum / 4;
+__UNBOUNDED_READ : I64;
+__UNBOUNDED_READ = I64::maximum / 4;
 
 // How many sets of forced byte strings are kept for a pattern. Alternation multiplies them, and a
 // search takes the one set the text it is over holds least often, so what this bounds is how many
 // sets are weighed against the text.
-_MAX_FORCED_SETS : I64;
-_MAX_FORCED_SETS = 4;
+__MAX_FORCED_SETS : I64;
+__MAX_FORCED_SETS = 4;
 
 // How many byte strings a set of forced ones may hold. A set is looked for by looking for each of
 // its members in turn, so a large one costs more to look for than it rules out.
-_MAX_FORCED_MEMBERS : I64;
-_MAX_FORCED_MEMBERS = 4;
+__MAX_FORCED_MEMBERS : I64;
+__MAX_FORCED_MEMBERS = 4;
 
 // How many bytes of a forced byte string are kept. A longer one rules out more, and the reading
 // that looks for it costs the same either way, so what bounds this is the room the strings take.
-_MAX_FORCED_LENGTH : I64;
-_MAX_FORCED_LENGTH = 16;
+__MAX_FORCED_LENGTH : I64;
+__MAX_FORCED_LENGTH = 16;
 
 // The empty set of byte values.
 _no_bytes : Array U64;
@@ -557,15 +557,15 @@ _bytes_union = |other, bits| (
 
 // The sum of two counts of bytes read, "any number" swallowing whatever it is added to.
 _read_sum : I64 -> I64 -> I64;
-_read_sum = |a, b| if a >= _UNBOUNDED_READ || b >= _UNBOUNDED_READ { _UNBOUNDED_READ } else { a + b };
+_read_sum = |a, b| if a >= __UNBOUNDED_READ || b >= __UNBOUNDED_READ { __UNBOUNDED_READ } else { a + b };
 
 // A count of bytes read, taken that many times over, "any number" swallowing whatever multiplies
 // it.
 _read_times : I64 -> I64 -> I64;
 _read_times = |a, n| (
-    if a >= _UNBOUNDED_READ || n >= _UNBOUNDED_READ { _UNBOUNDED_READ };
+    if a >= __UNBOUNDED_READ || n >= __UNBOUNDED_READ { __UNBOUNDED_READ };
     if n <= 0 || a <= 0 { 0 };
-    if a > _UNBOUNDED_READ / n { _UNBOUNDED_READ };
+    if a > __UNBOUNDED_READ / n { __UNBOUNDED_READ };
     a * n
 );
 
@@ -593,7 +593,7 @@ type Forced = unbox struct {
     // Sets of forced byte strings. Every text the pattern matches holds a member of each of these
     // sets, so a search is free to take whichever set it likes and look for that set alone.
     sets: Array (Array ForcedRun),
-    // The most bytes the pattern may read, or `_UNBOUNDED_READ` where it may read any number.
+    // The most bytes the pattern may read, or `__UNBOUNDED_READ` where it may read any number.
     max_read: I64,
     // The byte values the pattern may read, one bit each.
     read_bytes: Array U64
@@ -645,11 +645,11 @@ _runs_after = |more, bits, runs| (
 _sets_together : Array (Array ForcedRun) -> Array (Array ForcedRun) -> Array (Array ForcedRun);
 _sets_together = |left, right| (
     if left.@size == 0 || right.@size == 0 { Array::empty(0) };
-    left.to_iter.fold(Array::empty(_MAX_FORCED_SETS), |left_set, out|
+    left.to_iter.fold(Array::empty(__MAX_FORCED_SETS), |left_set, out|
         right.to_iter.fold(out, |right_set, out|
-            if out.@size >= _MAX_FORCED_SETS { out };
+            if out.@size >= __MAX_FORCED_SETS { out };
             let both = left_set.append(right_set);
-            if both.@size > _MAX_FORCED_MEMBERS { out };
+            if both.@size > __MAX_FORCED_MEMBERS { out };
             out.push_back(both)
         )
     )
@@ -665,8 +665,8 @@ _sets_together = |left, right| (
 // * `pats` - The patterns, in the order the text meets them.
 _forced_of_sequence : Array Pattern -> Forced;
 _forced_of_sequence = |pats| (
-    let empty_run = Array::empty(_MAX_FORCED_LENGTH);
-    let start = (empty_run, 0, _no_bytes, 0, _no_bytes, Array::empty(_MAX_FORCED_SETS), true);
+    let empty_run = Array::empty(__MAX_FORCED_LENGTH);
+    let start = (empty_run, 0, _no_bytes, 0, _no_bytes, Array::empty(__MAX_FORCED_SETS), true);
     let (run, run_max, run_bits, total_max, total_bits, sets, is_exact) = pats.to_iter.fold(start,
         |pat, (run, run_max, run_bits, pre_max, pre_bits, sets, is_exact)|
         let forced = forced_of(pat);
@@ -677,7 +677,7 @@ _forced_of_sequence = |pats| (
             let (run_max, run_bits) = if run.@size == 0 { (pre_max, pre_bits) } else { (run_max, run_bits) };
             // A string that would outgrow the room kept for it is broken here, and what follows
             // starts a string of its own, so that every string kept stands in the text entire.
-            if run.@size + more.@size > _MAX_FORCED_LENGTH {
+            if run.@size + more.@size > __MAX_FORCED_LENGTH {
                 let sets = _sets_with_run_closed(run, run_max, run_bits, sets);
                 (more, pre_max, pre_bits, next_max, next_bits, sets, false)
             };
@@ -685,7 +685,7 @@ _forced_of_sequence = |pats| (
         };
         let sets = _sets_with_run_closed(run, run_max, run_bits, sets);
         let sets = forced.@sets.to_iter.fold(sets, |set, sets|
-            if sets.@size >= _MAX_FORCED_SETS { sets };
+            if sets.@size >= __MAX_FORCED_SETS { sets };
             sets.push_back(_runs_after(pre_max, pre_bits, set))
         );
         (empty_run, 0, _no_bytes, next_max, next_bits, sets, false)
@@ -708,7 +708,7 @@ _forced_of_sequence = |pats| (
 _sets_with_run_closed : Array U8 -> I64 -> Array U64 -> Array (Array ForcedRun) -> Array (Array ForcedRun);
 _sets_with_run_closed = |run, run_max, run_bits, sets| (
     if run.@size == 0 { sets };
-    if sets.@size >= _MAX_FORCED_SETS { sets };
+    if sets.@size >= __MAX_FORCED_SETS { sets };
     sets.push_back([ForcedRun { bytes: run, back_max: run_max, back_class: run_bits }])
 );
 
@@ -766,7 +766,7 @@ forced_of = |pat| (
             // How many rounds the room kept for a forced byte string holds. The count is read off a
             // division, so that it stands whatever number of rounds the quantifier asks for: a
             // pattern names that number, and multiplying by it leaves `I64`.
-            let room = _MAX_FORCED_LENGTH / once.@size;
+            let room = __MAX_FORCED_LENGTH / once.@size;
             let rounds = if least > room { room } else { least };
             let run = _repeated(once, rounds);
             Forced {
