@@ -136,9 +136,9 @@ namespace RegExp {
     // `replacement`, reading `replacement` as JavaScript's `String.prototype.replaceAll` reads it:
     // - `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
     //   `$'` for the text after it.
-    // - `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string where
-    //   the group captured nothing. Two digits are read as one group number where the pattern has
-    //   that group; otherwise the first digit is, and the second stands for itself.
+    // - `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string
+    //   where the group captured nothing. Two digits are read as one group number where the pattern
+    //   has that group; otherwise the first digit is, and the second stands for itself.
     // - `$0`, the number of a group the pattern lacks, and every other text stand for themselves.
     //
     // Example:
@@ -187,9 +187,10 @@ namespace RegExp {
     find_all_in_bytes: [?it : Iterator, Item ?it = Array (I64, I64)] Array U8 -> RegExp -> ?it;
     find_all_in_bytes = |bytes, regexp| Matches::make(bytes, bytes.@size, DFA::make(regexp.@_nfa));
 
-    // `regexp.find_from(from, target)` finds the match in `target` that begins first at or after the
-    // byte position `from`, and reports where each of its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
-    // or after `from`. A negative `from` counts as `0`.
+    // `regexp.find_from(from, target)` finds the match in `target` that begins first at or after
+    // the byte position `from`, and reports where each of its groups stands, as `find_all` reports
+    // them. It reports `none()` where no match begins at or after `from`. A negative `from` counts
+    // as `0`.
     //
     // Example:
     // ```fix

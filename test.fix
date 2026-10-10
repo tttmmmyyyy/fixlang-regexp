@@ -308,12 +308,17 @@ namespace Draws {
 
 // The pieces a drawn pattern is put together from.
 _atoms: Array String;
-_atoms = ["a", "b", "c", ".", "[ab]", "[^a]", "\\d", "\\w", "\\s", "(a|b)", "(ab)", "(a)", "x", "(|a)", "(a*)"];
+_atoms = [
+    "a", "b", "c", ".", "[ab]", "[^a]", "\\d", "\\w", "\\s", "(a|b)", "(ab)", "(a)", "x", "(|a)",
+    "(a*)"
+];
 
 // The ways a drawn piece may be repeated. Most pieces stand once, so the empty repeat is offered
 // several times over.
 _repeats: Array String;
-_repeats = ["", "", "", "", "*", "+", "?", "{2}", "{1,2}", "{2,}", "{0,2}", "*?", "+?", "??", "{1,2}?"];
+_repeats = [
+    "", "", "", "", "*", "+", "?", "{2}", "{1,2}", "{2,}", "{0,2}", "*?", "+?", "??", "{1,2}?"
+];
 
 // The characters a drawn string is put together from. A line break is among them because a pattern
 // may be read over one, and `.` may not.
@@ -418,9 +423,9 @@ _search_all_threads = |bytes, nfa| (
 // The rows kept are those the suite marks as extended regular expressions and whose syntax this
 // library reads, less the rows over a bracket expression whose first member is `]`: POSIX reads
 // that `]` as a member and JavaScript reads the brackets as a class holding nothing, so the answer
-// the suite names is the answer to a different question. Each row names where the match runs, and the ones naming where the groups run are
-// read for the match alone: which stretch each group captured is a rule of its own, and the suite
-// answers it by the POSIX rule.
+// the suite names is the answer to a different question. Each row names where the match runs, and
+// the ones naming where the groups run are read for the match alone: which stretch each group
+// captured is a rule of its own, and the suite answers it by the POSIX rule.
 _posix_cases: Array (String, String, I64, I64);
 _posix_cases = [
     ("abracadabra$", "abracadabracadabra", 7, 18),
@@ -1075,14 +1080,19 @@ _test_flags = (
     )
 );
 
-// What `find_all` reports is what JavaScript's `String.prototype.matchAll` reports, for patterns
+// What `find_all` reports is what JavaScript's `String.prototype.matchAll` reports, and what
+// `find_from` reports is what `RegExp.prototype.exec` reports from the same position, for patterns
 // and strings drawn at random by `tools/js_cases.js`.
 _test_js_cases: IO ();
 _test_js_cases = (
-    _js_cases.to_iter.fold_m((), |(pattern, text, matches), _|
+    _js_cases.to_iter.fold_m((), |(pattern, text, matches, from, first), _|
         let result = RegExp::compile(pattern, "");
         assert(|_| "/" + pattern + "/ compiles", result.is_ok);;
-        assert_eq(|_| _named(pattern, "", text) + " as JavaScript", result.as_ok.find_all(text).to_array, matches)
+        let name = _named(pattern, "", text);
+        let regexp = result.as_ok;
+        assert_eq(|_| name + " as JavaScript", regexp.find_all(text).to_array, matches);;
+        let from_name = name + " from " + from.to_string;
+        assert_eq(|_| from_name + " as JavaScript", regexp.find_from(from, text), first)
     )
 );
 
@@ -1093,7 +1103,8 @@ _test_long_match_groups = (
     let length = 400000;
     let text = Iterator::range(0, length).fold("", |_, text| text + "ab") + "c";
     let found = RegExp::compile("(a|ab)*c", "").as_ok.find_from(0, text);
-    assert_eq(|_| "/(a|ab)*c/ over a long text", found, some([(0, 2 * length + 1), (2 * length - 2, 2 * length)]))
+    let groups = [(0, 2 * length + 1), (2 * length - 2, 2 * length)];
+    assert_eq(|_| "/(a|ab)*c/ over a long text", found, some(groups))
 );
 
 // Runs the whole suite: the matching and replacing cases written out above, then the sections that

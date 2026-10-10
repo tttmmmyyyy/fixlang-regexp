@@ -180,9 +180,10 @@ matches in `bytes`, each reported as where its groups stand.
 
 Type: `Std::I64 -> Std::String -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
 
-`regexp.find_from(from, target)` finds the match in `target` that begins first at or after the
-byte position `from`, and reports where each of its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
-or after `from`. A negative `from` counts as `0`.
+`regexp.find_from(from, target)` finds the match in `target` that begins first at or after
+the byte position `from`, and reports where each of its groups stands, as `find_all` reports
+them. It reports `none()` where no match begins at or after `from`. A negative `from` counts
+as `0`.
 
 Example:
 ```fix
@@ -281,9 +282,9 @@ Type: `Std::String -> Std::String -> RegExp::RegExp -> Std::String`
 `replacement`, reading `replacement` as JavaScript's `String.prototype.replaceAll` reads it:
 - `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
   `$'` for the text after it.
-- `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string where
-  the group captured nothing. Two digits are read as one group number where the pattern has
-  that group; otherwise the first digit is, and the second stands for itself.
+- `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string
+  where the group captured nothing. Two digits are read as one group number where the pattern
+  has that group; otherwise the first digit is, and the second stands for itself.
 - `$0`, the number of a group the pattern lacks, and every other text stand for themselves.
 
 Example:

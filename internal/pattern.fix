@@ -159,8 +159,9 @@ type Pattern = box union {
     psequence: Array Pattern,
     // Either pattern, eg. `X|Y`
     peither: (Pattern, Pattern),
-    // Quantified pattern, eg. `X?`, `X*`, `X+`, `X{n,m}`: the pattern, the fewest and the most rounds,
-    // and whether a match takes as many rounds as it can (greedy) or as few (`X*?` and the like)
+    // Quantified pattern, eg. `X?`, `X*`, `X+`, `X{n,m}`: the pattern, the fewest and the most
+    // rounds, and whether a match takes as many rounds as it can (greedy) or as few (`X*?` and the
+    // like)
     pquant: (Pattern, I64, I64, Bool),
     // Grouped pattern, eg. `(X)`
     pgroup: (/* group_number:*/ I64, Pattern)
@@ -491,7 +492,9 @@ namespace Pattern {
     matches_empty = |pat| (
         if pat.is_pclass { false };
         if pat.is_passert { true };
-        if pat.is_psequence { pat.as_psequence.to_iter.fold(true, |inner, all| all && inner.matches_empty) };
+        if pat.is_psequence {
+            pat.as_psequence.to_iter.fold(true, |inner, all| all && inner.matches_empty)
+        };
         if pat.is_peither {
             let (left, right) = pat.as_peither;
             left.matches_empty || right.matches_empty
@@ -521,7 +524,9 @@ namespace Pattern {
             (min(first, other_first), max(end, other_end))
         );
         if pat.is_pclass || pat.is_passert { (0, 0) };
-        if pat.is_psequence { pat.as_psequence.to_iter.fold((0, 0), |inner, span| join(span, inner.groups_within)) };
+        if pat.is_psequence {
+            pat.as_psequence.to_iter.fold((0, 0), |inner, span| join(span, inner.groups_within))
+        };
         if pat.is_peither {
             let (left, right) = pat.as_peither;
             join(left.groups_within, right.groups_within)
