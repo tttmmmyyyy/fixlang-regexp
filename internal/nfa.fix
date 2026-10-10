@@ -4,20 +4,20 @@
 // - https://swtch.com/~rsc/regexp/regexp1.html
 // - https://zenn.dev/canalun/articles/regexp_and_automaton
 //
-module RegExp.Internal.NFA;
+module RegExp._Internal.NFA;
 
-import RegExp.Internal.Pattern::{
-    _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
+import RegExp._Internal.Pattern::{
+    all_bytes, bytes_of_class, bytes_union, no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
     Pattern, Forced::@sets, ForcedRun::{@back_class, @back_max, @bytes}, 
     PAssertion::{is_pa_begin, is_pa_end}, 
     Pattern::{
-        _assign_group_number, as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, 
+        assign_group_number, as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, 
         groups_within, is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, 
         matches_empty, psequence, reverse
     }
 };
-import RegExp.Internal.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
-import RegExp.Internal.StringEx::{_unsafe_to_string, substring};
+import RegExp._Internal.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
+import RegExp._Internal.StringEx::{unsafe_to_string, substring};
 import Std::{
     loop, undefined, Array, Bool, I64, Option, String, U64, U8, 
     Array::{
@@ -131,7 +131,7 @@ namespace NFA {
     new_class: CharClass -> NFA -> (NFA, I64);
     new_class = |cls, nfa| (
         let base = nfa.@_classes.@size;
-        let (bits, _) = _bytes_of_class(cls);
+        let (bits, _) = bytes_of_class(cls);
         (nfa.mod__classes(append(bits)), base)
     );
 
@@ -329,7 +329,7 @@ namespace NFA {
     // * `pattern` - The pattern to compile.
     _nodes_of: Pattern -> (NFA, Pattern);
     _nodes_of = |pattern| (
-        let (group_count, pattern) = pattern._assign_group_number(0);
+        let (group_count, pattern) = pattern.assign_group_number(0);
         let nfa = NFA::empty.set__group_count(group_count);
         let (nfa, frag) = nfa.compile_pattern(pattern);
         let nfa = nfa.set__initial_node(frag.@input);
@@ -2214,9 +2214,9 @@ namespace StateTable {
     // * `table` - The table.
     _first_bytes_of: I64 -> StateTable -> Array U64;
     _first_bytes_of = |state, table| (
-        if table.@_accepts.@(state) { _all_bytes };
+        if table.@_accepts.@(state) { all_bytes };
         let nfa = table.@_nfa;
-        table._ranks_of(state).to_iter.fold(_no_bytes, |threads, first_bytes|
+        table._ranks_of(state).to_iter.fold(no_bytes, |threads, first_bytes|
             let width = table.@_width;
             range(0, threads.@size / width).fold(first_bytes, |k, first_bytes|
                 let node = nfa.get_node(NodeID { val: threads.@(k * width) });
@@ -2566,7 +2566,7 @@ namespace Prefilter {
         _forced_anchors: Array::empty(0),
         _forced_count: 0,
         _back_max: 0,
-        _back_class: _no_bytes
+        _back_class: no_bytes
     };
 
     // Whether looking for where a match may begin passes over positions faster than walking the
@@ -2776,8 +2776,8 @@ _backed_up_to = |bytes, back_class, back_max, floor, at| (
 // * `set` - The set to read.
 _backing_of: Array ForcedRun -> (I64, Array U64);
 _backing_of = |set| (
-    set.to_iter.fold((0, _no_bytes), |run, (most, bits)|
-        (max(most, run.@back_max), _bytes_union(run.@back_class, bits))
+    set.to_iter.fold((0, no_bytes), |run, (most, bits)|
+        (max(most, run.@back_max), bytes_union(run.@back_class, bits))
     )
 );
 
@@ -2837,7 +2837,7 @@ _by_falling_count = |bytes, sample, set| (
 // * `sample` - How many bytes of it to read.
 // * `wanted` - The byte string to look for.
 _places_of: Array U8 -> I64 -> Array U8 -> I64;
-_places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, _no_bytes, 0);
+_places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, no_bytes, 0);
 
 // How many positions a search would walk from over a stretch of the text, for one of the forced
 // byte strings it looks for: every place the string stands, and every position before it a match
@@ -2955,7 +2955,7 @@ namespace DFA {
             DFA {
                 _forward: StateTable::given_up(nfa),
                 _backward: StateTable::given_up(reversed),
-                _prefilter: Prefilter::make(_all_bytes, Array::empty(0))
+                _prefilter: Prefilter::make(all_bytes, Array::empty(0))
             }
         };
         let forward = StateTable::make_seeking(nfa);
@@ -3335,6 +3335,6 @@ namespace Replacement {
             );
             output.append(target.substring(from, to).get_bytes.pop_back)
         );
-        output._unsafe_to_string
+        output.unsafe_to_string
     );
 }

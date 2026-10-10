@@ -7,15 +7,15 @@ import RegExp::{
         matcher, replace_all
     }
 };
-import RegExp.Internal.NFA::{
+import RegExp._Internal.NFA::{
     _holds_byte, DFA, Groups, NFA, 
     DFA::{@_prefilter, _every_match, search_every_within, make, mod__prefilter}, Prefilter::{@_first_bytes, _with_forced_set}, 
     StateTable::_insert_at, 
     NFA::{@_forced_sets, @_prefix, _search_threads, search, search_all}
 };
-import RegExp.Internal.Pattern::{_bytes_union, _no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
+import RegExp._Internal.Pattern::{bytes_union, no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
 import Test.JsCases::_js_cases;
-import RegExp.Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
+import RegExp._Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
     Array::{@, @size, empty, pop_back, push_back, to_iter}, Debug::{assert, assert_eq}, 
@@ -755,7 +755,7 @@ _all_among = |bytes, from, to, bits| (
 _set_stands_in: Array U8 -> I64 -> I64 -> Array ForcedRun -> Bool;
 _set_stands_in = |bytes, begin, end, runs| (
     let back_max = runs.to_iter.fold(0, |run, most| max(most, run.@back_max));
-    let bits = runs.to_iter.fold(_no_bytes, |run, bits| _bytes_union(run.@back_class, bits));
+    let bits = runs.to_iter.fold(no_bytes, |run, bits| bytes_union(run.@back_class, bits));
     range(0, runs.@size).fold(false, |i, found|
         if found { true };
         let wanted = runs.@(i).@bytes;

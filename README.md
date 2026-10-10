@@ -7,7 +7,7 @@ and positions are counted in bytes, where JavaScript counts UTF-16 code units; o
 two agree.
 
 The module `RegExp` is the whole interface of the library, and its version number follows that
-module alone. The modules under `RegExp.Internal` are the parts the library is built from, and any
+module alone. The modules under `RegExp._Internal` are the parts the library is built from, and any
 version may change them.
 
 # Acknowledgements

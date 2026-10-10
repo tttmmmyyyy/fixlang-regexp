@@ -17,7 +17,7 @@
 // [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 //
 // This module is the whole interface of the library, and its version number follows this module
-// alone. The modules under `RegExp.Internal` are the parts the library is built from, and any
+// alone. The modules under `RegExp._Internal` are the parts the library is built from, and any
 // version may change them.
 //
 // LIMITATION:
@@ -27,15 +27,15 @@
 //
 module RegExp;
 
-import RegExp.Internal.NFA::{
+import RegExp._Internal.NFA::{
     DFA, Group, NFA, 
     DFA::{capture_count, make, search_every, search_every_within, search_from, search_from_within}, 
     NFA::compile, 
     Replacement::{calc_replacement, compile}
 };
-import RegExp.Internal.Matches::Matches::make;
-import RegExp.Internal.Pattern::Pattern::{parse, pgroup};
-import RegExp.Internal.StringEx::substring;
+import RegExp._Internal.Matches::Matches::make;
+import RegExp._Internal.Pattern::Pattern::{parse, pgroup};
+import RegExp._Internal.StringEx::substring;
 import Std::{
     Array, Bool, ErrMsg, I64, Iterator, Option, Result, String, U8, 
     Array::{@, @size, empty, is_empty, pop_back, push_back, to_iter}, Functor::map, 

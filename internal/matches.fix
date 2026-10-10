@@ -1,7 +1,7 @@
 // The iterator `RegExp::find_all` and `RegExp::find_all_in_bytes` return.
-module RegExp.Internal.Matches;
+module RegExp._Internal.Matches;
 
-import RegExp.Internal.NFA::{DFA, DFA::{find_within, search_from_within}};
+import RegExp._Internal.NFA::{DFA, DFA::{find_within, search_from_within}};
 import Std::{
     Array, Bool, I64, Iterator, U8, Array::@, Option::{as_some, is_none, none, some}
 };

@@ -2,10 +2,10 @@
 // - Stream of characters
 // - Basic parsers such as character matching
 // - Create complex parsers with composition
-module RegExp.Internal.SimpleParser;
+module RegExp._Internal.SimpleParser;
 
 import Character::is_digit;
-import RegExp.Internal.StringEx::_unsafe_to_string;
+import RegExp._Internal.StringEx::unsafe_to_string;
 import Std::{
     loop, Array, Bool, ErrMsg, FromString, Functor, I64, Monad, Option, Result, String, U8, 
     Array::{@size, empty, from_iter, pop_back, push_back, to_iter}, 
@@ -61,7 +61,7 @@ namespace Stream {
     // `stream.read_string(n)` reads at most `n` characters and convert them to a string.
     read_string: I64 -> Stream -> String;
     read_string = |n, s| (
-        s.@iter.take(n).from_iter._unsafe_to_string
+        s.@iter.take(n).from_iter.unsafe_to_string
     );
 
     // `stream.error(str)` reports an error along with where it occurred.
@@ -274,7 +274,7 @@ namespace Parser {
     match_str_class: (Char -> Bool) -> Parser String;
     match_str_class = |f| (
         repeat(match_char_class(f))
-        .map(_unsafe_to_string)
+        .map(unsafe_to_string)
     );
 
     // Matches an integer.
