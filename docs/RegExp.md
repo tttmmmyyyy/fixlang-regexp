@@ -5,6 +5,8 @@ Defined in regexp@2.0.0
 Simple regular expression.
 
 Currently it only supports patterns below:
+- Characters: a character other than `^`, `$`, `\`, `.`, `*`, `+`, `?`, `(`, `)`, `[` and `|`
+  stands for itself, `{` included where it begins no quantifier
 - Character classes: `[xyz]`, `[^xyz]`, `.`, `\d`, `\D`, `\w`, `\W`, `\s`, `\S`
 - Character escapes: `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `\0`, `\cX`, `\xhh`, `\uhhhh`, the
   octal escapes such as `\012` (outside a bracket expression, those beginning with `\0`), and a
