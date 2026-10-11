@@ -1,5 +1,15 @@
 # Change Log
 
+## [2.1.0] - 2026-10-11
+
+### Added
+
+- #5: The flag `i` of `RegExp::compile` makes a character match every character JavaScript's `i` flag takes for it, such as `a` and `A`, or `é` and `É`. It can be given with `g`, as `"gi"` or `"ig"`.
+
+### Changed
+
+- #25: A `{` that does not begin `{n}`, `{n,}` or `{n,m}`, and a `}` outside such a quantifier, now stand for themselves, as in JavaScript. `a{,2}` matches `"a{,2}"`, where it used to be reported as an error.
+
 ## [2.0.0] - 2026-10-11
 
 ### Added

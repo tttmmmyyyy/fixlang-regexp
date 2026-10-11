@@ -1,6 +1,6 @@
 # RegExp
 
-Defined in regexp@2.0.0
+Defined in regexp@2.1.0
 
 Simple regular expression.
 
@@ -152,9 +152,19 @@ What it reports is what `RegExp::replace_all` reports.
 Type: `Std::String -> Std::String -> Std::Result Std::ErrMsg RegExp::RegExp`
 
 `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
-`flags` change behavior of regular expression matching. The only flag is the global
-flag `g`, which `match_one` reads, so `flags` is `""` or `"g"`. Any other flag, or `g`
-given twice, is reported as an error.
+`flags` change behavior of regular expression matching. Each flag is a letter, given at
+most once and in any order:
+- `g`, the global flag, which `match_one` reads.
+- `i`, which makes a character match the characters JavaScript's `i` flag takes for it,
+  such as `a` and `A`, or `é` and `É`.
+
+Any other flag, or a flag given twice, is reported as an error.
+
+Example:
+```fix
+let regexp = RegExp::compile("caf\u00e9", "i").as_ok;
+assert_eq(|_|"", regexp.match_one("CAFÉ"), some(["CAFÉ"]))
+```
 
 #### find_all
 
