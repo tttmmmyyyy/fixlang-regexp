@@ -50,7 +50,8 @@ Type: `Std::String -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std:
 `matcher.find_all(target)` finds every match in `target`, and reports the scanner as the
 search left it.
 
-What it reports is what `RegExp::find_all` reports.
+What it reports is what `RegExp::find_all` reports, all the matches at once. To take the
+matches one at a time, use `RegExp::find_all`.
 
 ##### Parameters
 
