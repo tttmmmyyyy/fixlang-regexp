@@ -1,6 +1,7 @@
-// Writes `test_js_syntax_cases.fix`: escapes and bracket expressions, each with every match
-// JavaScript's `String.prototype.matchAll` finds in `TEXT`, or with `none()` where the pattern is
-// to be reported as an error, by JavaScript or as a form this library does not support.
+// Writes `test_js_syntax_cases.fix`: escapes, bracket expressions and characters from U+0080
+// upward, each with every match JavaScript's `String.prototype.matchAll` finds in `TEXT` or
+// `NON_ASCII_TEXT`, or with `none()` where the pattern is to be reported as an error, by JavaScript
+// or as a form this library does not support.
 //
 // Run with Node from the root of the repository: `node tools/js_syntax_cases.js`.
 
@@ -66,9 +67,36 @@ for (const pattern of [
     add(pattern, false);
 }
 
-// Every match JavaScript finds in `TEXT`, as Fix writes it, or `none()` where JavaScript reports
-// the pattern as an error.
-function matches(pattern) {
+// Counts of rounds past `I64::maximum`, which read as `I64::maximum`.
+for (const pattern of [
+    "a{0,9223372036854775808}", "a{99999999999999999999}", "a{9223372036854775808,}",
+]) {
+    add(pattern, false);
+}
+
+// Characters from U+0080 upward, against `NON_ASCII_TEXT`: at the edges of the two and three byte
+// encodings and beyond, written as themselves and as escapes, under quantifiers, and in bracket
+// expressions, where this library leaves them unsupported.
+const NON_ASCII_TEXT = "a\u00e9\u00e9\u07ff\u0800\uffff\u3042\u3042b\u{1f600}\u{1f600}\u00e9";
+const nonAsciiCases = [];
+for (const pattern of [
+    "\\u00e9", "\\u07ff", "\\u0800", "\\uffff", "\\u3042", "\\xe9", "\\x80", "\\u0080", "\\u07FF",
+    "\\u00e9+", "\\u00e9{2}", "\\u3042*b", "\\xe9?b", "(\\u00e9|\\u3042)+",
+    "é", "߿", "ࠀ", "￿", "あ", "😀", "é+", "あ{1,2}", "é?あ", "(é|あ)+b", "\\é", "\\あ+", "\\😀",
+    "a😀", "😀😀", "(😀)", "😀|é",
+]) {
+    nonAsciiCases.push({ pattern, unsupported: false });
+}
+for (const pattern of [
+    "😀+", "😀*", "😀?", "😀{2}", "\\😀+", "\\uD83D", "\\uDE00", "\\uD83D\\uDE00",
+    "[é]", "[\\é]", "[\\xe9]", "[\\u3042]", "[a-é]", "[é-z]", "[^é]", "[😀]",
+]) {
+    nonAsciiCases.push({ pattern, unsupported: true });
+}
+
+// Every match JavaScript finds in `text`, as Fix writes it with positions counted in UTF-8 bytes,
+// or `none()` where JavaScript reports the pattern as an error.
+function matches(pattern, text) {
     let regexp;
     try {
         regexp = new RegExp(pattern, "g");
@@ -76,8 +104,9 @@ function matches(pattern) {
         if (e instanceof SyntaxError) return "none()";
         throw e;
     }
-    const found = [...TEXT.matchAll(regexp)].map((m) =>
-        "(" + m.index + ", " + (m.index + m[0].length) + ")"
+    const bytes = (index) => Buffer.byteLength(text.slice(0, index));
+    const found = [...text.matchAll(regexp)].map((m) =>
+        "(" + bytes(m.index) + ", " + bytes(m.index + m[0].length) + ")"
     );
     return "some([" + found.join(", ") + "])";
 }
@@ -87,9 +116,9 @@ function literal(text) {
     return '"' + text.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
-const rows = cases.map(({ pattern, unsupported }) =>
-    "    (" + literal(pattern) + ", " + (unsupported ? "none()" : matches(pattern)) + ")"
-);
+const rowsOf = (list, text) => list.map(({ pattern, unsupported }) =>
+    "    (" + literal(pattern) + ", " + (unsupported ? "none()" : matches(pattern, text)) + ")"
+).join(",\n");
 
 const source = `// Escapes and bracket expressions, each with every match JavaScript finds in the text
 // \`test.fix\` builds: every ASCII character from U+0001 upward, then \`\\c1\\c\`. \`none()\`
@@ -101,7 +130,17 @@ module Test.JsSyntaxCases;
 
 _js_syntax_cases: Array (String, Option (Array (I64, I64)));
 _js_syntax_cases = [
-${rows.join(",\n")}
+${rowsOf(cases, TEXT)}
 ];
+
+// Characters from U+0080 upward, each with every match JavaScript finds in
+// \`_js_non_ascii_text\`, or \`none()\` as above.
+_js_non_ascii_cases: Array (String, Option (Array (I64, I64)));
+_js_non_ascii_cases = [
+${rowsOf(nonAsciiCases, NON_ASCII_TEXT)}
+];
+
+_js_non_ascii_text: String;
+_js_non_ascii_text = ${literal(NON_ASCII_TEXT)};
 `;
 fs.writeFileSync("test_js_syntax_cases.fix", source);

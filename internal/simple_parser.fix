@@ -4,7 +4,6 @@
 // - Create complex parsers with composition
 module RegExp._Internal.SimpleParser;
 
-import Character::is_digit;
 import RegExp._Internal.StringEx::unsafe_to_string;
 import Std::{
     loop, Array, Bool, ErrMsg, FromString, Functor, I64, Monad, Option, Result, String, U8, 
@@ -269,26 +268,5 @@ namespace Parser {
     match_char_if_exists: U8 -> Parser (Option U8);
     match_char_if_exists = |c| (
         match_any_char.filter(|c1| c1 == c).map(some).or_else(pure $ none())
-    );
-
-    // Matches a character satisfying the specified condition.
-    match_char_class: (Char -> Bool) -> Parser Char;
-    match_char_class = |f| (
-        match_any_char.filter(f)
-    );
-
-    // Matches a zero-or-more-length string. Each character should satisfy the specified condition.
-    match_str_class: (Char -> Bool) -> Parser String;
-    match_str_class = |f| (
-        repeat(match_char_class(f))
-        .map(unsafe_to_string)
-    );
-
-    // Matches an integer.
-    match_integer: Parser I64;
-    match_integer = (
-        match_str_class(is_digit)
-        .filter(|str| str.@size > 0)
-        .map_result(|str| from_string(str))
     );
 }

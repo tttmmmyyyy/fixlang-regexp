@@ -1,12 +1,11 @@
 // Character class and Pattern parser. This is internal module of `RegExp`.
 module RegExp._Internal.Pattern;
 
-import Character::{is_alnum, is_alpha, is_digit, is_space, is_xdigit, to_lower};
 import RegExp._Internal.SimpleParser::{
     Parser, 
     Parser::{
         error_parser, filter, get_stream, look_ahead, match_any_char, match_char, 
-        match_char_if_exists, match_end_of_stream, match_integer, not_match, or_else, or_error, repeat, 
+        match_char_if_exists, match_end_of_stream, not_match, or_else, or_error, repeat, 
         run_parser_str, zero_or_more
     }, 
     Stream::{read_string, Stream::@position}
@@ -15,7 +14,7 @@ import RegExp._Internal.StdBytes::find_bytes_within;
 import Std::{
     undefined, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
     Array::{@, @size, append, empty, fill, from_map, mod, push_back, set, to_iter}, Functor::map, I64::maximum, 
-    Iterator::{count_up, fold, map, range, take, to_array}, LessThan::{max, min}, Monad::{bind, pure}, 
+    Iterator::{check_any, count_up, fold, map, range, take, to_array}, LessThan::{max, min}, Monad::{bind, pure}, 
     Option::{as_some, is_none, is_some, none, some}, String::{@size, from_U8, get_bytes, join}, ToI64::i64, 
     ToString::to_string, ToU64::u64, ToU8::u8, U64::{bit_or, maximum, shift_left}
 };
@@ -111,7 +110,7 @@ namespace CharClass {
 
     // A character class of `\d`. (digits)
     cls_digit: CharClass;
-    cls_digit = CharClass::make("\\d") $ is_digit;
+    cls_digit = CharClass::make("\\d") $ _is_digit;
 
     // A character class of `\D`. (non-digits)
     cls_non_digit: CharClass;
@@ -119,7 +118,7 @@ namespace CharClass {
 
     // A character class of `\w`. (ie. `[A-Za-z0-9_]`)
     cls_word_char: CharClass;
-    cls_word_char = CharClass::make("\\w") $ |c| is_alnum(c) || c == '_';
+    cls_word_char = CharClass::make("\\w") $ |c| _is_letter(c) || _is_digit(c) || c == '_';
 
     // A character class of `\W`. (ie. `[^A-Za-z0-9_]`)
     cls_non_word_char: CharClass;
@@ -127,12 +126,29 @@ namespace CharClass {
 
     // A character class of `\s`. (whitespaces)
     cls_whitespace: CharClass;
-    cls_whitespace = CharClass::make("\\s") $ is_space;
+    cls_whitespace = CharClass::make("\\s") $ |c| 9_U8 <= c && c <= 13_U8 || c == ' ';
 
     // A character class of `\S`. (non-whitespaces)
     cls_non_whitespace: CharClass;
     cls_non_whitespace = cls_whitespace.negate.set_label("\\S");
 }
+
+// Whether `c` is an ASCII digit, `0`..`9`.
+_is_digit: U8 -> Bool;
+_is_digit = |c| '0' <= c && c <= '9';
+
+// Whether `c` is an ASCII letter, `a`..`z` or `A`..`Z`.
+_is_letter: U8 -> Bool;
+_is_letter = |c| 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z';
+
+// The value of `c` as a hexadecimal digit, or `-1` where `c` is not one.
+_hex_value: U8 -> I64;
+_hex_value = |c| (
+    if _is_digit(c) { (c - '0').i64 };
+    if 'a' <= c && c <= 'f' { (c - 'a').i64 + 10 };
+    if 'A' <= c && c <= 'F' { (c - 'A').i64 + 10 };
+    -1
+);
 
 // Type of an assertion for regular expressions, such as `^`, `$`.
 type PAssertion = unbox union {
@@ -281,12 +297,12 @@ namespace Pattern {
     _parse_pquant_n_m_inner: Parser (I64, I64);
     _parse_pquant_n_m_inner = do {
         let start_stream = *get_stream;
-        let min_count = *match_integer;
+        let min_count = *_parse_count;
         let comma = *match_char_if_exists(',');
         if comma.is_none {
             pure $ (min_count, min_count)
         };
-        let max_count = *match_integer.map(some).or_else(pure $ none());
+        let max_count = *_parse_count.map(some).or_else(pure $ none());
         if max_count.is_some {
             let max_count = max_count.as_some;
             if min_count > max_count {
@@ -298,6 +314,19 @@ namespace Pattern {
             pure $ (min_count, max_count)
         };
         pure $ (min_count, maximum)
+    };
+
+    // Parses the decimal digits of a count of rounds, a count past `I64::maximum` reading as
+    // `I64::maximum`.
+    _parse_count: Parser I64;
+    _parse_count = do {
+        let digits = *repeat(match_any_char.filter(_is_digit));
+        if digits.@size == 0 { not_match };
+        pure $ digits.to_iter.fold(0, |c, count|
+            let digit = (c - '0').i64;
+            if count > (I64::maximum - digit) / 10 { I64::maximum };
+            count * 10 + digit
+        )
     };
 
     // Parses quantifiable item.
@@ -325,14 +354,12 @@ namespace Pattern {
         ).negate.to_table
     );
 
-    // Parses an atom that reads characters: a character, `.`, a bracket expression or an escape. A
-    // character from U+0080 upward is read with all of its UTF-8 bytes, so that a quantifier after
-    // it repeats the whole character.
+    // Parses an atom that reads characters: a character, `.`, a bracket expression or an escape.
     _parse_atom: Parser Pattern;
     _parse_atom = do {
         let c = *match_any_char;
         if _normal_chars.contains(c) {
-            pure $ _pattern_of_bytes(*_parse_rest_of_char(c))
+            _parse_char_pattern(*_parse_rest_of_char(c))
         };
         if c == '.' {
             pure $ pclass(CharClass::cls_dot)
@@ -351,7 +378,7 @@ namespace Pattern {
     _parse_escape = (
         _parse_unsupported_escape
         .or_else(_parse_class_escape.map(pclass))
-        .or_else(_parse_escaped_char(false).map(_pattern_of_bytes))
+        .or_else(_parse_escaped_char(false).bind(_parse_char_pattern))
     );
 
     // Reports the escapes outside a bracket expression that this library does not implement: `\b`
@@ -388,18 +415,12 @@ namespace Pattern {
     // The backslash itself is parsed already, and `in_bracket` tells whether the escape is in a
     // bracket expression.
     //
-    // A character with no escape of its own stands for itself, as `\.` does; outside a bracket
-    // expression, a character from U+0080 upward gives all of its bytes, and in one, its first byte,
-    // as the character written without the backslash does. `\c` followed by no control letter stands
-    // for the backslash alone, leaving the `c` to be read next.
+    // A character with no escape of its own stands for itself, as `\.` does. `\c` followed by no
+    // control letter stands for the backslash alone, leaving the `c` to be read next.
     _parse_escaped_char: Bool -> Parser (Array U8);
     _parse_escaped_char = |in_bracket| (
         _parse_char_escape(in_bracket).bind(_utf8_of_code_unit)
-        .or_else(do {
-            let c = *match_any_char.filter(|c| c != 'c');
-            if in_bracket { pure $ [c] };
-            _parse_rest_of_char(c)
-        })
+        .or_else(match_any_char.filter(|c| c != 'c').bind(_parse_rest_of_char))
         .or_else(look_ahead(match_char('c')).map(|_| ['\\']))
         .or_else(error_parser("A pattern ends with `\\`"))
     );
@@ -421,7 +442,7 @@ namespace Pattern {
         if c == 'b' && in_bracket { pure $ 8 };
         if c == 'c' {
             let letter = *match_any_char.filter(|x|
-                is_alpha(x) || in_bracket && (is_digit(x) || x == '_')
+                _is_letter(x) || in_bracket && (_is_digit(x) || x == '_')
             );
             pure $ letter.i64 % 32
         };
@@ -437,8 +458,7 @@ namespace Pattern {
     _parse_hex_digits: I64 -> I64 -> Parser I64;
     _parse_hex_digits = |count, value| do {
         if count == 0 { pure $ value };
-        let c = *match_any_char.filter(is_xdigit);
-        let digit = if is_digit(c) { (c - '0').i64 } else { (to_lower(c) - 'a').i64 + 10 };
+        let digit = *match_any_char.map(_hex_value).filter(|d| d >= 0);
         _parse_hex_digits(count - 1, value * 16 + digit)
     };
 
@@ -476,12 +496,25 @@ namespace Pattern {
         .map(|rest| [first].append(rest))
     );
 
-    // The pattern that matches `bytes` in order.
-    _pattern_of_bytes: Array U8 -> Pattern;
-    _pattern_of_bytes = |bytes| (
-        if bytes.@size == 1 { pclass(CharClass::singleton(bytes.@(0))) };
-        psequence $ bytes.to_iter.map(|b| pclass(CharClass::singleton(b))).to_array
-    );
+    // Gives the pattern that matches the character whose UTF-8 bytes are `bytes`, so that a
+    // quantifier after it repeats the whole character.
+    //
+    // JavaScript reads a character from U+10000 upward as two UTF-16 code units, and a quantifier
+    // after it repeats the second alone, which no sequence of whole bytes can match. Such a
+    // character followed by a quantifier is reported as an error.
+    _parse_char_pattern: Array U8 -> Parser Pattern;
+    _parse_char_pattern = |bytes| do {
+        let quantified = *if bytes.@size < 4 {
+            pure $ false
+        } else {
+            look_ahead(_parse_quantifier).map(|_| true).or_else(pure $ false)
+        };
+        if quantified {
+            error_parser $ "A quantifier after a character from U+10000 upward is not supported"
+        };
+        if bytes.@size == 1 { pure $ pclass(CharClass::singleton(bytes.@(0))) };
+        pure $ psequence $ bytes.to_iter.map(|b| pclass(CharClass::singleton(b))).to_array
+    };
 
     // Parses a character class that begins with '['.
     // The `[` itself is parsed already.
@@ -517,22 +550,24 @@ namespace Pattern {
     };
 
     // Parses a class atom of a bracket expression: a character other than `]`, or an escape. It
-    // gives the class the atom stands for, and the character where the atom stands for one.
+    // gives the class the atom stands for, and the character where the atom stands for one. A
+    // character from U+0080 upward, written as itself or as an escape, is reported as an error.
     _parse_class_atom: Parser (CharClass, Option U8);
     _parse_class_atom = do {
         let c = *match_any_char.filter(|c| c != ']');
-        if c != '\\' {
-            pure $ (CharClass::singleton(c), some(c))
-        };
-        _parse_class_escape.map(|cls| (cls, none())).or_else(do {
-            let bytes = *_parse_escaped_char(true);
-            if bytes.@size > 1 {
-                error_parser $ "An escape for a character from U+0080 upward in a bracket expression "
-                    + "is not supported"
-            };
-            pure $ (CharClass::singleton(bytes.@(0)), some(bytes.@(0)))
-        })
+        if c != '\\' { _parse_rest_of_char(c).bind(_class_atom_of_char) };
+        _parse_class_escape.map(|cls| (cls, none()))
+        .or_else(_parse_escaped_char(true).bind(_class_atom_of_char))
     };
+
+    // Gives the class atom of the character whose UTF-8 bytes are `bytes`.
+    _class_atom_of_char: Array U8 -> Parser (CharClass, Option U8);
+    _class_atom_of_char = |bytes| (
+        if bytes.to_iter.check_any(|b| b >= 0x80_U8) {
+            error_parser $ "A character from U+0080 upward in a bracket expression is not supported"
+        };
+        pure $ (CharClass::singleton(bytes.@(0)), some(bytes.@(0)))
+    );
 
     // `pat.assign_group_number(n)` assigns group number for each group.
     // The first group number becomes `n`.

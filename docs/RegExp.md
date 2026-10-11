@@ -9,7 +9,7 @@ Currently it only supports patterns below:
 - Character escapes: `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `\0`, `\cX`, `\xhh`, `\uhhhh`, the
   octal escapes such as `\012` (outside a bracket expression, those beginning with `\0`), and a
   backslash before any other character, which stands for that character. `\c` followed by no
-  control letter stands for the backslash alone.
+  letter (in a bracket expression, no letter, digit or `_`) stands for the backslash alone.
 - Alternatives: `x|y`
 - Assertions: `^`, `$`
 - Groups: `(x)`
@@ -36,8 +36,12 @@ LIMITATION:
 
 A character class, `.` included, matches one byte, so it holds the single byte characters
 (U+0001..U+007F). UTF-8 writes a character from U+0080 upward as two or more bytes, and a Fix
-string holds no null character (U+0000). In a bracket expression, an escape for a character from U+0080 upward is reported as an
-error. `\uhhhh` for a surrogate (U+D800..U+DFFF) is reported as an error.
+string holds no null character (U+0000). A character from U+0080 upward in a bracket expression,
+written as itself or as an escape, is reported as an error.
+
+JavaScript reads a character from U+10000 upward as two UTF-16 code units, which bytes cannot
+stand for one at a time. `\uhhhh` for one of the two (U+D800..U+DFFF), and a quantifier after a
+character from U+10000 upward, are reported as errors.
 
 ## Values
 

@@ -15,12 +15,12 @@ import RegExp._Internal.NFA::{
 };
 import RegExp._Internal.Pattern::{bytes_union, no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
 import Test.JsCases::_js_cases;
-import Test.JsSyntaxCases::_js_syntax_cases;
+import Test.JsSyntaxCases::{_js_non_ascii_cases, _js_non_ascii_text, _js_syntax_cases};
 import RegExp._Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
     Array::{@, @size, empty, pop_back, push_back, to_iter}, Debug::{assert, assert_eq}, 
-    Iterator::{fold, fold_m, map, range, to_array}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
+    Iterator::{append, fold, fold_m, map, range, to_array}, LessThan::max, LoopState::{break, continue}, Monad::{bind, pure}, 
     Option::{as_some, is_none, none, some}, Result::{as_ok, is_err, is_ok}, String::{from_U8, get_bytes, join}, 
     ToString::to_string, ToU8::u8
 };
@@ -1097,14 +1097,18 @@ _test_js_cases = (
     )
 );
 
-// Escapes and bracket expressions find in every ASCII character what JavaScript finds, and those
-// JavaScript reports as errors, together with the forms this library does not support, are reported
-// as errors.
+// Escapes, bracket expressions and characters from U+0080 upward find what JavaScript finds, and
+// those JavaScript reports as errors, together with the forms this library does not support, are
+// reported as errors.
 _test_js_syntax_cases: IO ();
 _test_js_syntax_cases = (
-    let text = Iterator::range(1, 128).fold("", |code, text| text + from_U8(code.u8));
-    let text = text + "\\c1\\c";
-    let wrong = _js_syntax_cases.to_iter.fold([], |(pattern, expected), wrong|
+    let ascii = Iterator::range(1, 128).fold("", |code, text| text + from_U8(code.u8));
+    let ascii = ascii + "\\c1\\c";
+    let cases = _js_syntax_cases.to_iter.map(|(pattern, expected)| (pattern, ascii, expected));
+    let cases = cases.append(
+        _js_non_ascii_cases.to_iter.map(|(pattern, expected)| (pattern, _js_non_ascii_text, expected))
+    );
+    let wrong = cases.fold([], |(pattern, text, expected), wrong|
         let result = RegExp::compile(pattern, "");
         let found = if result.is_err {
             none()
@@ -1114,27 +1118,6 @@ _test_js_syntax_cases = (
         if found == expected { wrong } else { wrong.push_back("/" + pattern + "/") }
     );
     assert_eq(|_| "patterns read otherwise than JavaScript: " + wrong.to_iter.join(" "), wrong, [])
-);
-
-// A character from U+0080 upward outside a bracket expression, written as itself or as an escape,
-// matches all of its UTF-8 bytes, and a quantifier after it repeats the whole character.
-_test_characters_above_ascii: IO ();
-_test_characters_above_ascii = (
-    [
-        ("\\xe9", "café", [(3, 5)]),
-        ("\\u00e9", "café", [(3, 5)]),
-        ("\\u3042", "aあ", [(1, 4)]),
-        ("\\é", "café", [(3, 5)]),
-        ("caf\\é", "café", [(0, 5)]),
-        ("\\u00e9+", "cafée", [(3, 5)]),
-        ("\\u00e9+", "caféé", [(3, 7)]),
-        ("é+", "caféé", [(3, 7)]),
-        ("\\é+", "caféé", [(3, 7)]),
-        ("あ{2}", "ああ", [(0, 6)])
-    ].to_iter.fold_m((), |(pattern, text, expected), _|
-        let found = RegExp::compile(pattern, "").as_ok.find_all(text).map(|groups| groups.@(0));
-        assert_eq(|_| "/" + pattern + "/ in " + text, found.to_array, expected)
-    )
 );
 
 // A match too long for its groups to be read by trying its ways, over a pattern that offers two
@@ -1186,7 +1169,6 @@ test = (
     _test_flags;;
     _test_js_cases;;
     _test_js_syntax_cases;;
-    _test_characters_above_ascii;;
     _test_long_match_groups;;
     pure()
 );

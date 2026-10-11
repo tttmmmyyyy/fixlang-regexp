@@ -1,13 +1,4 @@
-proj_file_hash = "be7b1ffdbd2a1ccb09ad7d654381dc95"
-
-[[dependencies]]
-name = "character"
-version = "1.0.1"
-path = ".fixlang/deps/character_1.0.1"
-
-[dependencies.git]
-repo = "https://github.com/tttmmmyyyy/fixlang-character.git"
-rev = "fd75a6634ec0c919f2d1703112d25da9a3c2346e"
+proj_file_hash = "8aeaec6d20a797a3f53edd6fe5da692d"
 
 [[dependencies]]
 name = "hash"
