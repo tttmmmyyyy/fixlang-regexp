@@ -15,7 +15,9 @@ import RegExp._Internal.NFA::{
 };
 import RegExp._Internal.Pattern::{bytes_union, no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
 import Test.JsCases::_js_cases;
-import Test.JsSyntaxCases::{_js_non_ascii_cases, _js_non_ascii_text, _js_syntax_cases};
+import Test.JsSyntaxCases::{
+    _js_brace_cases, _js_brace_text, _js_non_ascii_cases, _js_non_ascii_text, _js_syntax_cases
+};
 import RegExp._Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
     loop, Array, Bool, I64, IO, Option, String, U64, U8, 
@@ -1097,9 +1099,9 @@ _test_js_cases = (
     )
 );
 
-// Escapes, bracket expressions and characters from U+0080 upward find what JavaScript finds, and
-// those JavaScript reports as errors, together with the forms this library does not support, are
-// reported as errors.
+// Escapes, bracket expressions, braces and characters from U+0080 upward find what JavaScript
+// finds, and those JavaScript reports as errors, together with the forms this library does not
+// support, are reported as errors.
 _test_js_syntax_cases: IO ();
 _test_js_syntax_cases = (
     let ascii = Iterator::range(1, 128).fold("", |code, text| text + from_U8(code.u8));
@@ -1107,6 +1109,9 @@ _test_js_syntax_cases = (
     let cases = _js_syntax_cases.to_iter.map(|(pattern, expected)| (pattern, ascii, expected));
     let cases = cases.append(
         _js_non_ascii_cases.to_iter.map(|(pattern, expected)| (pattern, _js_non_ascii_text, expected))
+    );
+    let cases = cases.append(
+        _js_brace_cases.to_iter.map(|(pattern, expected)| (pattern, _js_brace_text, expected))
     );
     let wrong = cases.fold([], |(pattern, text, expected), wrong|
         let result = RegExp::compile(pattern, "");

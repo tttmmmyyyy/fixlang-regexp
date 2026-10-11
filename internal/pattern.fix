@@ -277,7 +277,7 @@ namespace Pattern {
     };
 
     // Parses a quantifier, ie. `?`, `*`, `+`, `{n}`, `{n,}`, `{n,m}`, as the fewest and the most
-    // rounds it admits.
+    // rounds it admits. A `{` that begins none of the last three is no quantifier.
     _parse_quantifier: Parser (I64, I64);
     _parse_quantifier = do {
         let question = *match_char_if_exists('?');
@@ -288,32 +288,29 @@ namespace Pattern {
         if plus.is_some { pure $ (1, maximum) };
         let lbrace = *match_char_if_exists('{');
         if lbrace.is_none { not_match };
-        let bounds = *_parse_pquant_n_m_inner;
-        let _ = *match_char('}').or_error("'}' is missing");
-        pure $ bounds
+        _parse_braced_bounds
     };
 
-    // Parses inner of `X{n}`, `X{n,}`, `X{n,m}`
-    _parse_pquant_n_m_inner: Parser (I64, I64);
-    _parse_pquant_n_m_inner = do {
+    // Parses the rest of `{n}`, `{n,}` or `{n,m}` after the `{`, as the fewest and the most rounds.
+    // Where the text after the `{` takes none of the three forms, nothing is parsed.
+    _parse_braced_bounds: Parser (I64, I64);
+    _parse_braced_bounds = do {
         let start_stream = *get_stream;
-        let min_count = *_parse_count;
+        let least = *_parse_count;
         let comma = *match_char_if_exists(',');
-        if comma.is_none {
-            pure $ (min_count, min_count)
+        let most = *if comma.is_none {
+            pure $ some(least)
+        } else {
+            _parse_count.map(some).or_else(pure $ none())
         };
-        let max_count = *_parse_count.map(some).or_else(pure $ none());
-        if max_count.is_some {
-            let max_count = max_count.as_some;
-            if min_count > max_count {
-                let start = start_stream.@position;
-                let end = (*get_stream).@position;
-                let text = start_stream.read_string(end - start);
-                error_parser $ "Invalid quantifier:{" + text + "}"
-            };
-            pure $ (min_count, max_count)
+        let _ = *match_char('}');
+        if most.is_none { pure $ (least, maximum) };
+        if least > most.as_some {
+            let end = (*get_stream).@position;
+            let text = start_stream.read_string(end - start_stream.@position);
+            error_parser $ "Invalid quantifier:{" + text
         };
-        pure $ (min_count, maximum)
+        pure $ (least, most.as_some)
     };
 
     // Parses the decimal digits of a count of rounds, a count past `I64::maximum` reading as
@@ -345,12 +342,13 @@ namespace Pattern {
         pure $ pgroup $ (group_idx, pat)
     };
 
-    // The characters that stand for themselves where a pattern reads a character class. A `]` is
-    // among them: it closes a bracket expression, and outside one it is the character itself.
+    // The characters that stand for themselves where a pattern reads a character class. `]`, `{`
+    // and `}` are among them: `]` closes a bracket expression, and `{` begins a quantifier where
+    // `{n}`, `{n,}` or `{n,m}` follows, but outside those places each is the character itself.
     _normal_chars: CharClass;
     _normal_chars = (
         CharClass::consists_of(
-            ".?*+^$|[(){}\\"
+            ".?*+^$|[()\\"
         ).negate.to_table
     );
 
@@ -358,6 +356,14 @@ namespace Pattern {
     _parse_atom: Parser Pattern;
     _parse_atom = do {
         let c = *match_any_char;
+        let braced = *if c == '{' {
+            look_ahead(_parse_braced_bounds).map(|_| true).or_else(pure $ false)
+        } else {
+            pure $ false
+        };
+        if braced {
+            error_parser $ "A quantifier `{...}` follows nothing it can repeat"
+        };
         if _normal_chars.contains(c) {
             _parse_char_pattern(*_parse_rest_of_char(c))
         };

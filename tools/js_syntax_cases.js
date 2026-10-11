@@ -1,6 +1,6 @@
 // Writes `test_js_syntax_cases.fix`: escapes, bracket expressions and characters from U+0080
-// upward, each with every match JavaScript's `String.prototype.matchAll` finds in `TEXT` or
-// `NON_ASCII_TEXT`, or with `none()` where the pattern is to be reported as an error, by JavaScript
+// upward, each with every match JavaScript's `String.prototype.matchAll` finds in `TEXT`,
+// `NON_ASCII_TEXT` or `BRACE_TEXT`, or with `none()` where the pattern is to be reported as an error, by JavaScript
 // or as a form this library does not support.
 //
 // Run with Node from the root of the repository: `node tools/js_syntax_cases.js`.
@@ -65,6 +65,21 @@ for (const pattern of [
     "[a]]", "[\\d-]", "[-\\d]", "[a-\\d-z]", "[", "[a", "[a-", "[\\", "\\", "a\\",
 ]) {
     add(pattern, false);
+}
+
+// Braces, against `BRACE_TEXT`: a quantifier where `{n}`, `{n,}` or `{n,m}` follows something to
+// repeat, an error where it follows nothing, and the characters themselves elsewhere.
+const BRACE_TEXT = "a{,2} x{a} a{2 a{2, a{2,1 a{1,2 a{ 1} }{ {} {,} a{} a{,} p{L} u{4G} u{41} " +
+    "{a}{ x{2}{,} xx{ xx} aaa} {{}} x{{2}} a{0x1} a{01} a{1 } x{1} xx{,}";
+const braceCases = [];
+for (const pattern of [
+    "{", "}", "a{", "a}", "a{,2}", "x{a}", "a{2", "a{2,", "a{2,1", "a{1,2", "a{ 1}", "a{1 }",
+    "a{0x1}", "a{01}", "\\p{L}", "\\u{4G}", "\\u{41}", "{2}", "{1,}", "{1,2}", "x{1}{2}",
+    "x{1}{", "x{1}}", "a{2,1}", "a{1}?{", "}{", "{}", "{,}", "a{}", "a{,}", "(a){2}", "a|{", "({)",
+    "{a}{", "x{2}{,}", "\\{", "\\}", "[{}]", "[{-}]", "a{1}?", "a{2}{", "^{", "${", "|{2}",
+    "({2})", "a{1,}?{1}", "a{3}}", "\\d{2}{", "a{2}{3}", "{{}}", "x{{2}}",
+]) {
+    braceCases.push({ pattern, unsupported: false });
 }
 
 // Counts of rounds past `I64::maximum`, which read as `I64::maximum`.
@@ -142,5 +157,14 @@ ${rowsOf(nonAsciiCases, NON_ASCII_TEXT)}
 
 _js_non_ascii_text: String;
 _js_non_ascii_text = ${literal(NON_ASCII_TEXT)};
+
+// Braces, each with every match JavaScript finds in \`_js_brace_text\`, or \`none()\` as above.
+_js_brace_cases: Array (String, Option (Array (I64, I64)));
+_js_brace_cases = [
+${rowsOf(braceCases, BRACE_TEXT)}
+];
+
+_js_brace_text: String;
+_js_brace_text = ${literal(BRACE_TEXT)};
 `;
 fs.writeFileSync("test_js_syntax_cases.fix", source);
