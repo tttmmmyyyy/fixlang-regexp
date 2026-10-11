@@ -1,26 +1,47 @@
 # RegExp
 
-Defined in regexp@1.3.1
+Defined in regexp@2.0.0
 
 Simple regular expression.
 
 Currently it only supports patterns below:
-- Character classes: `[xyz]`, `[^xyz]`, `.`, `\d`, `\D`, `\w`, `\W`, `\s`,
-  `\S`, `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `x|y`
+- Character classes: `[xyz]`, `[^xyz]`, `.`, `\d`, `\D`, `\w`, `\W`, `\s`, `\S`
+- Character escapes: `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `\0`, `\cX`, `\xhh`, `\uhhhh`, the
+  octal escapes such as `\012` (outside a bracket expression, those beginning with `\0`), and a
+  backslash before any other character, which stands for that character. `\c` followed by no
+  letter (in a bracket expression, no letter, digit or `_`) stands for the backslash alone.
+- Alternatives: `x|y`
 - Assertions: `^`, `$`
 - Groups: `(x)`
-- Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`
+- Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`, and `x*?`, `x+?`, `x??`, `x{n}?`,
+  `x{n,}?`, `x{n,m}?`, which take as few rounds as they can
 
-This follows JavaScript but for one thing: where several alternatives match at one place, the
-longest wins. `a|ab` matched against `ab` gives `ab`; JavaScript gives `a`.
+Outside a bracket expression, `\b`, `\B` and `\1`..`\9` are reported as errors. JavaScript reads
+them as word boundary assertions and backreferences, or `\1`..`\9` as octal escapes and digits
+where the pattern has fewer groups.
+
+A search finds the match JavaScript finds: the one beginning leftmost, and among those beginning
+there, the first JavaScript reaches, trying alternatives from the left and taking as many rounds
+of a quantifier as it can, or as few for one followed by `?`. `a|ab` matched against `ab` gives
+`a`. What each group captured is what JavaScript reports, too.
 
 For what the pattern syntax above means, see
 [mdn web docs: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions).
 
+This module is the whole interface of the library, and its version number follows this module
+alone. The modules under `RegExp._Internal` are the parts the library is built from, and any
+version may change them.
+
 LIMITATION:
 
-A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
-U+0080 upward as two or more bytes, and a Fix string holds no null character (U+0000).
+A character class, `.` included, matches one byte, so it holds the single byte characters
+(U+0001..U+007F). UTF-8 writes a character from U+0080 upward as two or more bytes, and a Fix
+string holds no null character (U+0000). A character from U+0080 upward in a bracket expression,
+written as itself or as an escape, is reported as an error.
+
+JavaScript reads a character from U+10000 upward as two UTF-16 code units, which bytes cannot
+stand for one at a time. `\uhhhh` for one of the two (U+D800..U+DFFF), and a quantifier after a
+character from U+10000 upward, are reported as errors.
 
 ## Values
 
@@ -28,12 +49,24 @@ U+0080 upward as two or more bytes, and a Fix string holds no null character (U+
 
 #### find_all
 
+Type: `Std::String -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+
+`matcher.find_all(target)` finds every match in `target`, and reports the scanner as the
+search left it.
+
+What it reports is what `RegExp::find_all` reports, all the matches at once. To take the
+matches one at a time, use `RegExp::find_all`.
+
+##### Parameters
+
+* `target` - The string to search.
+* `matcher` - The regular expression and its scanner.
+
+#### find_all_in_bytes
+
 Type: `Std::Array Std::U8 -> RegExp::Matcher -> (Std::Array (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
 
-`matcher.find_all(bytes)` finds every match in `bytes`, and reports the scanner as the search
-left it.
-
-What it reports is what `RegExp::find_all` reports.
+`matcher.find_all_in_bytes(bytes)` is `find_all` over an array of bytes.
 
 ##### Parameters
 
@@ -42,16 +75,28 @@ What it reports is what `RegExp::find_all` reports.
 
 #### find_from
 
-Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+Type: `Std::I64 -> Std::String -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
 
-`matcher.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
-byte position `from`, and reports the scanner as the search left it.
+`matcher.find_from(from, target)` finds the match in `target` that begins first at or after
+the byte position `from`, and reports the scanner as the search left it.
 
 What it reports is what `RegExp::find_from` reports.
 
 ##### Parameters
 
 * `from` - The byte position the match has to begin at or after.
+* `target` - The string to search.
+* `matcher` - The regular expression and its scanner.
+
+#### find_from_in_bytes
+
+Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::Matcher -> (Std::Option (Std::Array (Std::I64, Std::I64)), RegExp::Matcher)`
+
+`matcher.find_from_in_bytes(from, bytes)` is `find_from` over an array of bytes.
+
+##### Parameters
+
+* `from` - The position the match has to begin at or after.
 * `bytes` - The bytes to search.
 * `matcher` - The regular expression and its scanner.
 
@@ -71,7 +116,7 @@ What it reports is what `RegExp::match_all` reports.
 
 #### match_one
 
-Type: `Std::String -> RegExp::Matcher -> (Std::Result Std::ErrMsg (Std::Array Std::String), RegExp::Matcher)`
+Type: `Std::String -> RegExp::Matcher -> (Std::Option (Std::Array Std::String), RegExp::Matcher)`
 
 `matcher.match_one(target)` matches `target` against the regular expression, and reports the
 scanner as the match left it.
@@ -105,31 +150,41 @@ What it reports is what `RegExp::replace_all` reports.
 Type: `Std::String -> Std::String -> Std::Result Std::ErrMsg RegExp::RegExp`
 
 `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
-`flags` change behavior of regular expression matching.
-Currently only global flag (`"g"`) is supported.
+`flags` change behavior of regular expression matching. The only flag is the global
+flag `g`, which `match_one` reads, so `flags` is `""` or `"g"`. Any other flag, or `g`
+given twice, is reported as an error.
 
 #### find_all
 
-Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::Array Std::U8 -> RegExp::RegExp -> ?it`
+Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::String -> RegExp::RegExp -> ?it`
 
-`regexp.find_all(bytes)` is an iterator over the matches in `bytes`, taken left to right,
+`regexp.find_all(target)` is an iterator over the matches in `target`, taken left to right,
 none of them overlapping another, each reported as where its groups stand. Each match is
 looked for when the iterator is advanced to it, so a program that stops early does not pay
 for the matches after.
 
 A match is reported as one `(begin, end)` pair of byte positions per group, the whole match
-first. A group that captured nothing stands as `(-1, -1)`. Where several matches begin at one
-place, the longest is taken, and after a match that holds no byte the search goes on from the
-next byte. The global flag (`"g"`) makes no difference here.
-
-A string's positions are those of its bytes, which `get_bytes.pop_back` gives.
+first. A group that captured nothing stands as `(-1, -1)`. After a match that holds no byte
+the search goes on from the next byte. The global flag (`"g"`) makes no difference here.
 
 Example:
 ```fix
 let regexp = RegExp::compile("([a-z]+)([0-9]+)", "").as_ok;
-let found = regexp.find_all("abc012 def345".get_bytes.pop_back).to_array;
+let found = regexp.find_all("abc012 def345").to_array;
 assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]])
 ```
+
+##### Parameters
+
+* `target` - The string to search.
+* `regexp` - The regular expression.
+
+#### find_all_in_bytes
+
+Type: `[?it : Std::Iterator, Std::Iterator::Item ?it = Std::Array (Std::I64, Std::I64)] Std::Array Std::U8 -> RegExp::RegExp -> ?it`
+
+`regexp.find_all_in_bytes(bytes)` is `find_all` over an array of bytes: an iterator over the
+matches in `bytes`, each reported as where its groups stand.
 
 ##### Parameters
 
@@ -138,23 +193,36 @@ assert_eq(|_|"", found, [[(0, 6), (0, 3), (3, 6)], [(7, 13), (7, 10), (10, 13)]]
 
 #### find_from
 
-Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
+Type: `Std::I64 -> Std::String -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
 
-`regexp.find_from(from, bytes)` finds the match in `bytes` that begins first at or after the
-byte position `from`, taking the longest of those that begin there, and reports where each of
-its groups stands, as `find_all` reports them. It reports `none()` where no match begins at
-or after `from`. A negative `from` counts as `0`.
+`regexp.find_from(from, target)` finds the match in `target` that begins first at or after
+the byte position `from`, and reports where each of its groups stands, as `find_all` reports
+them. It reports `none()` where no match begins at or after `from`. A negative `from` counts
+as `0`.
 
 Example:
 ```fix
 let regexp = RegExp::compile("[0-9]+", "").as_ok;
-let found = regexp.find_from(4, "abc012 def345".get_bytes.pop_back);
+let found = regexp.find_from(4, "abc012 def345");
 assert_eq(|_|"", found, some([(4, 6)]))
 ```
 
 ##### Parameters
 
 * `from` - The byte position the match has to begin at or after.
+* `target` - The string to search.
+* `regexp` - The regular expression.
+
+#### find_from_in_bytes
+
+Type: `Std::I64 -> Std::Array Std::U8 -> RegExp::RegExp -> Std::Option (Std::Array (Std::I64, Std::I64))`
+
+`regexp.find_from_in_bytes(from, bytes)` is `find_from` over an array of bytes: the match in
+`bytes` that begins first at or after the position `from`.
+
+##### Parameters
+
+* `from` - The position the match has to begin at or after.
 * `bytes` - The bytes to search.
 * `regexp` - The regular expression.
 
@@ -167,39 +235,39 @@ All matching results will be returned including captured groups.
 
 If the match against the regular expression fails, an empty array is returned.
 
-This function is similar to [String.matchAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
+This function is similar to [String.matchAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll)
 function of JavaScript.
 
 #### match_one
 
-Type: `Std::String -> RegExp::RegExp -> Std::Result Std::ErrMsg (Std::Array Std::String)`
+Type: `Std::String -> RegExp::RegExp -> Std::Option (Std::Array Std::String)`
 
-`regexp.match(target)` matches `target` against `regexp`.
+`regexp.match_one(target)` matches `target` against `regexp`. What it returns depends on
+whether `regexp` was compiled with the global flag `g`, as with `String.prototype.match` of
+JavaScript. This is the one function the flag changes.
 
-If the global flag (`"g"`) is not set, it returns an array of the groups of the first match.
-Group 0 is a substring that matches the entire regular expression.
-Group 1 and beyond are the captured substrings in each group. If not captured, the group will be an empty string.
+Without `g`, it returns the groups of the first match. Group 0 is the substring the whole
+regular expression matches, and group 1 and beyond are the substrings each group captured,
+the empty string standing for a group that captured nothing.
 
-Example:
 ```fix
 let regexp = RegExp::compile("[a-z]+([0-9]+)", "").as_ok;
-let groups = regexp.match_one("abc012 def345").as_ok;
+let groups = regexp.match_one("abc012 def345").as_some;
 assert_eq(|_|"", groups, ["abc012", "012"])
 ```
 
-If the global flag (`"g"`) is set, all matching results will be returned, but captured groups will not be included.
+With `g`, it returns the substring of every match, without the groups.
 
-Example:
 ```fix
 let regexp = RegExp::compile("[a-z]+([0-9]+)", "g").as_ok;
-let groups = regexp.match_one("abc012 def345").as_ok;
+let groups = regexp.match_one("abc012 def345").as_some;
 assert_eq(|_|"", groups, ["abc012", "def345"])
 ```
 
-If the match against the regular expression fails, an error `"NotMatch"` is reported.
+Where `regexp` matches nowhere in `target`, it returns `none()`.
 
-This function is similar to [String.match()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/match)
-function of JavaScript.
+See [String.match()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/match)
+of JavaScript.
 
 #### matcher
 
@@ -225,12 +293,14 @@ assert_eq(|_|"", second, [["ghi"], ["jkl"]])
 
 Type: `Std::String -> Std::String -> RegExp::RegExp -> Std::String`
 
-`regexp.replace_all(target, replacement)` matches `target` against `regexp`,
-and replace all matching substrings with `replacement`.
-If `replacement` contains `$&`, it is substituted with entire matched substring.
-If `replacement` contains `$n` where `n` is an integer, it is substituted with
-the captured group.
-If `replacement` contains `$$`, it is substituted with single `$`.
+`regexp.replace_all(target, replacement)` replaces every match of `regexp` in `target` with
+`replacement`, reading `replacement` as JavaScript's `String.prototype.replaceAll` reads it:
+- `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
+  `$'` for the text after it.
+- `$n` and `$nn` stand for the text group `n` or `nn` captured, and for the empty string
+  where the group captured nothing. Two digits are read as one group number where the pattern
+  has that group; otherwise the first digit is, and the second stands for itself.
+- `$0`, the number of a group the pattern lacks, and every other text stand for themselves.
 
 Example:
 ```fix
@@ -239,9 +309,8 @@ let result = regexp.replace_all("abc def ijk", "$2$1");
 assert_eq(|_|"", result, "cab fde kij")
 ```
 
-This function is similar to [String.replaceAll()](https://developer.mozilla.org/ja/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
-function of JavaScript.
-Note that `$'`, `` $` ``, `$<Name>` are not supported yet.
+See [String.replaceAll()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll)
+of JavaScript.
 
 ## Types and aliases
 
@@ -254,36 +323,12 @@ Defined as: `type Matcher = unbox struct { ...fields... }`
 A compiled regular expression together with the scanner it has built so far. See
 `RegExp::matcher`.
 
-##### field `global`
-
-Type: `Std::Bool`
-
-##### field `dfa`
-
-Type: `RegExp.RegExpNFA::DFA`
-
-#### Matches
-
-Defined as: `type Matches = unbox struct { ...fields... }`
-
-The matches `RegExp::find_all` reports, each looked for when the iterator is advanced to it.
-
 #### RegExp
 
 Defined as: `type RegExp = unbox struct { ...fields... }`
 
 Type of a compiled regular expression.
 
-##### field `flags`
-
-Type: `Std::String`
-
-##### field `nfa`
-
-Type: `RegExp.RegExpNFA::NFA`
-
 ## Traits and aliases
 
 ## Trait implementations
-
-### impl `RegExp::Matches : Std::Iterator`

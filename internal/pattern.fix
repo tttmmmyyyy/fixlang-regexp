@@ -1,22 +1,21 @@
 // Character class and Pattern parser. This is internal module of `RegExp`.
-module RegExp.RegExpPattern;
+module RegExp._Internal.Pattern;
 
-import Character::{is_alnum, is_digit, is_space};
-import RegExp.SimpleParser::{
+import RegExp._Internal.SimpleParser::{
     Parser, 
     Parser::{
-        error_parser, filter, get_stream, match_any_char, match_char, match_char_if_exists, 
-        match_end_of_stream, match_integer, not_match, or_else, or_error, repeat, run_parser_str, 
-        zero_or_more
+        error_parser, filter, get_stream, look_ahead, match_any_char, match_char, 
+        match_char_if_exists, match_end_of_stream, not_match, or_else, or_error, repeat, 
+        run_parser_str, zero_or_more
     }, 
     Stream::{read_string, Stream::@position}
 };
-import RegExp.StringEx::{byte_to_string, find_byte};
+import RegExp._Internal.StdBytes::find_bytes_within;
 import Std::{
     undefined, Array, Bool, ErrMsg, I64, Option, Result, String, ToString, U64, U8, 
     Array::{@, @size, append, empty, fill, from_map, mod, push_back, set, to_iter}, Functor::map, I64::maximum, 
-    Iterator::{count_up, fold, map, range, take}, Monad::pure, 
-    Option::{as_some, is_none, is_some, none, some}, String::{@size, join}, ToI64::i64, 
+    Iterator::{check_any, count_up, fold, map, range, take, to_array}, LessThan::{max, min}, Monad::{bind, pure}, 
+    Option::{as_some, is_none, is_some, none, some}, String::{@size, from_U8, get_bytes, join}, ToI64::i64, 
     ToString::to_string, ToU64::u64, ToU8::u8, U64::{bit_or, maximum, shift_left}
 };
 
@@ -47,14 +46,14 @@ namespace CharClass {
     // Creates a character class whose only member is the specified character.
     singleton: U8 -> CharClass;
     singleton = |c| CharClass {
-        label: byte_to_string(c),
+        label: String::from_U8(c),
         f: |c1| c1 == c
     };
 
     // Creates a character class whose members are characters from start to end.
     range: U8 -> U8 -> CharClass;
     range = |start, end| CharClass {
-        label: byte_to_string(start) + "-" + byte_to_string(end),
+        label: String::from_U8(start) + "-" + String::from_U8(end),
         f: |c| start <= c && c <= end
     };
 
@@ -62,7 +61,7 @@ namespace CharClass {
     consists_of: String -> CharClass;
     consists_of = |str| CharClass {
         label: str,
-        f: |c| str.find_byte(c).is_some
+        f: |c| str.get_bytes.find_bytes_within([c], 0, str.@size).is_some
     };
 
     // Negate the member function of a character class.
@@ -111,7 +110,7 @@ namespace CharClass {
 
     // A character class of `\d`. (digits)
     cls_digit: CharClass;
-    cls_digit = CharClass::make("\\d") $ is_digit;
+    cls_digit = CharClass::make("\\d") $ _is_digit;
 
     // A character class of `\D`. (non-digits)
     cls_non_digit: CharClass;
@@ -119,7 +118,7 @@ namespace CharClass {
 
     // A character class of `\w`. (ie. `[A-Za-z0-9_]`)
     cls_word_char: CharClass;
-    cls_word_char = CharClass::make("\\w") $ |c| is_alnum(c) || c == '_';
+    cls_word_char = CharClass::make("\\w") $ |c| _is_letter(c) || _is_digit(c) || c == '_';
 
     // A character class of `\W`. (ie. `[^A-Za-z0-9_]`)
     cls_non_word_char: CharClass;
@@ -127,24 +126,29 @@ namespace CharClass {
 
     // A character class of `\s`. (whitespaces)
     cls_whitespace: CharClass;
-    cls_whitespace = CharClass::make("\\s") $ is_space;
+    cls_whitespace = CharClass::make("\\s") $ |c| 9_U8 <= c && c <= 13_U8 || c == ' ';
 
     // A character class of `\S`. (non-whitespaces)
     cls_non_whitespace: CharClass;
     cls_non_whitespace = cls_whitespace.negate.set_label("\\S");
 }
 
-// Converts a character class to a string.
-impl CharClass: ToString {
-    to_string = |cls| (
-        if cls.@label.@size <= 1 {
-            cls.@label
-        } else {
-            "[" + cls.@label + "]"
-        }
-    );
-}
+// Whether `c` is an ASCII digit, `0`..`9`.
+_is_digit: U8 -> Bool;
+_is_digit = |c| '0' <= c && c <= '9';
 
+// Whether `c` is an ASCII letter, `a`..`z` or `A`..`Z`.
+_is_letter: U8 -> Bool;
+_is_letter = |c| 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z';
+
+// The value of `c` as a hexadecimal digit, or `-1` where `c` is not one.
+_hex_value: U8 -> I64;
+_hex_value = |c| (
+    if _is_digit(c) { (c - '0').i64 };
+    if 'a' <= c && c <= 'f' { (c - 'a').i64 + 10 };
+    if 'A' <= c && c <= 'F' { (c - 'A').i64 + 10 };
+    -1
+);
 
 // Type of an assertion for regular expressions, such as `^`, `$`.
 type PAssertion = unbox union {
@@ -171,8 +175,10 @@ type Pattern = box union {
     psequence: Array Pattern,
     // Either pattern, eg. `X|Y`
     peither: (Pattern, Pattern),
-    // Quantified pattern, eg. `X?`, `X*`, `X+`, `X{n,m}`
-    pquant: (Pattern, /*min_count:*/ I64, /*max_count:*/ I64),
+    // Quantified pattern, eg. `X?`, `X*`, `X+`, `X{n,m}`: the pattern, the fewest and the most
+    // rounds, and whether a match takes as many rounds as it can (greedy) or as few (`X*?` and the
+    // like)
+    pquant: (Pattern, I64, I64, Bool),
     // Grouped pattern, eg. `(X)`
     pgroup: (/* group_number:*/ I64, Pattern)
 };
@@ -195,10 +201,10 @@ impl Pattern: ToString {
             pat1.to_string + "|" + pat2.to_string
         };
         if pat.is_pquant {
-            let (pat1, min, max) = pat.as_pquant;
+            let (pat1, min, max, greedy) = pat.as_pquant;
             pat1.to_string + "{" + min.to_string + "," +
                 if max == I64::maximum { "" } else { max.to_string }
-            + "}"
+            + "}" + if greedy { "" } else { "?" }
         };
         if pat.is_pgroup {
             let (n, pat_inner) = pat.as_pgroup;
@@ -207,7 +213,6 @@ impl Pattern: ToString {
         undefined("err")
     );
 }
-
 
 namespace Pattern {
 
@@ -256,48 +261,48 @@ namespace Pattern {
         if dollar.is_some {
             pure $ passert $ pa_end()
         };
-        // TODO word boundary support
         not_match
     };
 
-    // Parses Quantified Pattern, ie. `X?`, `X*`, `X+`, `X{n}`, `X{n,}`, `X{n,m}`
+    // Parses Quantified Pattern, ie. `X?`, `X*`, `X+`, `X{n}`, `X{n,}`, `X{n,m}`, each of them
+    // followed by `?` where it takes as few rounds as it can.
     _parse_pquant: Parser Pattern;
     _parse_pquant = do {
         let pat = *_parse_quantifiable_item;
+        let bounds = *_parse_quantifier.map(some).or_else(pure $ none());
+        if bounds.is_none { pure $ pat };
+        let (least, most) = bounds.as_some;
+        let lazy = *match_char_if_exists('?');
+        pure $ pquant $ (pat, least, most, lazy.is_none)
+    };
+
+    // Parses a quantifier, ie. `?`, `*`, `+`, `{n}`, `{n,}`, `{n,m}`, as the fewest and the most
+    // rounds it admits.
+    _parse_quantifier: Parser (I64, I64);
+    _parse_quantifier = do {
         let question = *match_char_if_exists('?');
-        if question.is_some {
-            pure $ pquant $ (pat, 0, 1)
-        };
+        if question.is_some { pure $ (0, 1) };
         let asterisk = *match_char_if_exists('*');
-        if asterisk.is_some {
-            // TODO: support non-greedy match
-            pure $ pquant $ (pat, 0, maximum)
-        };
+        if asterisk.is_some { pure $ (0, maximum) };
         let plus = *match_char_if_exists('+');
-        if plus.is_some {
-            // TODO: support non-greedy match
-            pure $ pquant $ (pat, 1, maximum)
-        };
-        // `X{n}`, `X{n,}`, `X{n,m}`
+        if plus.is_some { pure $ (1, maximum) };
         let lbrace = *match_char_if_exists('{');
-        if lbrace.is_some {
-            let (min_count, max_count) = *_parse_pquant_n_m_inner;
-            let _ = *match_char('}').or_error("'}' is missing");
-            pure $ pquant $ (pat, min_count, max_count)
-        };
-        pure $ pat
+        if lbrace.is_none { not_match };
+        let bounds = *_parse_pquant_n_m_inner;
+        let _ = *match_char('}').or_error("'}' is missing");
+        pure $ bounds
     };
 
     // Parses inner of `X{n}`, `X{n,}`, `X{n,m}`
     _parse_pquant_n_m_inner: Parser (I64, I64);
     _parse_pquant_n_m_inner = do {
         let start_stream = *get_stream;
-        let min_count = *match_integer;
+        let min_count = *_parse_count;
         let comma = *match_char_if_exists(',');
         if comma.is_none {
             pure $ (min_count, min_count)
         };
-        let max_count = *match_integer.map(some).or_else(pure $ none());
+        let max_count = *_parse_count.map(some).or_else(pure $ none());
         if max_count.is_some {
             let max_count = max_count.as_some;
             if min_count > max_count {
@@ -311,13 +316,24 @@ namespace Pattern {
         pure $ (min_count, maximum)
     };
 
+    // Parses the decimal digits of a count of rounds, a count past `I64::maximum` reading as
+    // `I64::maximum`.
+    _parse_count: Parser I64;
+    _parse_count = do {
+        let digits = *repeat(match_any_char.filter(_is_digit));
+        if digits.@size == 0 { not_match };
+        pure $ digits.to_iter.fold(0, |c, count|
+            let digit = (c - '0').i64;
+            if count > (I64::maximum - digit) / 10 { I64::maximum };
+            count * 10 + digit
+        )
+    };
+
     // Parses quantifiable item.
     _parse_quantifiable_item: Parser Pattern;
     _parse_quantifiable_item = do {
-        _parse_pgroup.or_else(_parse_pclass)
+        _parse_pgroup.or_else(_parse_atom)
     };
-
-    // TODO: support backreferences, ie. `\\1`, `\\2` etc.
 
     // Parses Group Pattern, ie. `(X)`
     _parse_pgroup: Parser Pattern;
@@ -338,12 +354,12 @@ namespace Pattern {
         ).negate.to_table
     );
 
-    // Parses character class pattern, ie. `.`, `[a-z]`, `\w` etc.
-    _parse_pclass: Parser Pattern;
-    _parse_pclass = do {
+    // Parses an atom that reads characters: a character, `.`, a bracket expression or an escape.
+    _parse_atom: Parser Pattern;
+    _parse_atom = do {
         let c = *match_any_char;
         if _normal_chars.contains(c) {
-            pure $ pclass(CharClass::singleton(c))
+            _parse_char_pattern(*_parse_rest_of_char(c))
         };
         if c == '.' {
             pure $ pclass(CharClass::cls_dot)
@@ -352,55 +368,39 @@ namespace Pattern {
             pure $ pclass(*_parse_pclass_bracket)
         };
         if c == '\\' {
-            pure $ pclass(*_parse_backslash_char_class(false))
+            _parse_escape
         };
         not_match
     };
 
-    // Parses a character class that begins with '['.
-    // The `[` itself is parsed already.
-    _parse_pclass_bracket: Parser CharClass;
-    _parse_pclass_bracket = do {
-        let circumflex = *match_char_if_exists('^');
-        let start_hyphen = *match_char_if_exists('-');
-        let components = *repeat(_parse_bracket_component);
-        let end_hyphen = *match_char_if_exists('-');
-        let _ = *match_char(']').or_error("']' is missing");
-
-        let cls = components.to_iter.fold(
-            CharClass::empty, union
-        );
-        let cls = if start_hyphen.is_some || end_hyphen.is_some { cls.add('-') } else { cls };
-        let cls = if circumflex.is_some { cls.negate } else { cls };
-        pure $ cls.to_table
-    };
-
-    // Parses each component in a bracket.
-    _parse_bracket_component: Parser CharClass;
-    _parse_bracket_component = (
-        let parse_backslash = do {
-            let _ = *match_char('\\');
-            _parse_backslash_char_class(true)
-        };
-        let parse_triplet = do {
-            let start = *match_any_char.filter(|c| c != ']' && c != '\\');
-            let _ = *match_char('-');
-            let end = *match_any_char.filter(|c| c != ']' && c != '\\');
-            pure $ CharClass::range(start, end)
-        };
-        let parse_single = do {
-            let c = *match_any_char.filter(|c| c != ']' && c != '\\' && c != '-');
-            pure $ CharClass::singleton(c)
-        };
-        parse_backslash
-        .or_else(parse_triplet)
-        .or_else(parse_single)
+    // Parses an escape outside a bracket expression. The backslash itself is parsed already.
+    _parse_escape: Parser Pattern;
+    _parse_escape = (
+        _parse_unsupported_escape
+        .or_else(_parse_class_escape.map(pclass))
+        .or_else(_parse_escaped_char(false).bind(_parse_char_pattern))
     );
 
-    // Parses the char class that begins with a backslash.
-    // The backslash itself is parsed already.
-    _parse_backslash_char_class: Bool -> Parser CharClass;
-    _parse_backslash_char_class = |in_bracket| do {
+    // Reports the escapes outside a bracket expression that this library does not implement: `\b`
+    // and `\B`, which JavaScript reads as word boundary assertions, and `\1`..`\9`, which it reads
+    // as backreferences, or as octal escapes and digits where the pattern has fewer groups. The
+    // backslash itself is parsed already.
+    _parse_unsupported_escape: Parser Pattern;
+    _parse_unsupported_escape = do {
+        let c = *match_any_char;
+        if c == 'b' || c == 'B' {
+            error_parser $ "The word boundary assertion `\\" + from_U8(c) + "` is not supported"
+        };
+        if '1' <= c && c <= '9' {
+            error_parser $ "`\\" + from_U8(c) + "` outside a bracket expression is not supported"
+        };
+        not_match
+    };
+
+    // Parses a character class escape, ie. `\d`, `\D`, `\w`, `\W`, `\s`, `\S`. The backslash itself
+    // is parsed already.
+    _parse_class_escape: Parser CharClass;
+    _parse_class_escape = do {
         let c = *match_any_char;
         if c == 'd' { pure $ CharClass::cls_digit };
         if c == 'D' { pure $ CharClass::cls_non_digit };
@@ -408,23 +408,172 @@ namespace Pattern {
         if c == 'W' { pure $ CharClass::cls_non_word_char };
         if c == 's' { pure $ CharClass::cls_whitespace };
         if c == 'S' { pure $ CharClass::cls_non_whitespace };
-        if c == 't' { pure $ CharClass::singleton('\t') };
-        if c == 'r' { pure $ CharClass::singleton('\r') };
-        if c == 'n' { pure $ CharClass::singleton('\n') };
-        if c == 'v' { pure $ CharClass::singleton(11_U8) };
-        if c == 'f' { pure $ CharClass::singleton(12_U8) };
-        if c == 'b' && in_bracket { pure $ CharClass::singleton(8_U8) };
-        // TODO: support for \xhh, \uhhhh
-
-        // other character is treated as itself, ie. `\\`, `\+`, `\*` etc.
-        pure $ CharClass::singleton(c)
+        not_match
     };
 
-    // `pat._assign_group_number(n)` assigns group number for each group.
+    // Parses an escape that stands for one character, and gives the bytes that character matches.
+    // The backslash itself is parsed already, and `in_bracket` tells whether the escape is in a
+    // bracket expression.
+    //
+    // A character with no escape of its own stands for itself, as `\.` does. `\c` followed by no
+    // control letter stands for the backslash alone, leaving the `c` to be read next.
+    _parse_escaped_char: Bool -> Parser (Array U8);
+    _parse_escaped_char = |in_bracket| (
+        _parse_char_escape(in_bracket).bind(_utf8_of_code_unit)
+        .or_else(match_any_char.filter(|c| c != 'c').bind(_parse_rest_of_char))
+        .or_else(look_ahead(match_char('c')).map(|_| ['\\']))
+        .or_else(error_parser("A pattern ends with `\\`"))
+    );
+
+    // Parses an escape that names a character by a letter or a number, and gives the UTF-16 code
+    // unit JavaScript reads it as: `\t`, `\n`, `\v`, `\f`, `\r`, `\cX`, `\xhh`, `\uhhhh`, and the
+    // octal escapes `\0`..`\377`. The backslash itself is parsed already.
+    //
+    // In a bracket expression, `\b` is the backspace, `\c` also takes a digit or `_`, and an octal
+    // escape may also begin with `1`..`7`. Outside one, an octal escape begins with `0`.
+    _parse_char_escape: Bool -> Parser I64;
+    _parse_char_escape = |in_bracket| do {
+        let c = *match_any_char;
+        if c == 't' { pure $ 9 };
+        if c == 'n' { pure $ 10 };
+        if c == 'v' { pure $ 11 };
+        if c == 'f' { pure $ 12 };
+        if c == 'r' { pure $ 13 };
+        if c == 'b' && in_bracket { pure $ 8 };
+        if c == 'c' {
+            let letter = *match_any_char.filter(|x|
+                _is_letter(x) || in_bracket && (_is_digit(x) || x == '_')
+            );
+            pure $ letter.i64 % 32
+        };
+        if c == 'x' { _parse_hex_digits(2, 0) };
+        if c == 'u' { _parse_hex_digits(4, 0) };
+        if c == '0' || in_bracket && '1' <= c && c <= '7' {
+            _parse_octal_digits(if c <= '3' { 2 } else { 1 }, (c - '0').i64)
+        };
+        not_match
+    };
+
+    // Parses `count` hexadecimal digits, and gives `value` followed by them as a number.
+    _parse_hex_digits: I64 -> I64 -> Parser I64;
+    _parse_hex_digits = |count, value| do {
+        if count == 0 { pure $ value };
+        let digit = *match_any_char.map(_hex_value).filter(|d| d >= 0);
+        _parse_hex_digits(count - 1, value * 16 + digit)
+    };
+
+    // Parses up to `most` octal digits, and gives `value` followed by them as a number.
+    _parse_octal_digits: I64 -> I64 -> Parser I64;
+    _parse_octal_digits = |most, value| do {
+        if most == 0 { pure $ value };
+        let c = *match_any_char.filter(|c| '0' <= c && c <= '7').map(some).or_else(pure $ none());
+        if c.is_none { pure $ value };
+        _parse_octal_digits(most - 1, value * 8 + (c.as_some - '0').i64)
+    };
+
+    // The UTF-8 encoding of the character whose UTF-16 code unit is `unit`. A surrogate
+    // (U+D800..U+DFFF) encodes no character by itself and is reported as an error.
+    _utf8_of_code_unit: I64 -> Parser (Array U8);
+    _utf8_of_code_unit = |unit| (
+        if 0xD800 <= unit && unit <= 0xDFFF {
+            error_parser $ "An escape for a surrogate (U+D800..U+DFFF) is not supported"
+        };
+        let bytes = if unit < 0x80 {
+            [unit]
+        } else if unit < 0x800 {
+            [0xC0 + unit / 64, 0x80 + unit % 64]
+        } else {
+            [0xE0 + unit / 4096, 0x80 + unit / 64 % 64, 0x80 + unit % 64]
+        };
+        pure $ bytes.to_iter.map(u8).to_array
+    );
+
+    // Parses the bytes that follow `first` within one UTF-8 character, and gives all of its bytes.
+    _parse_rest_of_char: U8 -> Parser (Array U8);
+    _parse_rest_of_char = |first| (
+        if first < 0xC0_U8 { pure $ [first] };
+        repeat(match_any_char.filter(|c| 0x80_U8 <= c && c < 0xC0_U8))
+        .map(|rest| [first].append(rest))
+    );
+
+    // Gives the pattern that matches the character whose UTF-8 bytes are `bytes`, so that a
+    // quantifier after it repeats the whole character.
+    //
+    // JavaScript reads a character from U+10000 upward as two UTF-16 code units, and a quantifier
+    // after it repeats the second alone, which no sequence of whole bytes can match. Such a
+    // character followed by a quantifier is reported as an error.
+    _parse_char_pattern: Array U8 -> Parser Pattern;
+    _parse_char_pattern = |bytes| do {
+        let quantified = *if bytes.@size < 4 {
+            pure $ false
+        } else {
+            look_ahead(_parse_quantifier).map(|_| true).or_else(pure $ false)
+        };
+        if quantified {
+            error_parser $ "A quantifier after a character from U+10000 upward is not supported"
+        };
+        if bytes.@size == 1 { pure $ pclass(CharClass::singleton(bytes.@(0))) };
+        pure $ psequence $ bytes.to_iter.map(|b| pclass(CharClass::singleton(b))).to_array
+    };
+
+    // Parses a character class that begins with '['.
+    // The `[` itself is parsed already.
+    _parse_pclass_bracket: Parser CharClass;
+    _parse_pclass_bracket = do {
+        let circumflex = *match_char_if_exists('^');
+        let components = *repeat(_parse_bracket_component);
+        let _ = *match_char(']').or_error("']' is missing");
+        let cls = components.to_iter.fold(CharClass::empty, union);
+        let cls = if circumflex.is_some { cls.negate } else { cls };
+        pure $ cls.to_table
+    };
+
+    // Parses each component in a bracket: a class atom, or a range of two joined by `-`. Where a
+    // character class escape such as `\d` joins a range, the range stands for both atoms and `-`.
+    _parse_bracket_component: Parser CharClass;
+    _parse_bracket_component = do {
+        let (first, first_char) = *_parse_class_atom;
+        let last = *do {
+            let _ = *match_char('-');
+            _parse_class_atom
+        }.map(some).or_else(pure $ none());
+        if last.is_none { pure $ first };
+        let (last, last_char) = last.as_some;
+        if first_char.is_none || last_char.is_none {
+            pure $ first.add('-').union(last)
+        };
+        let (start, end) = (first_char.as_some, last_char.as_some);
+        if start > end {
+            error_parser $ "Range out of order in character class"
+        };
+        pure $ CharClass::range(start, end)
+    };
+
+    // Parses a class atom of a bracket expression: a character other than `]`, or an escape. It
+    // gives the class the atom stands for, and the character where the atom stands for one. A
+    // character from U+0080 upward, written as itself or as an escape, is reported as an error.
+    _parse_class_atom: Parser (CharClass, Option U8);
+    _parse_class_atom = do {
+        let c = *match_any_char.filter(|c| c != ']');
+        if c != '\\' { _parse_rest_of_char(c).bind(_class_atom_of_char) };
+        _parse_class_escape.map(|cls| (cls, none()))
+        .or_else(_parse_escaped_char(true).bind(_class_atom_of_char))
+    };
+
+    // Gives the class atom of the character whose UTF-8 bytes are `bytes`.
+    _class_atom_of_char: Array U8 -> Parser (CharClass, Option U8);
+    _class_atom_of_char = |bytes| (
+        if bytes.to_iter.check_any(|b| b >= 0x80_U8) {
+            error_parser $ "A character from U+0080 upward in a bracket expression is not supported"
+        };
+        pure $ (CharClass::singleton(bytes.@(0)), some(bytes.@(0)))
+    );
+
+    // `pat.assign_group_number(n)` assigns group number for each group.
     // The first group number becomes `n`.
     // It returns the translated pattern along with group count.
-    _assign_group_number: I64 -> Pattern -> (I64, Pattern);
-    _assign_group_number = |n, pat| (
+    assign_group_number: I64 -> Pattern -> (I64, Pattern);
+    assign_group_number = |n, pat| (
         if pat.is_pclass || pat.is_passert {
             (n, pat)
         };
@@ -433,7 +582,7 @@ namespace Pattern {
             let output: Array Pattern = Array::empty(input.@size);
             let (n, output) = input.to_iter.fold(
                 (n, output), |pat_inner, (n, output)|
-                let (n, pat_inner) = pat_inner._assign_group_number(n);
+                let (n, pat_inner) = pat_inner.assign_group_number(n);
                 let output = output.push_back(pat_inner);
                 (n, output)
             );
@@ -442,21 +591,21 @@ namespace Pattern {
         };
         if pat.is_peither {
             let (pat1, pat2) = pat.as_peither;
-            let (n, pat1) = pat1._assign_group_number(n);
-            let (n, pat2) = pat2._assign_group_number(n);
+            let (n, pat1) = pat1.assign_group_number(n);
+            let (n, pat2) = pat2.assign_group_number(n);
             let pat = peither $ (pat1, pat2);
             (n, pat)
         };
         if pat.is_pquant {
-            let (pat_inner, min, max) = pat.as_pquant;
-            let (n, pat_inner) = pat_inner._assign_group_number(n);
-            let pat = pquant $ (pat_inner, min, max);
+            let (pat_inner, min, max, greedy) = pat.as_pquant;
+            let (n, pat_inner) = pat_inner.assign_group_number(n);
+            let pat = pquant $ (pat_inner, min, max, greedy);
             (n, pat)
         };
         if pat.is_pgroup {
             let (_, pat_inner) = pat.as_pgroup;
             let gn = n;
-            let (n, pat_inner) = pat_inner._assign_group_number(gn + 1);
+            let (n, pat_inner) = pat_inner.assign_group_number(gn + 1);
             let pat = pgroup $ (gn, pat_inner);
             (n, pat)
         };
@@ -484,14 +633,72 @@ namespace Pattern {
             peither $ (left.reverse, right.reverse)
         };
         if pat.is_pquant {
-            let (inner, least, most) = pat.as_pquant;
-            pquant $ (inner.reverse, least, most)
+            let (inner, least, most, greedy) = pat.as_pquant;
+            pquant $ (inner.reverse, least, most, greedy)
         };
         if pat.is_pgroup {
             let (_, inner) = pat.as_pgroup;
             inner.reverse
         };
         undefined("reverse: unknown pattern")
+    );
+
+    // Whether a pattern may match while reading no byte.
+    //
+    // # Parameters
+    // * `pat` - The pattern to read.
+    matches_empty: Pattern -> Bool;
+    matches_empty = |pat| (
+        if pat.is_pclass { false };
+        if pat.is_passert { true };
+        if pat.is_psequence {
+            pat.as_psequence.to_iter.fold(true, |inner, all| all && inner.matches_empty)
+        };
+        if pat.is_peither {
+            let (left, right) = pat.as_peither;
+            left.matches_empty || right.matches_empty
+        };
+        if pat.is_pquant {
+            let (inner, least, _, _) = pat.as_pquant;
+            least == 0 || inner.matches_empty
+        };
+        if pat.is_pgroup {
+            let (_, inner) = pat.as_pgroup;
+            inner.matches_empty
+        };
+        undefined("matches_empty: unknown pattern")
+    );
+
+    // The groups a pattern holds, numbered as `assign_group_number` numbered them: the first
+    // number and one past the last, both `0` where it holds none. The groups a pattern holds are
+    // numbered one after another.
+    //
+    // # Parameters
+    // * `pat` - The pattern to read.
+    groups_within: Pattern -> (I64, I64);
+    groups_within = |pat| (
+        let join = |(first, end), (other_first, other_end)| (
+            if first == end { (other_first, other_end) };
+            if other_first == other_end { (first, end) };
+            (min(first, other_first), max(end, other_end))
+        );
+        if pat.is_pclass || pat.is_passert { (0, 0) };
+        if pat.is_psequence {
+            pat.as_psequence.to_iter.fold((0, 0), |inner, span| join(span, inner.groups_within))
+        };
+        if pat.is_peither {
+            let (left, right) = pat.as_peither;
+            join(left.groups_within, right.groups_within)
+        };
+        if pat.is_pquant {
+            let (inner, _, _, _) = pat.as_pquant;
+            inner.groups_within
+        };
+        if pat.is_pgroup {
+            let (group, inner) = pat.as_pgroup;
+            join((group, group + 1), inner.groups_within)
+        };
+        undefined("groups_within: unknown pattern")
     );
 }
 // How many bytes a stretch of a pattern may read where it may read any number of them.
@@ -519,12 +726,12 @@ __MAX_FORCED_LENGTH : I64;
 __MAX_FORCED_LENGTH = 16;
 
 // The empty set of byte values.
-_no_bytes : Array U64;
-_no_bytes = Array::fill(4, 0_U64);
+no_bytes : Array U64;
+no_bytes = Array::fill(4, 0_U64);
 
 // The set of every byte value.
-_all_bytes : Array U64;
-_all_bytes = Array::fill(4, U64::maximum);
+all_bytes : Array U64;
+all_bytes = Array::fill(4, U64::maximum);
 
 // The byte values a character class holds, one bit each, together with the one it holds where it
 // holds one alone: `-1` where it holds none and `-2` where it holds several.
@@ -534,9 +741,9 @@ _all_bytes = Array::fill(4, U64::maximum);
 //
 // # Parameters
 // * `cls` - The class to read.
-_bytes_of_class : CharClass -> (Array U64, I64);
-_bytes_of_class = |cls| (
-    Iterator::range(0, 256).fold((_no_bytes, -1), |i, (bits, lone)|
+bytes_of_class : CharClass -> (Array U64, I64);
+bytes_of_class = |cls| (
+    Iterator::range(0, 256).fold((no_bytes, -1), |i, (bits, lone)|
         if !cls.contains(i.u8) { (bits, lone) };
         (
             bits.mod(i / 64, bit_or(1_U64.shift_left((i % 64).u64))),
@@ -550,8 +757,8 @@ _bytes_of_class = |cls| (
 // # Parameters
 // * `other` - The set to take together with this one.
 // * `bits` - The set to take it together with.
-_bytes_union : Array U64 -> Array U64 -> Array U64;
-_bytes_union = |other, bits| (
+bytes_union : Array U64 -> Array U64 -> Array U64;
+bytes_union = |other, bits| (
     Iterator::range(0, 4).fold(bits, |w, bits| bits.mod(w, bit_or(other.@(w))))
 );
 
@@ -602,7 +809,7 @@ type Forced = unbox struct {
 // A pattern that forces nothing and reads nothing.
 _forced_of_nothing : Forced;
 _forced_of_nothing = Forced {
-    exact: none(), sets: Array::empty(0), max_read: 0, read_bytes: _no_bytes
+    exact: none(), sets: Array::empty(0), max_read: 0, read_bytes: no_bytes
 };
 
 // A pattern that matches one byte string and no other, standing where nothing is read before it.
@@ -613,10 +820,10 @@ _forced_of_bytes : Array U8 -> Forced;
 _forced_of_bytes = |bytes| Forced {
     exact: some(bytes),
     sets: if bytes.@size == 0 { Array::empty(0) } else {
-        [[ForcedRun { bytes: bytes, back_max: 0, back_class: _no_bytes }]]
+        [[ForcedRun { bytes: bytes, back_max: 0, back_class: no_bytes }]]
     },
     max_read: 0,
-    read_bytes: _no_bytes
+    read_bytes: no_bytes
 };
 
 // The runs of a set, each told that more may be read before it than it knew.
@@ -629,7 +836,7 @@ _runs_after : I64 -> Array U64 -> Array ForcedRun -> Array ForcedRun;
 _runs_after = |more, bits, runs| (
     runs.map(|run| run
         .mod_back_max(|m| _read_sum(m, more))
-        .mod_back_class(_bytes_union(bits))
+        .mod_back_class(bytes_union(bits))
     )
 );
 
@@ -666,12 +873,12 @@ _sets_together = |left, right| (
 _forced_of_sequence : Array Pattern -> Forced;
 _forced_of_sequence = |pats| (
     let empty_run = Array::empty(__MAX_FORCED_LENGTH);
-    let start = (empty_run, 0, _no_bytes, 0, _no_bytes, Array::empty(__MAX_FORCED_SETS), true);
+    let start = (empty_run, 0, no_bytes, 0, no_bytes, Array::empty(__MAX_FORCED_SETS), true);
     let (run, run_max, run_bits, total_max, total_bits, sets, is_exact) = pats.to_iter.fold(start,
         |pat, (run, run_max, run_bits, pre_max, pre_bits, sets, is_exact)|
         let forced = forced_of(pat);
         let next_max = _read_sum(pre_max, forced.@max_read);
-        let next_bits = _bytes_union(forced.@read_bytes, pre_bits);
+        let next_bits = bytes_union(forced.@read_bytes, pre_bits);
         if forced.@exact.is_some {
             let more = forced.@exact.as_some;
             let (run_max, run_bits) = if run.@size == 0 { (pre_max, pre_bits) } else { (run_max, run_bits) };
@@ -688,7 +895,7 @@ _forced_of_sequence = |pats| (
             if sets.@size >= __MAX_FORCED_SETS { sets };
             sets.push_back(_runs_after(pre_max, pre_bits, set))
         );
-        (empty_run, 0, _no_bytes, next_max, next_bits, sets, false)
+        (empty_run, 0, no_bytes, next_max, next_bits, sets, false)
     );
     Forced {
         exact: if is_exact { some(run) } else { none() },
@@ -729,7 +936,7 @@ _repeated = |bytes, times| (
 forced_of : Pattern -> Forced;
 forced_of = |pat| (
     if pat.is_pclass {
-        let (bits, lone) = _bytes_of_class(pat.as_pclass);
+        let (bits, lone) = bytes_of_class(pat.as_pclass);
         let forced = if lone < 0 { _forced_of_nothing } else { _forced_of_bytes([lone.u8]) };
         forced.set_max_read(1).set_read_bytes(bits)
     };
@@ -747,11 +954,11 @@ forced_of = |pat| (
             } else {
                 forced_right.@max_read
             },
-            read_bytes: _bytes_union(forced_left.@read_bytes, forced_right.@read_bytes)
+            read_bytes: bytes_union(forced_left.@read_bytes, forced_right.@read_bytes)
         }
     };
     if pat.is_pquant {
-        let (inner, least, most) = pat.as_pquant;
+        let (inner, least, most, _) = pat.as_pquant;
         let forced = forced_of(inner);
         let read_bytes = forced.@read_bytes;
         let max_read = _read_times(forced.@max_read, most);
@@ -771,7 +978,7 @@ forced_of = |pat| (
             let run = _repeated(once, rounds);
             Forced {
                 exact: if least == most && rounds == least { some(run) } else { none() },
-                sets: [[ForcedRun { bytes: run, back_max: 0, back_class: _no_bytes }]],
+                sets: [[ForcedRun { bytes: run, back_max: 0, back_class: no_bytes }]],
                 max_read: max_read,
                 read_bytes: read_bytes
             }

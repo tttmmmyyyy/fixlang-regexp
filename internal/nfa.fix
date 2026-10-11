@@ -4,37 +4,31 @@
 // - https://swtch.com/~rsc/regexp/regexp1.html
 // - https://zenn.dev/canalun/articles/regexp_and_automaton
 //
-module RegExp.RegExpNFA;
+module RegExp._Internal.NFA;
 
-import RegExp.RegExpPattern::{
-    _all_bytes, _bytes_of_class, _bytes_union, _no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
+import RegExp._Internal.Pattern::{
+    all_bytes, bytes_of_class, bytes_union, no_bytes, forced_of, CharClass, ForcedRun, PAssertion, 
     Pattern, Forced::@sets, ForcedRun::{@back_class, @back_max, @bytes}, 
     PAssertion::{is_pa_begin, is_pa_end}, 
     Pattern::{
-        _assign_group_number, as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, 
-        is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, psequence, reverse
+        assign_group_number, as_passert, as_pclass, as_peither, as_pgroup, as_pquant, as_psequence, 
+        groups_within, is_passert, is_pclass, is_peither, is_pgroup, is_pquant, is_psequence, 
+        matches_empty, psequence, reverse
     }
 };
-import RegExp.SimpleParser::{
-    Parser, 
-    Parser::{
-        match_any_char, match_char, match_char_if_exists, match_integer, not_match, or_else, repeat, 
-        run_parser_str
-    }
-};
-import RegExp.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
-import RegExp.StringEx::{_unsafe_to_string, substring};
+import RegExp._Internal.StdBytes::{find_byte, find_bytes_by, find_bytes_within};
+import RegExp._Internal.StringEx::{unsafe_to_string, substring};
 import Std::{
-    loop, undefined, Array, Bool, Eq, I64, Option, String, ToString, U64, U8, 
+    loop, undefined, Array, Bool, I64, Option, String, U64, U8, 
     Array::{
         @, @size, append, empty, fill, from_map, get_last, mod, pop_back, push_back, set, sort_by, to_iter, 
         truncate
     }, 
     Functor::map, I64::{bit_and, bit_or, maximum, shift_right}, Indexable::ixchg, 
     Iterator::{check_any, fold, map, range}, 
-    LessThan::{max, min}, LoopState::{break, continue}, Monad::pure, 
-    Option::{as_some, as_some_or, is_none, is_some, none, some}, Result::{as_ok, is_err}, 
-    String::{@size, concat_iter, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
+    LessThan::{max, min}, LoopState::{break, continue}, 
+    Option::{as_some, as_some_or, is_none, is_some, none, some}, 
+    String::{@size, get_bytes}, ToI64::i64, ToString::to_string, ToU64::u64, ToU8::u8, 
     U64::{bit_and, bit_or, shift_right}
 };
 
@@ -46,9 +40,10 @@ type Group = (I64, I64);
 type Groups = Array Group;
 
 // Which special quantifier a node belongs to. `X{n}`, `X{n,}` and `X{n,m}` are the special
-// quantifiers, and a thread counts the rounds it has taken through each of them, since how many it
-// has taken decides where it may go and the node it stands at does not say. The `sa_quant_*`
-// actions are where the counting happens.
+// quantifiers, and so is any quantifier whose pattern may match the empty string. A thread counts
+// the rounds it has taken through each of them, since how many it has taken decides where it may
+// go and the node it stands at does not say. The `sa_quant_*` actions are where the counting
+// happens.
 type QuantID = I64;
 
 // The automaton a pattern compiles to.
@@ -66,7 +61,10 @@ type NFA = box struct {
     _accepting_node: NodeID,         // the node a thread has matched at
     _group_count: I64,               // how many groups the pattern captures, the whole match
                                      // counted as one
-    _quant_bounds: Array (I64, I64), // fewest and most rounds each special quant admits
+    // Per special quantifier, the fewest and the most rounds it admits, and whether a round that
+    // reads nothing fails once the fewest are taken, which is what JavaScript does with a
+    // quantifier whose pattern may match the empty string. See `NFA::action_step`.
+    _quant_bounds: Array (I64, I64, Bool),
     // The character classes the nodes are guarded by, as one bit per byte value, four words to a
     // class. Keeping them here rather than in the node leaves a node holding nothing but numbers,
     // so that walking the nodes costs no reference counting at all.
@@ -133,7 +131,7 @@ namespace NFA {
     new_class: CharClass -> NFA -> (NFA, I64);
     new_class = |cls, nfa| (
         let base = nfa.@_classes.@size;
-        let (bits, _) = _bytes_of_class(cls);
+        let (bits, _) = bytes_of_class(cls);
         (nfa.mod__classes(append(bits)), base)
     );
 
@@ -176,11 +174,32 @@ namespace NFA {
     // # Parameters
     // * `least` - The fewest rounds the quantifier admits.
     // * `most` - The most rounds it admits.
+    // * `checks` - Whether a round that reads nothing fails once the fewest are taken.
     // * `nfa` - The automaton to add the quantifier to.
-    new_quant: I64 -> I64 -> NFA -> (NFA, QuantID);
-    new_quant = |least, most, nfa| (
+    new_quant: I64 -> I64 -> Bool -> NFA -> (NFA, QuantID);
+    new_quant = |least, most, checks, nfa| (
         let id = nfa.@_quant_bounds.@size;
-        (nfa.mod__quant_bounds(push_back((least, most))), id)
+        (nfa.mod__quant_bounds(push_back((least, most, checks))), id)
+    );
+
+    // What a thread has counted for a special quantifier once it has read a byte: the count with
+    // the mark that says the round it is in read something, where the quantifier checks for that.
+    //
+    // A thread counts a quantifier it stands in as two numbers in one, `2 * rounds + read`: the
+    // rounds it has taken, and `1` where the round it is in has read a byte. Only a quantifier that
+    // checks for a round reading nothing sets the mark, so that the threads of any other are told
+    // apart by their rounds alone. A thread counts a quantifier it does not stand in as `-1`, which
+    // reading leaves alone, so that two threads that differ only in how they went through a
+    // quantifier they have left stand alike.
+    //
+    // # Parameters
+    // * `qid` - The quantifier.
+    // * `counted` - What the thread had counted for it.
+    // * `nfa` - The automaton the quantifier belongs to.
+    count_after_byte: QuantID -> I64 -> NFA -> I64;
+    count_after_byte = |qid, counted, nfa| (
+        let (_, _, checks) = nfa.@_quant_bounds.@(qid);
+        if checks && counted >= 0 { Std::I64::bit_or(counted, 1) } else { counted }
     );
 
     // The rounds a thread standing at a special quantifier's loop has counted after one more
@@ -200,16 +219,20 @@ namespace NFA {
     // * `nfa` - The automaton the quantifier belongs to.
     quant_next_round: QuantID -> I64 -> NFA -> I64;
     quant_next_round = |qid, counted, nfa| (
-        let (least, most) = nfa.@_quant_bounds.@(qid);
+        let (least, most, _) = nfa.@_quant_bounds.@(qid);
         let round = counted + 1;
         if most != I64::maximum && round > most { -1 };
         min(round, if most == I64::maximum { least } else { most })
     );
 
-    // What a node's action lets a thread standing at it do: where it may step, the rounds it writes
-    // there, and the group whose beginning or end it records. `next` is `-1` where the action lets
-    // the thread nowhere, and `quant`, `opens` and `closes` are `-1` where the step writes and
-    // records nothing.
+    // What a node's action lets a thread standing at it do: where it may step, the count it writes
+    // there, the group whose beginning or end it records, and the groups it clears. `next` is `-1`
+    // where the action lets the thread nowhere, and `quant`, `opens` and `closes` are `-1` where
+    // the step writes and records nothing.
+    //
+    // A count is written as `count_after_byte` says, `2 * rounds + read`. A round of a quantifier
+    // that checks for it, taken past the fewest rounds and reading nothing, fails: in JavaScript
+    // the round fails, and the thread goes on by the ways the automaton prefers less.
     //
     // Every walk of the automaton asks this, and each writes the answer into threads of its own
     // shape, which is why the answer is numbers rather than a thread.
@@ -217,12 +240,14 @@ namespace NFA {
     // # Parameters
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
-    // * `counted` - The rounds the thread has counted for the quantifier the action reads.
+    // * `counted` - What the thread has counted for the quantifier the action reads.
     // * `node` - The node whose action to read.
     // * `nfa` - The automaton the node belongs to.
     action_step: Bool -> Bool -> I64 -> NFANode -> NFA -> ActionStep;
     action_step = |at_begin, at_end, counted, node, nfa| (
-        let blocked = ActionStep { next: -1, quant: -1, round: 0, opens: -1, closes: -1 };
+        let blocked = ActionStep {
+            next: -1, quant: -1, round: 0, opens: -1, closes: -1, clears_from: 0, clears_to: 0
+        };
         let action = node.@action;
         // A node guarded by a character class leads nowhere until a byte is read, and one guarding
         // nothing leads nowhere through its action.
@@ -235,16 +260,26 @@ namespace NFA {
         };
         if action.is_sa_group_begin { step.set_opens(action.as_sa_group_begin) };
         if action.is_sa_group_end { step.set_closes(action.as_sa_group_end) };
+        if action.is_sa_clear_groups {
+            let (from, to) = action.as_sa_clear_groups;
+            step.set_clears_from(from).set_clears_to(to)
+        };
         if action.is_sa_quant_begin { step.set_quant(action.as_sa_quant_begin) };
+        let rounds = counted / 2;
         if action.is_sa_quant_loop {
             let qid = action.as_sa_quant_loop;
-            let round = nfa.quant_next_round(qid, counted);
+            let (least, _, checks) = nfa.@_quant_bounds.@(qid);
+            if checks && counted % 2 == 0 && rounds >= least { blocked };
+            let round = nfa.quant_next_round(qid, rounds);
             if round < 0 { blocked };
-            step.set_quant(qid).set_round(round)
+            step.set_quant(qid).set_round(2 * round)
         };
         let (qid, least, most) = action.as_sa_quant_end;
-        if counted < least || most < counted { blocked };
-        step
+        if rounds < least || most < rounds { blocked };
+        // What a thread counted for a quantifier it has left is not read again before the
+        // quantifier begins counting anew, so it is cleared, leaving threads that left after
+        // different rounds alike.
+        step.set_quant(qid).set_round(-1)
     );
 
     // The special quantifier whose rounds a node's action reads, or `-1` where it reads none. A
@@ -294,27 +329,23 @@ namespace NFA {
     // * `pattern` - The pattern to compile.
     _nodes_of: Pattern -> (NFA, Pattern);
     _nodes_of = |pattern| (
-        let (group_count, pattern) = pattern._assign_group_number(0);
+        let (group_count, pattern) = pattern.assign_group_number(0);
         let nfa = NFA::empty.set__group_count(group_count);
         let (nfa, frag) = nfa.compile_pattern(pattern);
         let nfa = nfa.set__initial_node(frag.@input);
         let (nfa, accept_id) = nfa.new_node;
         let nfa = nfa.set__accepting_node(accept_id);
-        (nfa.set_frag_output(frag, accept_id), pattern)
+        let nfa = nfa.set_frag_output(frag, accept_id);
+        // The walks take a node's ways on in the order the automaton prefers them by reading its
+        // action's way and its plain outputs as one list, which holds only where no node offers
+        // both.
+        let both = nfa.@_nodes.to_iter.check_any(|node|
+            !node.@action.is_sa_none && (node.@output.@val >= 0 || node.@output2.@val >= 0)
+        );
+        if both { undefined("a node offers both its action's way and a plain output") };
+        (nfa, pattern)
     );
 
-}
-
-impl NFA: ToString {
-    to_string = |nfa| (
-        "NFA { nodes=\n"
-        + range(0, nfa.@_nodes.@size).map(|i|
-            "  " + nfa.@_nodes.@(i).to_string + "\n"
-        ).concat_iter
-        + "  initial_node=" + nfa.@_initial_node.to_string + "\n"
-        + "  accepting_node=" + nfa.@_accepting_node.to_string + "\n"
-        +"}"
-    );
 }
 
 // What a thread has to do, or what has to hold, before it may take a node's `output_on_action`.
@@ -324,32 +355,22 @@ type NFANodeAction = unbox union {
     sa_assert: PAssertion,                  // let a thread through where an assertion holds
     sa_group_begin: I64,                    // write down where a group begins: which group
     sa_group_end: I64,                      // write down where a group ends: which group
+    sa_clear_groups: (I64, I64),            // mark the groups from one up to another as capturing
+                                            // nothing, as a round of a quantifier begins
     sa_quant_begin: QuantID,                // begin counting a special quantifier's rounds
     sa_quant_loop: QuantID,                 // count one more round of a special quantifier
     sa_quant_end: (QuantID, I64, I64)       // leave a special quantifier: its id, then its bounds
 };
 
-impl NFANodeAction: ToString {
-    to_string = |action| (
-        if action.is_sa_none { "none" };
-        if action.is_sa_char_match { "class@" + action.as_sa_char_match.to_string };
-        if action.is_sa_assert { action.as_sa_assert.to_string };
-        if action.is_sa_group_begin { "<g" + action.as_sa_group_begin.to_string + ">" };
-        if action.is_sa_group_end { "</g" + action.as_sa_group_end.to_string + ">" };
-        if action.is_sa_quant_begin { "<q" + action.as_sa_quant_begin.to_string + ">" };
-        if action.is_sa_quant_loop { "<ql" + action.as_sa_quant_loop.to_string + ">" };
-        if action.is_sa_quant_end { "</q" + action.as_sa_quant_end.to_string + ">" };
-        ""
-    );
-}
-
 // What a node's action lets a thread standing at it do. See `NFA::action_step`.
 type ActionStep = unbox struct {
     next: I64,     // the node the thread steps to, or `-1`
     quant: I64,    // the special quantifier whose rounds the step writes, or `-1`
-    round: I64,    // the rounds to write there
+    round: I64,    // the count to write there, as `NFA::count_after_byte` describes a count
     opens: I64,    // the group whose beginning the step records, or `-1`
-    closes: I64    // the group whose end it records, or `-1`
+    closes: I64,   // the group whose end it records, or `-1`
+    clears_from: I64, // the groups from this one up to `clears_to` capture nothing after the step
+    clears_to: I64
 };
 
 // A node of the automaton. It has one input, which is its own id, and three outputs: one a thread
@@ -367,14 +388,6 @@ type NodeID = unbox struct {
     val: I64   // the place in `_nodes`, or `-1` for no node
 };
 
-impl NodeID: ToString {
-    to_string = |id| id.@val.to_string;
-}
-
-impl NodeID: Eq {
-    eq = |a, b| a.@val == b.@val;
-}
-
 namespace NFANode {
     // The id standing for no node.
     __INVALID_NODE_ID: NodeID;
@@ -390,19 +403,6 @@ namespace NFANode {
         output2: __INVALID_NODE_ID
     };
 }
-
-impl NFANode: ToString {
-    to_string = |node| (
-        "("
-        + node.@id.to_string + ":"
-        + node.@action.to_string + ":"
-        + node.@output_on_action.to_string + ","
-        + node.@output.to_string + ","
-        + node.@output2.to_string
-        + ")"
-    );
-}
-
 
 // A stretch of the automaton, compiled from a stretch of the pattern. A thread enters it at one
 // node and may leave it from several, so where it leads onward is held as a function that points
@@ -444,20 +444,27 @@ namespace NFAFrag {
             nfa._compile_either(frag1, frag2)
         };
         if pat.is_pquant {
-            let (pat1, least, most) = pat.as_pquant;
+            let (pat1, least, most, greedy) = pat.as_pquant;
             let (nfa, frag1) = nfa.compile_pattern(pat1);
-            if (least == 0 && most == 1) {
-                nfa._compile_zero_or_once(frag1)
+            // In JavaScript each round of a quantifier begins with the groups inside it holding
+            // nothing, so a group reports what it captured in the last round that took it.
+            let (first, end) = pat1.groups_within;
+            let (nfa, frag1) = if first == end { (nfa, frag1) } else {
+                let (nfa, clear) = nfa._compile_action(sa_clear_groups $ (first, end));
+                nfa._compile_seq(clear, frag1)
             };
-            if (least == 0 && most == I64::maximum) {
-                nfa._compile_zero_or_more(frag1)
-            };
-            if (least == 1 && most == I64::maximum) {
-                nfa._compile_one_or_more(frag1)
-            };
-            if (least <= most) {
-                nfa._compile_special_quant(frag1, least, most)
-            };
+            // In JavaScript a round that reads nothing fails once the rounds a quantifier asks for
+            // are taken. Where the pattern may read nothing, the quantifier counts its rounds and
+            // marks whether the round it is in has read a byte, and checks the mark where a round
+            // ends. The mark is part of what a thread is, so a thread whose round has read nothing
+            // and one whose round has read something stand apart even at the same node: their
+            // futures differ, and JavaScript tries both.
+            let checks = pat1.matches_empty;
+            if !checks && least == 0 && most == 1 { nfa._compile_zero_or_once(frag1, greedy) };
+            let unbounded = most == I64::maximum;
+            if !checks && least == 0 && unbounded { nfa._compile_zero_or_more(frag1, greedy) };
+            if !checks && least == 1 && unbounded { nfa._compile_one_or_more(frag1, greedy) };
+            if least <= most { nfa._compile_special_quant(frag1, least, most, greedy, checks) };
             undefined("invalid quantifier: (least,most)=" + (least, most).to_string)
         };
         if pat.is_pgroup {
@@ -516,7 +523,7 @@ namespace NFAFrag {
         (nfa, frag)
     );
 
-    // Compiles an alternative of two fragments (`e1|e2`) to a fragment.
+    // Compiles an alternative of two fragments (`e1|e2`) to a fragment. A thread prefers `e1`.
     _compile_either: NFAFrag -> NFAFrag -> NFA -> (NFA, NFAFrag);
     _compile_either = |frag1, frag2, nfa| (
         let (nfa, id) = nfa.new_node;
@@ -530,82 +537,127 @@ namespace NFAFrag {
             )
         };
         (nfa, frag)
+    );
 
+    // Makes a node offer two ways on, one into a fragment and one out of it: `output` is the way a
+    // thread prefers, which is the one into the fragment where the quantifier is greedy.
+    //
+    // # Parameters
+    // * `id` - The node.
+    // * `into` - The node the way into the fragment leads to.
+    // * `out` - The node the way out leads to.
+    // * `greedy` - Whether the way into the fragment is preferred.
+    // * `nfa` - The automaton the node belongs to.
+    _set_branch: NodeID -> NodeID -> NodeID -> Bool -> NFA -> NFA;
+    _set_branch = |id, into, out, greedy, nfa| (
+        let (first, second) = if greedy { (into, out) } else { (out, into) };
+        nfa.mod_node(id, |node| node.set_output(first).set_output2(second))
+    );
+
+    // Points the way out of a node set by `_set_branch` at a node.
+    //
+    // # Parameters
+    // * `id` - The node.
+    // * `out` - The node the way out leads to.
+    // * `greedy` - Whether the way into the fragment is the preferred one.
+    // * `nfa` - The automaton the node belongs to.
+    _set_branch_out: NodeID -> NodeID -> Bool -> NFA -> NFA;
+    _set_branch_out = |id, out, greedy, nfa| (
+        nfa.mod_node(id, if greedy { set_output2(out) } else { set_output(out) })
     );
 
     // Compiles `e?` to a fragment: a thread may take the fragment once, or pass it by.
-    _compile_zero_or_once: NFAFrag -> NFA -> (NFA, NFAFrag);
-    _compile_zero_or_once = |frag1, nfa| (
+    //
+    // # Parameters
+    // * `frag1` - The fragment.
+    // * `greedy` - Whether a thread prefers taking it to passing it by.
+    // * `nfa` - The automaton to add the fragment to.
+    _compile_zero_or_once: NFAFrag -> Bool -> NFA -> (NFA, NFAFrag);
+    _compile_zero_or_once = |frag1, greedy, nfa| (
         let (nfa, id) = nfa.new_node;
-        let nfa = nfa.mod_node(id, set_output(frag1.@input));
+        let nfa = nfa._set_branch(id, frag1.@input, __INVALID_NODE_ID, greedy);
         let frag = NFAFrag {
             input: id,
             set_output: |out, nfa| (
                 let nfa = nfa.set_frag_output(frag1, out);
-                nfa.mod_node(id, set_output2(out))
+                nfa._set_branch_out(id, out, greedy)
             )
         };
         (nfa, frag)
     );
 
-    // Creates the node a repeated fragment goes round: its plain output enters the fragment, and
+    // Creates the node a repeated fragment goes round: one of its ways on enters the fragment, and
     // the fragment's output comes back to it, so that a thread may take the fragment any number of
     // times. Returns the new node id.
     //
     // # Parameters
     // * `body` - The fragment to be repeated.
+    // * `greedy` - Whether a thread prefers another round to leaving.
     // * `nfa` - The automaton to add the node to.
-    _new_loop_node: NFAFrag -> NFA -> (NFA, NodeID);
-    _new_loop_node = |body, nfa| (
+    _new_loop_node: NFAFrag -> Bool -> NFA -> (NFA, NodeID);
+    _new_loop_node = |body, greedy, nfa| (
         let (nfa, id) = nfa.new_node;
-        let nfa = nfa.mod_node(id, set_output(body.@input));
+        let nfa = nfa._set_branch(id, body.@input, __INVALID_NODE_ID, greedy);
         let nfa = nfa.set_frag_output(body, id);
         (nfa, id)
     );
 
     // Compiles `e*` to a fragment: a thread may take the fragment any number of times, none
     // included.
-    _compile_zero_or_more: NFAFrag -> NFA -> (NFA, NFAFrag);
-    _compile_zero_or_more = |frag1, nfa| (
+    //
+    // # Parameters
+    // * `frag1` - The fragment.
+    // * `greedy` - Whether a thread prefers another round to leaving.
+    // * `nfa` - The automaton to add the fragment to.
+    _compile_zero_or_more: NFAFrag -> Bool -> NFA -> (NFA, NFAFrag);
+    _compile_zero_or_more = |frag1, greedy, nfa| (
         // A thread enters at the loop node, so it may leave without taking the fragment at all.
-        let (nfa, id) = nfa._new_loop_node(frag1);
+        let (nfa, id) = nfa._new_loop_node(frag1, greedy);
         let frag = NFAFrag {
             input: id,
-            set_output: |out, nfa| (
-                nfa.mod_node(id, set_output2(out))
-            )
+            set_output: |out, nfa| nfa._set_branch_out(id, out, greedy)
         };
         (nfa, frag)
     );
 
     // Compiles `e+` to a fragment: a thread takes the fragment once, then as many more times as it
     // will.
-    _compile_one_or_more: NFAFrag -> NFA -> (NFA, NFAFrag);
-    _compile_one_or_more = |frag1, nfa| (
+    //
+    // # Parameters
+    // * `frag1` - The fragment.
+    // * `greedy` - Whether a thread prefers another round to leaving.
+    // * `nfa` - The automaton to add the fragment to.
+    _compile_one_or_more: NFAFrag -> Bool -> NFA -> (NFA, NFAFrag);
+    _compile_one_or_more = |frag1, greedy, nfa| (
         // A thread enters at the fragment, so it takes the fragment once before reaching the loop
         // node.
-        let (nfa, id) = nfa._new_loop_node(frag1);
+        let (nfa, id) = nfa._new_loop_node(frag1, greedy);
         let frag = NFAFrag {
             input: frag1.@input,
-            set_output: |out, nfa| (
-                nfa.mod_node(id, set_output2(out))
-            )
+            set_output: |out, nfa| nfa._set_branch_out(id, out, greedy)
         };
         (nfa, frag)
     );
 
     // Compiles `e{least,most}` to a fragment: a thread counts its rounds through the fragment, and
     // leaves only where the count stands between the two bounds.
-    _compile_special_quant: NFAFrag -> I64 -> I64 -> NFA -> (NFA, NFAFrag);
-    _compile_special_quant = |frag1, least, most, nfa| (
-        let (nfa, qid) = nfa.new_quant(least, most);
+    //
+    // # Parameters
+    // * `frag1` - The fragment.
+    // * `least` - The fewest rounds.
+    // * `most` - The most rounds.
+    // * `greedy` - Whether a thread prefers another round to leaving.
+    // * `checks` - Whether a round reading nothing fails once the fewest rounds are taken.
+    // * `nfa` - The automaton to add the fragment to.
+    _compile_special_quant: NFAFrag -> I64 -> I64 -> Bool -> Bool -> NFA -> (NFA, NFAFrag);
+    _compile_special_quant = |frag1, least, most, greedy, checks, nfa| (
+        let (nfa, qid) = nfa.new_quant(least, most, checks);
         let (nfa, branch_id) = nfa.new_node;
         let (nfa, frag_begin) = nfa._compile_action(sa_quant_begin $ qid);
         let (nfa, frag_loop) = nfa._compile_action(sa_quant_loop $ qid);
         let (nfa, frag_end) = nfa._compile_action(sa_quant_end $ (qid, least, most));
         let nfa = nfa.set_frag_output(frag_begin, branch_id);
-        let nfa = nfa.mod_node(branch_id, set_output(frag1.@input));
-        let nfa = nfa.mod_node(branch_id, set_output2(frag_end.@input));
+        let nfa = nfa._set_branch(branch_id, frag1.@input, frag_end.@input, greedy);
         let nfa = nfa.set_frag_output(frag1, frag_loop.@input);
         let nfa = nfa.set_frag_output(frag_loop, branch_id);
         let frag = NFAFrag {
@@ -711,13 +763,23 @@ _run_among = |run, runs| (
 // Thread `t` stands at `nodes.@(t)`, has captured the `slot_width` numbers of `slots` beginning at
 // `t * slot_width` - a beginning and an end to a group, the whole match first - and has counted the
 // `count_width` numbers of `counts` beginning at `t * count_width`.
+//
+// The threads standing at a position are ordered as JavaScript tries them: a thread comes before
+// another where the ways it took are the ones the automaton prefers, and among threads that began
+// at different positions, the one that began earlier comes first. A thread is put among them when
+// it is taken off `pending`, which takes the ways a node offers depth first in the order the
+// automaton prefers them, and a thread reaching a node that an earlier thread took at this position
+// is dropped: the earlier one has the same future and is preferred.
 type Walk = box struct {
     slot_width: I64,     // how many numbers a thread's captures take: two to a group
     count_width: I64,    // how many numbers a thread's counts take: one per special quantifier
     nodes: Array I64,    // the node each thread stands at
     slots: Array I64,    // what every thread has captured, laid end to end
     counts: Array I64,   // what every thread has counted, laid end to end
-    // The threads whose empty-string transitions are still to be followed, taken from the end.
+    // The threads standing at the position, in the order they are preferred. Any thread not among
+    // them was dropped.
+    order: Array I64,
+    // The threads whose node is still to be taken, the next to take at the end.
     pending: Array I64,
     // Per node, the step at which a thread took it, so that nothing has to be cleared between
     // positions.
@@ -746,6 +808,7 @@ namespace Walk {
             nodes: Array::empty(node_count),
             slots: Array::empty(node_count * slot_width),
             counts: Array::empty(node_count * count_width),
+            order: Array::empty(node_count),
             pending: Array::empty(node_count),
             at_step: Array::fill(node_count, -1),
             counts_at_step: if count_width > 0 {
@@ -788,31 +851,22 @@ namespace Walk {
     );
 
     // Adds a thread standing at a node, having captured and counted what a thread of this walk has,
-    // with one round put where `qid` names, unless a thread standing at that node having counted
-    // the same rounds is there already.
-    //
-    // Reports where the thread was put, or `-1` when it was not added. Two threads standing at one
-    // node having counted the same rounds have the same future, so keeping the earlier of them,
-    // which is the one that started earliest, loses no match and keeps the leftmost one.
+    // with one count put where `qid` names, to the threads whose node is still to be taken. Reports
+    // where the thread was put, or `-1` where there is no node or, in a walk that counts nothing,
+    // the node was taken at this position already: the thread taken there was preferred to this
+    // one, and `_take` would drop it.
     //
     // # Parameters
     // * `node` - The node the thread stands at.
     // * `source` - The thread it carries the captures and the counts of.
-    // * `qid` - The quantifier whose rounds to put a number at, or `-1` to carry them all forward.
-    // * `round` - The rounds to put there.
+    // * `qid` - The quantifier whose count to put a number at, or `-1` to carry them all forward.
+    // * `round` - The count to put there.
     // * `walk` - The walk to add it to.
     _offer_here: I64 -> I64 -> I64 -> I64 -> Walk -> (I64, Walk);
     _offer_here = |node, source, qid, round, walk| (
         if node < 0 { (-1, walk) };
-        let count_width = walk.@count_width;
-        let (fresh, walk) = if count_width == 0 {
-            walk._take_node(node)
-        } else {
-            let counts = walk._counts_of(source, qid, round);
-            walk._take_counted(node, counts)
-        };
-        if !fresh { (-1, walk) };
-        let slot_width = walk.@slot_width;
+        let (slot_width, count_width) = (walk.@slot_width, walk.@count_width);
+        if count_width == 0 && walk.@at_step.@(node) == walk.@step { (-1, walk) };
         let placed = walk.@nodes.@size;
         let walk = walk.mod_nodes(push_back(node));
         let walk = walk.mod_slots(|slots|
@@ -830,42 +884,21 @@ namespace Walk {
         (placed, walk.mod_pending(push_back(placed)))
     );
 
-    // The rounds a thread has counted, with one of them put where `qid` names.
+    // Adds a thread standing at a node, having captured what a thread standing at the position
+    // before this one has, and counted what it has with the byte between them read, to the threads
+    // whose node is still to be taken.
     //
     // # Parameters
-    // * `source` - The thread to read.
-    // * `qid` - The quantifier whose rounds to put a number at, or `-1` to read them all.
-    // * `round` - The rounds to put there.
-    // * `walk` - The walk the thread belongs to.
-    _counts_of: I64 -> I64 -> I64 -> Walk -> Array I64;
-    _counts_of = |source, qid, round, walk| (
-        let count_width = walk.@count_width;
-        Array::from_map(count_width, |j|
-            if j == qid { round } else { walk.@counts.@(source * count_width + j) }
-        )
-    );
-
-    // Adds a thread standing at a node, having captured and counted what a thread standing at the
-    // position before this one has, unless one is there already. Reports where it was put, or `-1`.
-    //
-    // # Parameters
+    // * `nfa` - The automaton being walked.
     // * `node` - The node the thread stands at.
     // * `read_slots` - What the threads of the position before captured.
     // * `read_counts` - What they counted.
     // * `source` - Which of them the thread carries forward.
     // * `walk` - The walk to add it to.
-    _offer_moved: I64 -> Array I64 -> Array I64 -> I64 -> Walk -> (I64, Walk);
-    _offer_moved = |node, read_slots, read_counts, source, walk| (
-        if node < 0 { (-1, walk) };
-        let count_width = walk.@count_width;
-        let (fresh, walk) = if count_width == 0 {
-            walk._take_node(node)
-        } else {
-            let counts = Array::from_map(count_width, |j| read_counts.@(source * count_width + j));
-            walk._take_counted(node, counts)
-        };
-        if !fresh { (-1, walk) };
-        let slot_width = walk.@slot_width;
+    _offer_moved: NFA -> I64 -> Array I64 -> Array I64 -> I64 -> Walk -> Walk;
+    _offer_moved = |nfa, node, read_slots, read_counts, source, walk| (
+        if node < 0 { walk };
+        let (slot_width, count_width) = (walk.@slot_width, walk.@count_width);
         let placed = walk.@nodes.@size;
         let walk = walk.mod_nodes(push_back(node));
         let walk = walk.mod_slots(|slots|
@@ -875,66 +908,54 @@ namespace Walk {
         );
         let walk = walk.mod_counts(|counts|
             range(0, count_width).fold(counts, |j, counts|
-                counts.push_back(read_counts.@(source * count_width + j))
+                counts.push_back(nfa.count_after_byte(j, read_counts.@(source * count_width + j)))
             )
         );
-        (placed, walk.mod_pending(push_back(placed)))
+        walk.mod_pending(push_back(placed))
     );
 
     // Adds the thread a match begins with: one standing at the initial node, having captured
-    // nothing and counted nothing.
+    // nothing and standing in no quantifier.
     //
     // # Parameters
     // * `initial` - The node the automaton begins at.
     // * `walk` - The walk to add it to.
     _offer_start: I64 -> Walk -> Walk;
     _offer_start = |initial, walk| (
-        let count_width = walk.@count_width;
-        let (fresh, walk) = if count_width == 0 {
-            walk._take_node(initial)
-        } else {
-            walk._take_counted(initial, Array::fill(count_width, 0))
-        };
-        if !fresh { walk };
-        let slot_width = walk.@slot_width;
+        let (slot_width, count_width) = (walk.@slot_width, walk.@count_width);
         let placed = walk.@nodes.@size;
         let walk = walk.mod_nodes(push_back(initial));
         let walk = walk.mod_slots(|slots|
             range(0, slot_width).fold(slots, |_, slots| slots.push_back(-1))
         );
         let walk = walk.mod_counts(|counts|
-            range(0, count_width).fold(counts, |_, counts| counts.push_back(0))
+            range(0, count_width).fold(counts, |_, counts| counts.push_back(-1))
         );
         walk.mod_pending(push_back(placed))
     );
 
-    // Records where a group began, on a thread just added.
+    // Takes a thread off those whose node is still to be taken: drops it where a thread preferred
+    // to it took the node, and otherwise puts it among the threads standing at the position.
+    // Reports whether it was put there.
     //
     // # Parameters
-    // * `group` - The group, the whole match counted as group zero.
-    // * `at` - Where it began.
-    // * `thread` - The thread to record it on.
-    // * `walk` - The walk the thread belongs to.
-    _open_group: I64 -> I64 -> I64 -> Walk -> Walk;
-    _open_group = |group, at, thread, walk| (
-        let base = thread * walk.@slot_width + 2 * group;
-        walk.mod_slots(|slots| slots.set(base, at).set(base + 1, -1))
+    // * `thread` - The thread.
+    // * `walk` - The walk it belongs to.
+    _take: I64 -> Walk -> (Bool, Walk);
+    _take = |thread, walk| (
+        let node = walk.@nodes.@(thread);
+        let count_width = walk.@count_width;
+        let (fresh, walk) = if count_width == 0 {
+            walk._take_node(node)
+        } else {
+            let counts = Array::from_map(count_width, |j| walk.@counts.@(thread * count_width + j));
+            walk._take_counted(node, counts)
+        };
+        if !fresh { (false, walk) };
+        (true, walk.mod_order(push_back(thread)))
     );
 
-    // Records where a group ended, on a thread just added.
-    //
-    // # Parameters
-    // * `group` - The group, the whole match counted as group zero.
-    // * `at` - Where it ended.
-    // * `thread` - The thread to record it on.
-    // * `walk` - The walk the thread belongs to.
-    _close_group: I64 -> I64 -> I64 -> Walk -> Walk;
-    _close_group = |group, at, thread, walk| (
-        let base = thread * walk.@slot_width + 2 * group;
-        walk.mod_slots(set(base + 1, at))
-    );
-
-    // Applies the action a node guards to a thread standing at it, adding the thread it leads to
+    // Applies the action a node guards to a thread standing at it, offering the thread it leads to
     // when the action lets it through. A node guarded by a character class leads nowhere until a
     // byte is read.
     //
@@ -953,12 +974,22 @@ namespace Walk {
         if step.@next < 0 { walk };
         let (placed, walk) = walk._offer_here(step.@next, thread, step.@quant, step.@round);
         if placed < 0 { walk };
-        if step.@opens >= 0 { walk._open_group(step.@opens, at, placed) };
-        if step.@closes >= 0 { walk._close_group(step.@closes, at, placed) };
-        walk
+        let base = placed * walk.@slot_width;
+        walk.mod_slots(|slots|
+            let slots = if step.@opens < 0 { slots } else {
+                slots.set(base + 2 * step.@opens, at).set(base + 2 * step.@opens + 1, -1)
+            };
+            let slots = if step.@closes < 0 { slots } else {
+                slots.set(base + 2 * step.@closes + 1, at)
+            };
+            range(2 * step.@clears_from, 2 * step.@clears_to).fold(slots, |j, slots|
+                slots.set(base + j, -1)
+            )
+        )
     );
 
-    // Follows the empty-string transitions of every thread waiting on them.
+    // Takes the threads whose node is still to be taken, following the empty-string transitions of
+    // each, depth first and in the order the automaton prefers them.
     //
     // # Parameters
     // * `nfa` - The automaton being walked.
@@ -972,36 +1003,40 @@ namespace Walk {
             if waiting == 0 { break $ walk };
             let thread = walk.@pending.@(waiting - 1);
             let walk = walk.mod_pending(pop_back);
+            let (taken, walk) = walk._take(thread);
+            if !taken { continue $ walk };
             let node = nfa.get_node(NodeID { val: walk.@nodes.@(thread) });
-            // The action is followed first, so that the two plain outputs are taken off the waiting
-            // threads before it is, and `output` before `output2`, which is the order the automaton
-            // prefers its alternatives in.
-            let walk = walk._act(nfa, at, length, node, thread);
+            // The ways on are put where the next to take is taken from, so the one the automaton
+            // prefers goes in last. A node offers its action's way or its plain outputs, not both.
             let (_, walk) = walk._offer_here(node.@output2.@val, thread, -1, 0);
             let (_, walk) = walk._offer_here(node.@output.@val, thread, -1, 0);
-            continue $ walk
+            continue $ walk._act(nfa, at, length, node, thread)
         )
     );
 
-    // Reads a byte and carries every thread whose node admits it to the position after it.
+    // Reads a byte and carries every thread whose node admits it to the position after it, in the
+    // order the threads are preferred.
     //
     // # Parameters
     // * `nfa` - The automaton being walked.
     // * `at` - The position after the byte, which the threads move to.
     // * `length` - How many bytes there are, where `$` holds.
     // * `byte` - The byte read.
+    // * `read_order` - The threads that read it, in the order they are preferred.
     // * `read_nodes` - Where the threads that read it stand.
     // * `read_slots` - What they captured.
     // * `read_counts` - What they counted.
     // * `walk` - The walk they move into, holding no thread yet.
-    _step: NFA -> I64 -> I64 -> U8 -> Array I64 -> Array I64 -> Array I64 -> Walk -> Walk;
-    _step = |nfa, at, length, byte, read_nodes, read_slots, read_counts, walk| (
-        range(0, read_nodes.@size).fold(walk, |thread, walk|
+    _step: NFA -> I64 -> I64 -> U8 -> Array I64 -> Array I64 -> Array I64 -> Array I64 -> Walk
+        -> Walk;
+    _step = |nfa, at, length, byte, read_order, read_nodes, read_slots, read_counts, walk| (
+        read_order.to_iter.fold(walk, |thread, walk|
             let node = nfa.get_node(NodeID { val: read_nodes.@(thread) });
             let action = node.@action;
             if !action.is_sa_char_match { walk };
             if !nfa.class_holds(action.as_sa_char_match, byte) { walk };
-            let (_, walk) = walk._offer_moved(node.@output_on_action.@val, read_slots, read_counts, thread);
+            let next = node.@output_on_action.@val;
+            let walk = walk._offer_moved(nfa, next, read_slots, read_counts, thread);
             walk._close(nfa, at, length)
         )
     );
@@ -1017,28 +1052,27 @@ namespace Walk {
         _groups_of(thread * slot_width, slot_width, walk.@slots)
     );
 
-    // The better of the match found so far and any match the threads standing here have reached:
-    // the one beginning earlier, or the one reaching further where they begin together.
+    // The match JavaScript takes among those found so far and any match the threads standing here
+    // have reached, together with the walk with the threads it prefers less dropped.
+    //
+    // The first thread standing at the accepting node is the match JavaScript reaches first among
+    // those the threads here stand for. Every thread after it is preferred less, so it is dropped,
+    // and every thread before it is preferred more, so the match it reaches later, if any, is the
+    // one to take.
     //
     // # Parameters
     // * `accepting` - The node a thread reaches when it has matched.
     // * `best` - The match found so far.
     // * `walk` - The walk whose threads to weigh.
-    _better: I64 -> Option Groups -> Walk -> Option Groups;
+    _better: I64 -> Option Groups -> Walk -> (Option Groups, Walk);
     _better = |accepting, best, walk| (
-        if walk.@at_step.@(accepting) != walk.@step { best };
-        let slot_width = walk.@slot_width;
-        range(0, walk.@nodes.@size).fold(best, |thread, best|
-            if walk.@nodes.@(thread) != accepting { best };
-            let begin = walk.@slots.@(thread * slot_width);
-            let end = walk.@slots.@(thread * slot_width + 1);
-            if best.is_none { some $ walk._captured(thread) };
-            let (best_begin, best_end) = best.as_some.@(0);
-            if begin < best_begin || (begin == best_begin && end > best_end) {
-                some $ walk._captured(thread)
-            };
-            best
-        )
+        if walk.@at_step.@(accepting) != walk.@step { (best, walk) };
+        let order = walk.@order;
+        let found = loop(0, |k|
+            if walk.@nodes.@(order.@(k)) == accepting { break $ k };
+            continue $ k + 1
+        );
+        (some $ walk._captured(order.@(found)), walk.mod_order(truncate(found)))
     );
 }
 
@@ -1140,14 +1174,15 @@ type WayBuild = box struct {
 };
 
 namespace NFA {
-    // Runs the automaton over the bytes and reports the match beginning earliest, taking the one
-    // reaching furthest among those that begin at the same place.
+    // Runs the automaton over the bytes and reports the match JavaScript finds: the one beginning
+    // earliest, and among those beginning there, the one JavaScript reaches first.
     //
     // A search that does not know where the match begins starts a thread at every position until a
-    // match is found; after that a later start could not be the leftmost one, so none is added and
-    // the threads still running are followed only to see how far the match reaches. A search that
-    // knows where the match begins and how far it reaches - one reading the groups off a match the
-    // scanner has already found - starts one thread and stops where the match ends.
+    // match is found, each preferred less than the threads begun before it; after that a later
+    // start could not be the leftmost one, so none is added, and the threads preferred to the match
+    // found are followed to see whether they reach one of their own. A search that knows where the
+    // match begins and where it ends - one reading the groups off a match the scanner has already
+    // found - starts one thread and stops where the match ends.
     //
     // Every byte between where the walk begins and where it ends is read once whatever the pattern,
     // which is what the scanner cannot promise, so this is where a search the scanner gives up on
@@ -1163,26 +1198,30 @@ namespace NFA {
     _walk_threads: Array U8 -> I64 -> I64 -> I64 -> Bool -> NFA -> Option Groups;
     _walk_threads = |bytes, length, from, stop, anchored, nfa| (
         let node_count = nfa.@_nodes.@size;
-        let initial = nfa.@_initial_node.@val;
         let accepting = nfa.@_accepting_node.@val;
         let walk = Walk::make(nfa);
-        let (spare_nodes, spare_slots, spare_counts) = (
+        let initial = nfa.@_initial_node.@val;
+        let spare = (
+            Array::empty(node_count),
             Array::empty(node_count),
             Array::empty(node_count * walk.@slot_width),
             Array::empty(node_count * walk.@count_width)
         );
-        let (best, _, _, _, _, _) = loop(
-            (none(), walk, spare_nodes, spare_slots, spare_counts, from),
-            |(best, walk, spare_nodes, spare_slots, spare_counts, at)|
+        let (best, _, _, _) = loop(
+            (none(), walk, spare, from),
+            |(best, walk, (spare_order, spare_nodes, spare_slots, spare_counts), at)|
+            let spare = (spare_order, spare_nodes, spare_slots, spare_counts);
             let starts_here = if anchored { at == from } else { best.is_none };
             let walk = if starts_here { walk._offer_start(initial) } else { walk };
             let walk = walk._close(nfa, at, length);
-            let best = walk._better(accepting, best);
-            let done = at >= stop || (walk.@nodes.@size == 0 && (anchored || best.is_some));
-            if done { break $ (best, walk, spare_nodes, spare_slots, spare_counts, at) };
+            let (best, walk) = walk._better(accepting, best);
+            let done = at >= stop || (walk.@order.@size == 0 && (anchored || best.is_some));
+            if done { break $ (best, walk, spare, at) };
             // The threads move into the buffers the position before them left behind, and leave
             // theirs to be moved into next.
             let byte = bytes.@(at);
+            let read_order = walk.@order;
+            let walk = walk.set_order(spare_order.truncate(0));
             let read_nodes = walk.@nodes;
             let walk = walk.set_nodes(spare_nodes.truncate(0));
             let read_slots = walk.@slots;
@@ -1190,14 +1229,16 @@ namespace NFA {
             let read_counts = walk.@counts;
             let walk = walk.set_counts(spare_counts.truncate(0));
             let walk = walk.mod_step(|step| step + 1);
-            let walk = walk._step(nfa, at + 1, length, byte, read_nodes, read_slots, read_counts);
-            continue $ (best, walk, read_nodes, read_slots, read_counts, at + 1)
+            let walk = walk._step(
+                nfa, at + 1, length, byte, read_order, read_nodes, read_slots, read_counts
+            );
+            continue $ (best, walk, (read_order, read_nodes, read_slots, read_counts), at + 1)
         );
         best
     );
 
-    // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place.
+    // The match JavaScript finds beginning at or after a position: the leftmost one, and among
+    // those beginning there, the one JavaScript reaches first.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
@@ -1259,6 +1300,13 @@ namespace NFA {
             if action.is_sa_group_end {
                 let group = action.as_sa_group_end;
                 nfa._gather_ways(start, next, flags, path.push_back(4 * group + 2), build)
+            };
+            if action.is_sa_clear_groups {
+                let (from, to) = action.as_sa_clear_groups;
+                let path = range(from, to).fold(path, |group, path|
+                    path.push_back(4 * group + 1).push_back(4 * group + 3)
+                );
+                nfa._gather_ways(start, next, flags, path, build)
             };
             build
         };
@@ -1362,6 +1410,136 @@ namespace NFA {
         Array::from_map(slot_width / 2, |k| (slots.@(base + 2 * k), slots.@(base + 2 * k + 1)))
     );
 
+    // How many marks the reading of a match's groups by trying its ways may take: one for each
+    // node, position the match covers and count a thread reaches there with. A reading that would
+    // take more is left to walking the threads, which takes room by the nodes alone.
+    __TRIAL_MARKS: I64;
+    __TRIAL_MARKS = 1 * 1024 * 1024;
+
+    // The groups a match captured, read by trying the ways through the automaton over the stretch
+    // the match covers in the order JavaScript tries them, and taking the first way that reaches
+    // the accepting node where the match ends. That is the way JavaScript takes, since the match is
+    // the one JavaScript finds. Reports `none` where the reading would take more marks than
+    // `__TRIAL_MARKS`.
+    //
+    // A way is tried by taking the ways on from each node depth first, the one the automaton
+    // prefers first. What a thread standing at a node has captured does not change where it may
+    // go, so a node reached at a position having counted the same rounds as once before leads
+    // nowhere the first reaching did not, and is not tried again: every node and position is tried
+    // once for each count, which bounds the work as walking the threads bounds it. The captures and
+    // the counts are written in one place, and a way that writes them puts on the stack the work of
+    // writing back what it overwrote, which is taken when the ways under it have all been tried.
+    //
+    // # Parameters
+    // * `bytes` - The bytes the match was found in.
+    // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
+    // * `begin` - Where the match begins.
+    // * `end` - Where it ends.
+    // * `nfa` - The automaton the match was found with.
+    _trial_groups: Array U8 -> I64 -> I64 -> I64 -> NFA -> Option Groups;
+    _trial_groups = |bytes, length, begin, end, nfa| (
+        let node_count = nfa.@_nodes.@size;
+        let span = end - begin + 1;
+        if node_count > __TRIAL_MARKS / span { none() };
+        let count_width = nfa.@_quant_bounds.@size;
+        let slot_width = 2 * max(1, nfa.@_group_count);
+        let accepting = nfa.@_accepting_node.@val;
+        // The work is three numbers each: `0`, a node and a position for trying that node there;
+        // `1`, a slot and a number for writing the number back to the slot; `2`, a quantifier and
+        // a number for writing it back to the quantifier's count.
+        let jobs = Array::empty(64).push_back(0).push_back(nfa.@_initial_node.@val);
+        let jobs = jobs.push_back(begin);
+        // Where the automaton counts, a node and position are marked once for each count, and the
+        // marks are numbers held in a table: the place, then each count, in a number wide enough
+        // for the counts the quantifier can hold. A pattern whose counts do not fit in one number
+        // is read by walking the threads.
+        let widths = nfa.@_quant_bounds.map(|(least, most, _)|
+            // A count is `-1`, or `2 * rounds + read` with the rounds held at most at the bound.
+            2 * (if most == I64::maximum { least } else { most }) + 3
+        );
+        let room = widths.to_iter.fold(node_count * span, |width, room|
+            if room < 0 || room > I64::maximum / width { -1 } else { room * width }
+        );
+        if room < 0 { none() };
+        let marks = Array::fill(if count_width == 0 { node_count * span } else { 0 }, false);
+        let counted = MarkTable::empty;
+        let (slots, counts) = (Array::fill(slot_width, -1), Array::fill(count_width, -1));
+        let start = (jobs, slots, counts, marks, counted);
+        loop(start, |(jobs, slots, counts, marks, counted)|
+            if jobs.@size == 0 { break $ none() };
+            let base = jobs.@size - 3;
+            let (kind, first, second) = (jobs.@(base), jobs.@(base + 1), jobs.@(base + 2));
+            let jobs = jobs.truncate(base);
+            if kind == 1 { continue $ (jobs, slots.set(first, second), counts, marks, counted) };
+            if kind == 2 { continue $ (jobs, slots, counts.set(first, second), marks, counted) };
+            let (node, at) = (first, second);
+            let place = node * span + (at - begin);
+            let (fresh, marks, counted) = if count_width == 0 {
+                if marks.@(place) { (false, marks, counted) };
+                (true, marks.set(place, true), counted)
+            } else {
+                let key = range(0, count_width).fold(place, |j, key|
+                    key * widths.@(j) + counts.@(j) + 1
+                );
+                let (fresh, counted) = counted.insert(key);
+                (fresh, marks, counted)
+            };
+            if !fresh { continue $ (jobs, slots, counts, marks, counted) };
+            if counted.@_count > __TRIAL_MARKS { break $ none() };
+            if node == accepting {
+                if at == end { break $ some $ _groups_of(0, slot_width, slots) };
+                continue $ (jobs, slots, counts, marks, counted)
+            };
+            let node = nfa.get_node(NodeID { val: node });
+            let action = node.@action;
+            if action.is_sa_char_match {
+                let next = node.@output_on_action.@val;
+                if at >= end || next < 0 || !nfa.class_holds(action.as_sa_char_match, bytes.@(at)) {
+                    continue $ (jobs, slots, counts, marks, counted)
+                };
+                let (jobs, counts) = range(0, count_width).fold((jobs, counts), |j, (jobs, counts)|
+                    let held = counts.@(j);
+                    let read = nfa.count_after_byte(j, held);
+                    if read == held { (jobs, counts) };
+                    (jobs.push_back(2).push_back(j).push_back(held), counts.set(j, read))
+                );
+                let jobs = jobs.push_back(0).push_back(next).push_back(at + 1);
+                continue $ (jobs, slots, counts, marks, counted)
+            };
+            // The way the automaton prefers goes on the stack last, so that it is tried first. A
+            // node offers its action's way or its plain outputs, not both.
+            let try_out = |out, jobs| (
+                if out < 0 { jobs } else { jobs.push_back(0).push_back(out).push_back(at) }
+            );
+            let jobs = try_out(node.@output.@val, try_out(node.@output2.@val, jobs));
+            let qid = action_quant(action);
+            let count = if qid < 0 { 0 } else { counts.@(qid) };
+            let step = nfa.action_step(at == 0, at == length, count, node);
+            if step.@next < 0 { continue $ (jobs, slots, counts, marks, counted) };
+            let write = |(slot, value), (jobs, slots)| (
+                (jobs.push_back(1).push_back(slot).push_back(slots.@(slot)), slots.set(slot, value))
+            );
+            let (jobs, slots) = if step.@opens < 0 { (jobs, slots) } else {
+                let (jobs, slots) = write((2 * step.@opens, at), (jobs, slots));
+                write((2 * step.@opens + 1, -1), (jobs, slots))
+            };
+            let (jobs, slots) = if step.@closes < 0 { (jobs, slots) } else {
+                write((2 * step.@closes + 1, at), (jobs, slots))
+            };
+            let clears = range(2 * step.@clears_from, 2 * step.@clears_to);
+            let (jobs, slots) = clears.fold((jobs, slots), |slot, written|
+                write((slot, -1), written)
+            );
+            let (jobs, counts) = if step.@quant < 0 { (jobs, counts) } else {
+                let quant = step.@quant;
+                let jobs = jobs.push_back(2).push_back(quant).push_back(counts.@(quant));
+                (jobs, counts.set(quant, step.@round))
+            };
+            let jobs = jobs.push_back(0).push_back(step.@next).push_back(at);
+            continue $ (jobs, slots, counts, marks, counted)
+        )
+    );
+
     // The groups a match captured, read off by walking the automaton over the stretch it covers.
     //
     // # Parameters
@@ -1374,9 +1552,69 @@ namespace NFA {
     _capture_groups = |bytes, length, begin, end, nfa| (
         let one_way = nfa._one_way_groups(bytes, length, begin, end);
         if one_way.is_some { one_way };
+        let tried = nfa._trial_groups(bytes, length, begin, end);
+        if tried.is_some { tried };
         _walk_threads(bytes, length, begin, end, true, nfa)
     );
 }
+
+// A set of numbers that are `0` or more, held by open addressing in an array whose size is a power
+// of two, `-1` standing for an empty place. It is kept at most half full.
+type MarkTable = unbox struct {
+    _places: Array I64,  // each number at the place its hash leads to, or the first empty one after
+    _count: I64          // how many numbers it holds
+};
+
+namespace MarkTable {
+    // A table holding no number.
+    empty: MarkTable;
+    empty = MarkTable { _places: Array::fill(64, -1), _count: 0 };
+
+    // Puts a number in the table, and reports whether it was not there before.
+    //
+    // # Parameters
+    // * `key` - The number, `0` or more.
+    // * `table` - The table.
+    insert: I64 -> MarkTable -> (Bool, MarkTable);
+    insert = |key, table| (
+        let full = 2 * (table.@_count + 1) > table.@_places.@size;
+        let table = if full { table._grown } else { table };
+        let MarkTable { _places: places, _count: count } = table;
+        let mask = places.@size - 1;
+        let place = loop(_mark_hash(key).bit_and(mask), |i|
+            let held = places.@(i);
+            if held == -1 || held == key { break $ i };
+            continue $ (i + 1).bit_and(mask)
+        );
+        if places.@(place) == key { (false, MarkTable { _places: places, _count: count }) };
+        (true, MarkTable { _places: places.set(place, key), _count: count + 1 })
+    );
+
+    // The table with its numbers moved into an array twice as large.
+    //
+    // # Parameters
+    // * `table` - The table.
+    _grown: MarkTable -> MarkTable;
+    _grown = |table| (
+        let larger = MarkTable { _places: Array::fill(2 * table.@_places.@size, -1), _count: 0 };
+        table.@_places.to_iter.fold(larger, |key, larger|
+            if key < 0 { larger };
+            let (_, larger) = larger.insert(key);
+            larger
+        )
+    );
+}
+
+// Where a number is first looked for in a `MarkTable`, before it is reduced to the table's size:
+// the number mixed so that numbers close together land apart.
+//
+// # Parameters
+// * `key` - The number.
+_mark_hash: I64 -> I64;
+_mark_hash = |key| (
+    let mixed = key.u64 * 0x9E3779B97F4A7C15_U64;
+    mixed.shift_right(17_U64).i64
+);
 
 // How many states a table may take before the search is given back to the automaton. Each state
 // costs a row of 256 transitions, which bounds the table a search builds.
@@ -1392,6 +1630,14 @@ __DFA_MAX_STATES = 1024;
 // state holds a thread once, at the earliest rank that reached it, and a rank left holding nothing
 // is dropped.
 //
+// Within a rank the threads stand in the order JavaScript tries them, which is the order the
+// automaton prefers the ways they took: rank 0 holds the threads preferred most. Where a table
+// stands for the match JavaScript finds, a thread reaching the accepting node is the match
+// JavaScript reaches first among those of its rank, so the threads after it in its rank are dropped
+// with the ranks after it. Where it stands for every match there is, which is what the walk back
+// from where a match ends reads, no thread of the accepting rank is dropped and a rank holds its
+// threads ordered by their numbers, which leaves fewer states.
+//
 // A state is seeking while no thread of it has reached the accepting node: reading a byte in it
 // starts a new rank at the position after the byte, so that one reading of the text tries every
 // position a match may begin at. Once a rank reaches the accepting node, a match beginning later
@@ -1401,9 +1647,11 @@ __DFA_MAX_STATES = 1024;
 //
 // A state's key is what tells two states apart: `1` where it is seeking and `0` where it is not,
 // then its threads, each as its rank followed by its `width` numbers, ordered by rank and, within a
-// rank, by the numbers.
+// rank, as the rank holds them.
 type StateTable = box struct {
     _nfa: NFA,                  // the automaton the states are worked out from
+    _first: Bool,               // whether the table stands for the match JavaScript finds, rather
+                                // than for every match
     _width: I64,                // numbers to a thread: the node, then one count per special
                                 // quantifier
     _keys: Array I64,           // the key of every state, laid end to end
@@ -1443,10 +1691,12 @@ namespace StateTable {
     // A table that has walked nothing yet, holding the state with no thread and no other.
     //
     // # Parameters
+    // * `first` - Whether the table stands for the match JavaScript finds, rather than for every
+    //   match.
     // * `nfa` - The automaton to walk.
-    make: NFA -> StateTable;
-    make = |nfa| (
-        let (_, table) = StateTable::_holding_nothing(nfa)._intern([0]);
+    make: Bool -> NFA -> StateTable;
+    make = |first, nfa| (
+        let (_, table) = StateTable::_holding_nothing(first, nfa)._intern([0]);
         table.set__starting(table._closure(false, false, table._initial_thread))
     );
 
@@ -1456,16 +1706,18 @@ namespace StateTable {
     // # Parameters
     // * `nfa` - The automaton.
     given_up: NFA -> StateTable;
-    given_up = |nfa| StateTable::_holding_nothing(nfa).set__full(true);
+    given_up = |nfa| StateTable::_holding_nothing(false, nfa).set__full(true);
 
     // A table holding no state.
     //
     // # Parameters
+    // * `first` - Whether the table stands for the match JavaScript finds.
     // * `nfa` - The automaton to walk.
-    _holding_nothing: NFA -> StateTable;
-    _holding_nothing = |nfa| (
+    _holding_nothing: Bool -> NFA -> StateTable;
+    _holding_nothing = |first, nfa| (
         StateTable {
             _nfa: nfa,
+            _first: first,
             _width: 1 + nfa.@_quant_bounds.@size,
             _keys: Array::empty(64),
             _bounds: [0],
@@ -1481,13 +1733,13 @@ namespace StateTable {
     );
 
     // A table that has walked nothing yet, holding the state with no thread and the state a search
-    // begins in away from the beginning of the input.
+    // begins in away from the beginning of the input. It stands for the match JavaScript finds.
     //
     // # Parameters
     // * `nfa` - The automaton to walk.
     make_seeking: NFA -> StateTable;
     make_seeking = |nfa| (
-        let (interior, table) = StateTable::make(nfa)._start(true, false, false);
+        let (interior, table) = StateTable::make(true, nfa)._start(true, false, false);
         let table = table.set__interior(interior);
         if table._seeking(interior) { table.set__fresh(interior) } else { table }
     );
@@ -1519,13 +1771,14 @@ namespace StateTable {
         table
     );
 
-    // The thread the automaton begins with: the initial node, having counted nothing.
+    // The thread the automaton begins with: the initial node, standing in no quantifier.
     //
     // # Parameters
     // * `table` - The table, for the automaton and the width of a thread.
     _initial_thread: StateTable -> Array I64;
     _initial_thread = |table| (
-        Array::from_map(table.@_width, |j| if j == 0 { table.@_nfa.@_initial_node.@val } else { 0 })
+        let initial = table.@_nfa.@_initial_node.@val;
+        Array::from_map(table.@_width, |j| if j == 0 { initial } else { -1 })
     );
 
     // The state a walk begins in at a position.
@@ -1556,8 +1809,10 @@ namespace StateTable {
     _seeking = |state, table| table.@_keys.@(table.@_bounds.@(state)) == 1;
 
     // The key of a state holding ranks of threads, together with the earliest rank holding the
-    // accepting node, or `-1` where none holds it. The ranks after that one are dropped, and the
-    // state is seeking where it is asked to be and no rank holds that node.
+    // accepting node, or `-1` where none holds it. The ranks after that one are dropped, and so are
+    // the threads of that rank after the one standing at the accepting node where the table stands
+    // for the match JavaScript finds. The state is seeking where it is asked to be and no rank
+    // holds that node.
     //
     // # Parameters
     // * `seeking` - Whether the state is to start a new rank at every position.
@@ -1577,7 +1832,12 @@ namespace StateTable {
         let key = Array::empty(64).push_back(if seeking && accepted < 0 { 1 } else { 0 });
         let key = range(0, kept).fold(key, |r, key|
             let threads = ranks.@(r);
-            range(0, threads.@size / width).fold(key, |k, key|
+            let count = if r != accepted || !table.@_first { threads.@size / width } else {
+                loop(0, |k|
+                    if threads.@(k * width) == accepting { break $ k + 1 } else { continue $ k + 1 }
+                )
+            };
+            range(0, count).fold(key, |k, key|
                 range(0, width).fold(key.push_back(r), |j, key|
                     key.push_back(threads.@(k * width + j))
                 )
@@ -1771,7 +2031,7 @@ namespace StateTable {
             |r, (ranks, marks, first_lives)|
             let (reached, marks) = _reach_unmarked(nfa, false, false, seeds.@(r), marks);
             if reached.@size == 0 { (ranks, marks, first_lives && r > 0) };
-            (ranks.push_back(reached.sort_by(|(left, right)| left < right)), marks, first_lives)
+            (ranks.push_back(table._in_key_order(reached)), marks, first_lives)
         );
         (ranks, first_lives)
     );
@@ -1795,7 +2055,20 @@ namespace StateTable {
         kept
     );
 
-    // The threads that admit a byte, carried to the nodes reading it leads to.
+    // The nodes a rank reached, ordered as the table keeps them: as they were reached where the
+    // table stands for the match JavaScript finds, and by number where it stands for every match.
+    //
+    // # Parameters
+    // * `nodes` - The nodes, in the order they were reached.
+    // * `table` - The table.
+    _in_key_order: Array I64 -> StateTable -> Array I64;
+    _in_key_order = |nodes, table| (
+        if table.@_first { nodes };
+        nodes.sort_by(|(left, right)| left < right)
+    );
+
+    // The threads that admit a byte, carried to the nodes reading it leads to, in the order they
+    // stand in.
     //
     // # Parameters
     // * `threads` - The threads, laid end to end.
@@ -1812,7 +2085,9 @@ namespace StateTable {
             if !action.is_sa_char_match { seeds };
             if !nfa.class_holds(action.as_sa_char_match, byte) { seeds };
             let seeds = seeds.push_back(node.@output_on_action.@val);
-            range(1, width).fold(seeds, |j, seeds| seeds.push_back(threads.@(base + j)))
+            range(1, width).fold(seeds, |j, seeds|
+                seeds.push_back(nfa.count_after_byte(j - 1, threads.@(base + j)))
+            )
         )
     );
 
@@ -1849,13 +2124,14 @@ namespace StateTable {
         -2 - (2048 * next + flags)
     );
 
-    // Every thread the automaton reaches from the threads offered without reading a byte, ordered
-    // by the node the thread stands at.
+    // Every thread the automaton reaches from the threads offered without reading a byte, in the
+    // order the table keeps them: as JavaScript tries them where the table stands for the match
+    // JavaScript finds, and ordered by their numbers where it stands for every match.
     //
     // # Parameters
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
-    // * `seeds` - The threads to start from, laid end to end.
+    // * `seeds` - The threads to start from, laid end to end, in the order they are preferred.
     // * `table` - The table.
     _closure: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
     _closure = |at_begin, at_end, seeds, table| (
@@ -1863,25 +2139,34 @@ namespace StateTable {
         let nfa = table.@_nfa;
         let width = table.@_width;
         let node_count = nfa.@_nodes.@size;
-        let reached = range(0, seeds.@size / width).fold(
-            (Array::fill(node_count, Array::empty(0)), Array::empty(node_count * width)),
-            |k, reached| _offer_thread(width, _thread_at(k * width, width, seeds), reached)
+        // Each seed in turn is followed depth first, the way on the automaton prefers taken first.
+        // A thread is put among those reached when it is taken off the stack, unless a thread
+        // standing at its node having counted the same rounds was put there before it.
+        let (taken, reached) = range(0, seeds.@size / width).fold(
+            (Array::fill(node_count, Array::empty(0)), Array::empty(seeds.@size)),
+            |k, (taken, reached)|
+            loop((_thread_at(k * width, width, seeds), taken, reached), |(stack, taken, reached)|
+                if stack.@size == 0 { break $ (taken, reached) };
+                let base = stack.@size - width;
+                let thread = _thread_at(base, width, stack);
+                let stack = stack.truncate(base);
+                let node = thread.@(0);
+                let counts = _thread_counts(width, thread);
+                if _run_among(counts, taken.@(node)) { continue $ (stack, taken, reached) };
+                let (taken, reached) = (taken.mod(node, append(counts)), reached.append(thread));
+                let node = nfa.get_node(NodeID { val: node });
+                let stack = _push_thread(width, thread.set(0, node.@output2.@val), stack);
+                let stack = _push_thread(width, thread.set(0, node.@output.@val), stack);
+                let stack = _follow_action(nfa, at_begin, at_end, width, node, thread, stack);
+                continue $ (stack, taken, reached)
+            )
         );
-        let (taken, _) = loop(reached, |(taken, pending)|
-            if pending.@size == 0 { break $ (taken, pending) };
-            let base = pending.@size - width;
-            let thread = _thread_at(base, width, pending);
-            let pending = pending.truncate(base);
-            let node = nfa.get_node(NodeID { val: thread.@(0) });
-            let reached = _follow_action(nfa, at_begin, at_end, width, node, thread, (taken, pending));
-            let reached = _offer_thread(width, thread.set(0, node.@output2.@val), reached);
-            continue $ _offer_thread(width, thread.set(0, node.@output.@val), reached)
-        );
+        if table.@_first { reached };
         _gather_threads(width, taken)
     );
 
     // Every node the automaton reaches from the nodes offered without reading a byte, in the order
-    // the nodes are numbered.
+    // the table keeps them.
     //
     // This is what `_closure` does for a pattern with no special quantifier, where a thread is a
     // node and nothing besides, so that one mark per node tells which threads were reached.
@@ -1889,14 +2174,14 @@ namespace StateTable {
     // # Parameters
     // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
     // * `at_end` - Whether it is the end of the input, where `$` holds.
-    // * `seeds` - The nodes to start from.
+    // * `seeds` - The nodes to start from, in the order they are preferred.
     // * `table` - The table.
     _closure_nodes: Bool -> Bool -> Array I64 -> StateTable -> Array I64;
     _closure_nodes = |at_begin, at_end, seeds, table| (
         let nfa = table.@_nfa;
         let marks = Array::fill(nfa.@_nodes.@size, false);
         let (reached, _) = _reach_unmarked(nfa, at_begin, at_end, seeds, marks);
-        reached.sort_by(|(left, right)| left < right)
+        table._in_key_order(reached)
     );
 
     // The earliest rank of a state that reaches the accepting node where the input ends, where `$`
@@ -1920,18 +2205,18 @@ namespace StateTable {
         (rank, table.mod__accepts_at_end(set(state, rank)))
     );
 
-    // The bytes a match may begin with, one bit each: those the nodes of a state admit. A state that
-    // accepts stands for a match that reads nothing, which every position admits, so there every
-    // bit is set.
+    // The bytes a match may begin with, one bit each: those the nodes of a state admit. A state
+    // that accepts stands for a match that reads nothing, which every position admits, so there
+    // every bit is set.
     //
     // # Parameters
     // * `state` - The state a match begins in.
     // * `table` - The table.
     _first_bytes_of: I64 -> StateTable -> Array U64;
     _first_bytes_of = |state, table| (
-        if table.@_accepts.@(state) { _all_bytes };
+        if table.@_accepts.@(state) { all_bytes };
         let nfa = table.@_nfa;
-        table._ranks_of(state).to_iter.fold(_no_bytes, |threads, first_bytes|
+        table._ranks_of(state).to_iter.fold(no_bytes, |threads, first_bytes|
             let width = table.@_width;
             range(0, threads.@size / width).fold(first_bytes, |k, first_bytes|
                 let node = nfa.get_node(NodeID { val: threads.@(k * width) });
@@ -2006,62 +2291,35 @@ _holds_node = |node, width, threads| (
 );
 
 // Every node the automaton reaches from the nodes offered without reading a byte and without
-// passing a marked node, in the order they are reached, together with the marks with those nodes
-// marked.
+// passing a marked node, in the order JavaScript tries them, together with the marks with those
+// nodes marked.
 //
 // # Parameters
 // * `nfa` - The automaton.
 // * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
 // * `at_end` - Whether it is the end of the input, where `$` holds.
-// * `seeds` - The nodes to start from.
+// * `seeds` - The nodes to start from, in the order they are preferred.
 // * `marks` - Per node, whether it is marked.
 _reach_unmarked: NFA -> Bool -> Bool -> Array I64 -> Array Bool -> (Array I64, Array Bool);
 _reach_unmarked = |nfa, at_begin, at_end, seeds, marks| (
-    // Every node is put among those reached once, when it is marked, and its empty-string
-    // transitions are followed in the order the nodes were put there.
-    let (marks, reached) = seeds.to_iter.fold((marks, Array::empty(seeds.@size)), |node, reached|
-        _offer_node(node, reached)
-    );
-    loop((0, marks, reached), |(followed, marks, reached)|
-        if followed == reached.@size { break $ (reached, marks) };
-        let node = nfa.get_node(NodeID { val: reached.@(followed) });
-        let next = _follow_node_action(nfa, at_begin, at_end, node, (marks, reached));
-        let next = _offer_node(node.@output2.@val, next);
-        let (marks, reached) = _offer_node(node.@output.@val, next);
-        continue $ (followed + 1, marks, reached)
+    // Each seed in turn is followed depth first, the way on the automaton prefers taken first. A
+    // node is put among those reached, and marked, when it is taken off the stack.
+    seeds.to_iter.fold((Array::empty(seeds.@size), marks), |seed, (reached, marks)|
+        loop(([seed], reached, marks), |(stack, reached, marks)|
+            if stack.@size == 0 { break $ (reached, marks) };
+            let node = stack.@(stack.@size - 1);
+            let stack = stack.pop_back;
+            if node < 0 || marks.@(node) { continue $ (stack, reached, marks) };
+            let (reached, marks) = (reached.push_back(node), marks.set(node, true));
+            let node = nfa.get_node(NodeID { val: node });
+            // A pattern with no special quantifier has no node that counts, so the action reads and
+            // writes no rounds.
+            let step = nfa.action_step(at_begin, at_end, 0, node);
+            let stack = stack.push_back(node.@output2.@val).push_back(node.@output.@val);
+            let stack = if step.@next < 0 { stack } else { stack.push_back(step.@next) };
+            continue $ (stack, reached, marks)
+        )
     )
-);
-
-// Adds a node to those reached unless it is there already.
-//
-// # Parameters
-// * `node` - The node to add.
-// * `reached` - The nodes reached so far, and those whose empty-string transitions are still to
-//   be followed.
-_offer_node: I64 -> (Array Bool, Array I64) -> (Array Bool, Array I64);
-_offer_node = |node, (marks, pending)| (
-    if node < 0 { (marks, pending) };
-    if marks.@(node) { (marks, pending) };
-    (marks.set(node, true), pending.push_back(node))
-);
-
-// Applies the action a node guards, adding the node it leads to when the action lets it
-// through. A node guarded by a character class leads nowhere until a byte is read, and a
-// pattern with no special quantifier guards nothing else that can hold a thread back.
-//
-// # Parameters
-// * `nfa` - The automaton the node belongs to.
-// * `at_begin` - Whether the position is the beginning of the input, where `^` holds.
-// * `at_end` - Whether it is the end of the input, where `$` holds.
-// * `node` - The node whose action to apply.
-// * `reached` - The nodes reached so far.
-_follow_node_action: NFA -> Bool -> Bool -> NFANode -> (Array Bool, Array I64) -> (Array Bool, Array I64);
-_follow_node_action = |nfa, at_begin, at_end, node, reached| (
-    // A pattern with no special quantifier has no node that counts, so the action reads and
-    // writes no rounds.
-    let step = nfa.action_step(at_begin, at_end, 0, node);
-    if step.@next < 0 { reached };
-    _offer_node(step.@next, reached)
 );
 
 // The thread that begins at a place among threads laid end to end.
@@ -2090,22 +2348,16 @@ _run_order = |first, second, width, runs| (
     )
 );
 
-// Adds a thread to those reached, unless a thread standing at the same node having counted the
-// same rounds is there already. Two such threads have the same future, so keeping one loses
-// nothing.
+// Puts a thread on the stack of threads still to be taken, where it stands at a node.
 //
 // # Parameters
 // * `width` - How many numbers a thread takes.
-// * `thread` - The thread to add.
-// * `reached` - The threads reached at each node, and those whose empty-string transitions are
-//   still to be followed.
-_offer_thread: I64 -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
-_offer_thread = |width, thread, (taken, pending)| (
-    let node = thread.@(0);
-    if node < 0 { (taken, pending) };
-    let counts = _thread_counts(width, thread);
-    if _run_among(counts, taken.@(node)) { (taken, pending) };
-    (taken.mod(node, append(counts)), pending.append(thread))
+// * `thread` - The thread to put there.
+// * `stack` - The threads still to be taken, laid end to end, the next to take at the end.
+_push_thread: I64 -> Array I64 -> Array I64 -> Array I64;
+_push_thread = |width, thread, stack| (
+    if thread.@(0) < 0 { stack };
+    stack.append(thread)
 );
 
 // The rounds a thread has counted. Two threads reached at one node are told apart by these.
@@ -2162,8 +2414,8 @@ _sorted_counts = |stride, held| (
     )
 );
 
-// Applies the action a node guards, adding the thread it leads to when the action lets it
-// through. A node guarded by a character class leads nowhere until a byte is read.
+// Applies the action a node guards, putting the thread it leads to on the stack when the action
+// lets it through. A node guarded by a character class leads nowhere until a byte is read.
 //
 // # Parameters
 // * `nfa` - The automaton the node belongs to.
@@ -2172,21 +2424,21 @@ _sorted_counts = |stride, held| (
 // * `width` - How many numbers a thread takes.
 // * `node` - The node whose action to apply.
 // * `thread` - The thread standing at that node.
-// * `reached` - The threads reached so far.
-_follow_action: NFA -> Bool -> Bool -> I64 -> NFANode -> Array I64 -> (Array (Array I64), Array I64) -> (Array (Array I64), Array I64);
-_follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
+// * `stack` - The threads still to be taken.
+_follow_action: NFA -> Bool -> Bool -> I64 -> NFANode -> Array I64 -> Array I64 -> Array I64;
+_follow_action = |nfa, at_begin, at_end, width, node, thread, stack| (
     let qid = action_quant(node.@action);
     let counted = if qid < 0 { 0 } else { thread.@(1 + qid) };
     let step = nfa.action_step(at_begin, at_end, counted, node);
-    if step.@next < 0 { reached };
+    if step.@next < 0 { stack };
     let next = thread.set(0, step.@next);
     let next = if step.@quant < 0 { next } else { next.set(1 + step.@quant, step.@round) };
-    _offer_thread(width, next, reached)
+    _push_thread(width, next, stack)
 );
 
 // Walks a table forward from a position, taking the transitions it goes on through without
-// stopping, and reports where it stopped, the row of the state it stopped in, how far the longest
-// match seen so far reaches, and where rank 0 began. It stops where the input ends, or before a
+// stopping, and reports where it stopped, the row of the state it stopped in, where the match the
+// walk last reached ends, and where rank 0 began. It stops where the input ends, or before a
 // byte whose transition it does not go on through: one not worked out yet, one
 // `StateTable::_entry` says it stops at, or, where it is skipping, one into the fresh state.
 //
@@ -2202,7 +2454,7 @@ _follow_action = |nfa, at_begin, at_end, width, node, thread, reached| (
 //   pass over the positions no match begins at.
 // * `at` - The position to read from.
 // * `row` - The row of the state the walk stands in: the state times 256.
-// * `best` - How far the longest match seen so far reaches, or `-1`.
+// * `best` - Where the match the walk last reached ends, or `-1`.
 // * `begin` - Where rank 0 began, or `-1` where the walk cannot tell.
 _walk_forward: Array U8 -> I64 -> Array I64 -> I64 -> Bool -> I64 -> I64 -> I64 -> I64 -> (I64, I64, I64, I64);
 _walk_forward = |bytes, length, transitions, fresh_row, skipping, at, row, best, begin| (
@@ -2314,7 +2566,7 @@ namespace Prefilter {
         _forced_anchors: Array::empty(0),
         _forced_count: 0,
         _back_max: 0,
-        _back_class: _no_bytes
+        _back_class: no_bytes
     };
 
     // Whether looking for where a match may begin passes over positions faster than walking the
@@ -2524,8 +2776,8 @@ _backed_up_to = |bytes, back_class, back_max, floor, at| (
 // * `set` - The set to read.
 _backing_of: Array ForcedRun -> (I64, Array U64);
 _backing_of = |set| (
-    set.to_iter.fold((0, _no_bytes), |run, (most, bits)|
-        (max(most, run.@back_max), _bytes_union(run.@back_class, bits))
+    set.to_iter.fold((0, no_bytes), |run, (most, bits)|
+        (max(most, run.@back_max), bytes_union(run.@back_class, bits))
     )
 );
 
@@ -2585,7 +2837,7 @@ _by_falling_count = |bytes, sample, set| (
 // * `sample` - How many bytes of it to read.
 // * `wanted` - The byte string to look for.
 _places_of: Array U8 -> I64 -> Array U8 -> I64;
-_places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, _no_bytes, 0);
+_places_of = |bytes, sample, wanted| _stops_of_string(bytes, sample, wanted, no_bytes, 0);
 
 // How many positions a search would walk from over a stretch of the text, for one of the forced
 // byte strings it looks for: every place the string stands, and every position before it a match
@@ -2629,6 +2881,13 @@ type DFA = unbox struct {
 };
 
 namespace DFA {
+    // How many groups the pattern captures, the whole match left out.
+    //
+    // # Parameters
+    // * `dfa` - The automaton.
+    capture_count: DFA -> I64;
+    capture_count = |dfa| dfa.@_forward.@_nfa.@_group_count - 1;
+
     // The bytes every match begins with, as far as they are forced. They are worked out once for
     // the automaton and kept in its `_prefix`.
     //
@@ -2637,7 +2896,7 @@ namespace DFA {
     forced_beginning: NFA -> Array U8;
     forced_beginning = |nfa| (
         if nfa._asks_many_rounds { Array::empty(0) };
-        let (prefix, _) = StateTable::make(nfa)._forced_prefix;
+        let (prefix, _) = StateTable::make(false, nfa)._forced_prefix;
         prefix
     );
 
@@ -2660,7 +2919,7 @@ namespace DFA {
     // * `nfa` - The automaton to read.
     _asks_many_rounds: NFA -> Bool;
     _asks_many_rounds = |nfa| (
-        nfa.@_quant_bounds.to_iter.check_any(|(least, most)|
+        nfa.@_quant_bounds.to_iter.check_any(|(least, most, _)|
             least > __MAX_PREFIX_ROUNDS || (most < I64::maximum && most > __MAX_PREFIX_ROUNDS)
         )
     );
@@ -2696,12 +2955,12 @@ namespace DFA {
             DFA {
                 _forward: StateTable::given_up(nfa),
                 _backward: StateTable::given_up(reversed),
-                _prefilter: Prefilter::make(_all_bytes, Array::empty(0))
+                _prefilter: Prefilter::make(all_bytes, Array::empty(0))
             }
         };
         let forward = StateTable::make_seeking(nfa);
         let first_bytes = forward._first_bytes_of(forward.@_interior);
-        let backward = StateTable::make(reversed);
+        let backward = StateTable::make(false, reversed);
         let (at_begin, forward) = forward._start(true, true, false);
         let forward = forward._worked_out_from([forward.@_interior, at_begin], __AHEAD_STATES);
         let (at_end, backward) = backward._start(false, true, false);
@@ -2714,25 +2973,16 @@ namespace DFA {
         }
     );
 
-    // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place, together with the scanner as the search left it.
-    //
-    // # Parameters
-    // * `bytes` - The bytes to read.
-    // * `from` - The position at or after which the match has to begin.
-    // * `dfa` - The scanner.
-    find: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    find = |bytes, from, dfa| dfa._find(bytes, bytes.@size, from);
-
-    // What `find` reports for a text that is the first `length` of the bytes.
+    // The match JavaScript finds in the text that is the first `length` of the bytes, beginning at
+    // or after a position, together with the scanner as the search left it.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner.
-    _find: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
-    _find = |bytes, length, from, dfa| (
+    find_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    find_within = |bytes, length, from, dfa| (
         if from > length { (none(), dfa) };
         let DFA { _forward: forward, _backward: backward, _prefilter: prefilter } = dfa;
         let nfa = forward.@_nfa;
@@ -2765,10 +3015,11 @@ namespace DFA {
     __GIVEN_UP = -2;
 
     // Walks the automaton forward from a position, starting a rank of threads at every position
-    // until a match is reached, and reports where the leftmost match beginning at or after that
-    // position ends, taking the longest of those that begin where it begins, or `-1` where no
-    // match begins there or later. Reports with it where the match begins, where the walk could
-    // read it off where rank 0 began, or `-1` where it could not.
+    // until a match is reached, and reports where the match JavaScript finds beginning at or after
+    // that position ends, or `-1` where no match begins there or later. A state reached holds only
+    // the threads JavaScript would try before the match reached last, so the match the walk reaches
+    // last before its threads die is the one JavaScript finds. Reports with it where the match
+    // begins, where the walk could read it off where rank 0 began, or `-1` where it could not.
     //
     // Reports `__GIVEN_UP` for where the match ends where the states outgrew the table.
     //
@@ -2835,8 +3086,12 @@ namespace DFA {
 
     // Walks the automaton of the pattern read from right to left back from where a match ends, and
     // reports where the leftmost match ending there begins, no earlier than a position: the
-    // earliest position at or after that one the walk reaches a match at. Reports `__GIVEN_UP` where
-    // the states outgrew the table.
+    // earliest position at or after that one the walk reaches a match at. Reports `__GIVEN_UP`
+    // where the states outgrew the table.
+    //
+    // The match JavaScript finds begins where the leftmost of all matches begins, so no match
+    // ending where it ends begins before it, and it is the leftmost of those: the walk reads every
+    // match ending there alike, whichever JavaScript would prefer.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
@@ -2879,8 +3134,8 @@ namespace DFA {
         (found, table.set__transitions(transitions))
     );
 
-    // The leftmost match beginning at or after a position, taking the longest of those that begin
-    // at the same place, together with the scanner as the search left it.
+    // The match JavaScript finds beginning at or after a position, together with the scanner as the
+    // search left it.
     //
     // A scanner works out what the automaton does with a byte the first time it reads that byte in
     // that state, and keeps the answer, so a search handed a scanner back reads what the searches
@@ -2891,7 +3146,7 @@ namespace DFA {
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
     search_from: Array U8 -> I64 -> DFA -> (Option Groups, DFA);
-    search_from = |bytes, from, dfa| dfa._search_from_within(bytes, bytes.@size, from);
+    search_from = |bytes, from, dfa| dfa.search_from_within(bytes, bytes.@size, from);
 
     // What `search_from` reports for a text that is the first `length` of the bytes. A string's
     // bytes are searched this way, with the null byte that ends them left beyond the text, where
@@ -2902,9 +3157,9 @@ namespace DFA {
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `from` - The position at or after which the match has to begin.
     // * `dfa` - The scanner to search with.
-    _search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
-    _search_from_within = |bytes, length, from, dfa| (
-        dfa._fit(bytes, length)._find(bytes, length, from)
+    search_from_within: Array U8 -> I64 -> I64 -> DFA -> (Option Groups, DFA);
+    search_from_within = |bytes, length, from, dfa| (
+        dfa._fit(bytes, length).find_within(bytes, length, from)
     );
 
     // Every match a scanner finds, taken left to right, none of them overlapping another, together
@@ -2914,17 +3169,17 @@ namespace DFA {
     // * `bytes` - The bytes to read.
     // * `dfa` - The scanner to search with.
     search_every: Array U8 -> DFA -> (Array Groups, DFA);
-    search_every = |bytes, dfa| dfa._search_every_within(bytes, bytes.@size);
+    search_every = |bytes, dfa| dfa.search_every_within(bytes, bytes.@size);
 
     // What `search_every` reports for a text that is the first `length` of the bytes. See
-    // `_search_from_within`.
+    // `search_from_within`.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
     // * `length` - How many of the bytes the text holds. Any after them stand beyond its end.
     // * `dfa` - The scanner to search with.
-    _search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
-    _search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
+    search_every_within: Array U8 -> I64 -> DFA -> (Array Groups, DFA);
+    search_every_within = |bytes, length, dfa| dfa._fit(bytes, length)._every_match(bytes, length);
 
     // The scanner told what to look for over a text. See `Prefilter::_fit`.
     //
@@ -2951,7 +3206,7 @@ namespace DFA {
         let (matches, _, dfa) = loop(
             (Array::empty(8), 0, dfa), |(matches, from, dfa)|
             if from > length { break $ (matches, from, dfa) };
-            let (opt, dfa) = dfa._find(bytes, length, from);
+            let (opt, dfa) = dfa.find_within(bytes, length, from);
             if opt.is_none { break $ (matches, from, dfa) };
             let groups = opt.as_some;
             let (begin, end) = groups.@(0);
@@ -2979,8 +3234,8 @@ namespace DFA {
 }
 
 namespace NFA {
-    // Runs the automaton over the bytes and reports the leftmost match beginning at or after a
-    // position, taking the longest of those that begin at the same place.
+    // Runs the automaton over the bytes and reports the match JavaScript finds beginning at or
+    // after a position.
     //
     // # Parameters
     // * `bytes` - The bytes to read.
@@ -3004,27 +3259,61 @@ namespace NFA {
     );
 }
 
-// A piece of a replacement string: a byte to write out as it stands, or a group whose captured
-// text to write out.
+// A piece of a replacement string.
 type ReplaceFrag = unbox union {
     rep_literal: U8,   // the byte to write out
-    rep_group: I64     // which group to write the captured text of
+    rep_group: I64,    // which group to write the captured text of, `0` standing for the whole match
+    rep_before: (),    // the text before the match
+    rep_after: ()      // the text after the match
 };
 
 namespace Replacement {
 
-    // Compiles a replacement string to fragments. `$n` stands for the text group `n` captured,
-    // `$&` for the whole match and `$$` for a `$`; every other byte stands for itself.
-    compile: String -> Array ReplaceFrag;
-    compile = |replacement| (
-        let parsed = _parse_replacement_seq.run_parser_str(replacement);
-        if parsed.is_err { undefined("_parse_replacement_seq failed") };
-        let (frags, _) = parsed.as_ok;
-        frags
+    // Compiles a replacement string to fragments, reading it as JavaScript reads the replacement
+    // string of `String.prototype.replaceAll`:
+    // - `$$` stands for a `$`, `$&` for the whole match, `` $` `` for the text before the match and
+    //   `$'` for the text after it.
+    // - `$` and two digits stand for the group they number where that group exists; otherwise `$`
+    //   and the first digit stand for the group it numbers, and the second digit for itself. `$0`
+    //   and the number of a group the pattern lacks stand for themselves.
+    // - Every other byte stands for itself, a `$` among them.
+    //
+    // # Parameters
+    // * `group_count` - How many groups the pattern captures, the whole match left out.
+    // * `replacement` - The replacement string.
+    compile: I64 -> String -> Array ReplaceFrag;
+    compile = |group_count, replacement| (
+        let bytes = replacement.get_bytes;
+        let size = replacement.@size;
+        // The number the digit at `at` writes, or `-1` where no digit stands there.
+        let digit = |at| (
+            if at >= size { -1 };
+            let byte = bytes.@(at);
+            if byte < '0' || '9' < byte { -1 };
+            (byte - '0').i64
+        );
+        let names_group = |index| 1 <= index && index <= group_count;
+        loop((Array::empty(size), 0), |(frags, at)|
+            if at >= size { break $ frags };
+            let byte = bytes.@(at);
+            if byte != '$' || at + 1 >= size { continue $ (frags.push_back(rep_literal(byte)), at + 1) };
+            let next = bytes.@(at + 1);
+            if next == '$' { continue $ (frags.push_back(rep_literal('$')), at + 2) };
+            if next == '&' { continue $ (frags.push_back(rep_group(0)), at + 2) };
+            if next == '`' { continue $ (frags.push_back(rep_before()), at + 2) };
+            if next == '\'' { continue $ (frags.push_back(rep_after()), at + 2) };
+            let first = digit(at + 1);
+            let second = digit(at + 2);
+            if first >= 0 && second >= 0 && names_group(first * 10 + second) {
+                continue $ (frags.push_back(rep_group(first * 10 + second)), at + 3)
+            };
+            if names_group(first) { continue $ (frags.push_back(rep_group(first)), at + 2) };
+            continue $ (frags.push_back(rep_literal('$')), at + 1)
+        )
     );
 
     // The text a match is replaced by: the fragments written out one after another, each group
-    // standing for the text it captured.
+    // standing for the text it captured, and a group that captured nothing for the empty string.
     //
     // # Parameters
     // * `target` - The string the match was found in.
@@ -3032,60 +3321,20 @@ namespace Replacement {
     // * `groups` - The groups the match captured.
     calc_replacement: String -> Array ReplaceFrag -> Groups -> String;
     calc_replacement = |target, rep_frags, groups| (
+        let (begin, end) = groups.@(0);
         let output: Array U8 = Array::empty(target.@size + rep_frags.@size);
         let output = rep_frags.to_iter.fold(
             output, |rep, output|
             if rep.is_rep_literal {
                 output.push_back(rep.as_rep_literal)
             };
-            if rep.is_rep_group {
-                let group_idx = rep.as_rep_group;
-                let (begin, end) = groups.group_at(group_idx);
-                let captured = target.substring(begin, end);
-                output.append(captured.get_bytes.pop_back)
-            };
-            undefined("err")
+            let (from, to) = (
+                if rep.is_rep_before { (0, begin) };
+                if rep.is_rep_after { (end, target.@size) };
+                groups.group_at(rep.as_rep_group)
+            );
+            output.append(target.substring(from, to).get_bytes.pop_back)
         );
-        output._unsafe_to_string
+        output.unsafe_to_string
     );
-
-    // Parses a whole replacement string: every fragment it holds, in the order they stand in.
-    _parse_replacement_seq: Parser (Array ReplaceFrag);
-    _parse_replacement_seq = do {
-        repeat(
-            _parse_dollar
-            .or_else(_parse_literal)
-        )
-    };
-
-    // Parses a `$` escape: `$$` for a `$`, `$&` for the whole match, and `$n` for group `n`.
-    _parse_dollar: Parser ReplaceFrag;
-    _parse_dollar = do {
-        let _ = *match_char('$');
-        
-        let dollar = *match_char_if_exists('$');    // $$
-        if dollar.is_some {
-            pure $ rep_literal('$')
-        };
-
-        let ampersand = *match_char_if_exists('&');    // $&
-        if ampersand.is_some {
-            pure $ rep_group(0)
-        };
-
-        // TODO: support $`, $', $<Name>
-
-        let num = *match_integer.map(some).or_else(pure $ none());    // $n
-        if num.is_some {
-            pure $ rep_group(num.as_some)
-        };
-
-        not_match
-    };
-
-    // Parses one byte, which stands for itself.
-    _parse_literal: Parser ReplaceFrag;
-    _parse_literal = do {
-        match_any_char.map(rep_literal)
-    };
 }

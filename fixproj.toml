@@ -1,28 +1,24 @@
 [general]
 name = "regexp"
-version = "1.3.1"
-fix_version = "1.5.0"
+version = "2.0.0"
+fix_version = "1.6.0"
 description = "Provides regular expression matching."
 
 [build]
 files = [
     "regexp.fix",
-    "regexp_nfa.fix",
-    "regexp_pattern.fix",
-    "simple_parser.fix",
-    "std_bytes.fix",
-    "stringex.fix",
+    "internal/matches.fix",
+    "internal/nfa.fix",
+    "internal/pattern.fix",
+    "internal/simple_parser.fix",
+    "internal/std_bytes.fix",
+    "internal/stringex.fix",
 ]
 
 [build.test]
-files = ["test.fix"]
+files = ["test.fix", "test_js_cases.fix", "test_js_syntax_cases.fix"]
 
 [[dependencies]]
 name = "hashmap"
 version = "2.0.0"
 git = { url = "https://github.com/tttmmmyyyy/fixlang-hashmap.git" }
-
-[[dependencies]]
-name = "character"
-version = "1.0.0"
-git = { url = "https://github.com/tttmmmyyyy/fixlang-character.git" }
