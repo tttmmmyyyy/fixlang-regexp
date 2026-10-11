@@ -1,7 +1,8 @@
-// Writes `test_js_syntax_cases.fix`: escapes, bracket expressions and characters from U+0080
-// upward, each with every match JavaScript's `String.prototype.matchAll` finds in `TEXT`,
-// `NON_ASCII_TEXT` or `BRACE_TEXT`, or with `none()` where the pattern is to be reported as an error, by JavaScript
-// or as a form this library does not support.
+// Writes `test_js_syntax_cases.fix`: escapes, bracket expressions, braces and characters from
+// U+0080 upward, with and without the flag `i`, each with every match JavaScript's
+// `String.prototype.matchAll` finds in `TEXT`, `NON_ASCII_TEXT`, `BRACE_TEXT` or `CASE_TEXT`, or
+// with `none()` where the pattern is to be reported as an error, by JavaScript or as a form this
+// library does not support.
 //
 // Run with Node from the root of the repository: `node tools/js_syntax_cases.js`.
 
@@ -109,12 +110,34 @@ for (const pattern of [
     nonAsciiCases.push({ pattern, unsupported: true });
 }
 
+// The flag `i`, over `TEXT` for ASCII characters, escapes, bracket expressions and class escapes,
+// and over `CASE_TEXT` for characters from U+0080 upward, which it holds in several cases.
+const ignoreCaseAsciiCases = [];
+for (const pattern of [
+    "a", "A", "z", "[a-c]", "[A-C]", "[^a]", "[^A]", "[^a-z]", "[Z-a]", "[^Z-a]", "[_-z]", "[@-\\[]",
+    "\\w", "\\W", "[\\W]", "[^\\W]", "[\\w-]", "\\x41", "\\x61", "\\cA", "\\u004b", "[\\x41]",
+    "[k]", "[s]", "k", "s", "ab|AB", "(a)\\1", "[a-zA-Z]", "[^b-y]",
+]) {
+    ignoreCaseAsciiCases.push({ pattern, unsupported: pattern == "(a)\\1" });
+}
+const CASE_TEXT = "aA\u00e9\u00c9\u03c3\u03a3\u03c2\u00b5\u039c\u03bckK\u212asS\u017f\u00df\u1e9e" +
+    "iI\u0130\u0131\u01c4\u01c5\u01c6\uff41\uff21\u{1f600}\u2126\u03c9\u03a9 caf\u00c9 Caf\u00e9";
+const ignoreCaseCases = [];
+for (const pattern of [
+    "\u00e9", "\u00c9", "\\u00e9", "\\xc9", "\\\u00e9", "\u03c3", "\u03a3", "\u03c2", "\u00b5",
+    "\u03bc", "k", "K", "\\u212a", "s", "\u017f", "\u00df", "\u1e9e", "i", "\u0130", "\u0131",
+    "\u01c5", "\u01c4", "\uff41", "\\uff21", "\u{1f600}", "\u2126", "\u03c9", "caf\u00e9",
+    "CAF\u00c9", "\u00e9+", "\u03c3{2,}", "(\u00e9|x)c", "\u01c6\u01c4", "[a-z]\u00e9",
+]) {
+    ignoreCaseCases.push({ pattern, unsupported: false });
+}
+
 // Every match JavaScript finds in `text`, as Fix writes it with positions counted in UTF-8 bytes,
 // or `none()` where JavaScript reports the pattern as an error.
-function matches(pattern, text) {
+function matches(pattern, text, flags = "") {
     let regexp;
     try {
-        regexp = new RegExp(pattern, "g");
+        regexp = new RegExp(pattern, "g" + flags);
     } catch (e) {
         if (e instanceof SyntaxError) return "none()";
         throw e;
@@ -131,8 +154,8 @@ function literal(text) {
     return '"' + text.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
-const rowsOf = (list, text) => list.map(({ pattern, unsupported }) =>
-    "    (" + literal(pattern) + ", " + (unsupported ? "none()" : matches(pattern, text)) + ")"
+const rowsOf = (list, text, flags = "") => list.map(({ pattern, unsupported }) =>
+    "    (" + literal(pattern) + ", " + (unsupported ? "none()" : matches(pattern, text, flags)) + ")"
 ).join(",\n");
 
 const source = `// Escapes and bracket expressions, each with every match JavaScript finds in the text
@@ -166,5 +189,22 @@ ${rowsOf(braceCases, BRACE_TEXT)}
 
 _js_brace_text: String;
 _js_brace_text = ${literal(BRACE_TEXT)};
+
+// Under the flag \`i\`, ASCII characters, escapes, bracket expressions and class escapes, each with
+// every match JavaScript finds in the text \`test.fix\` builds, or \`none()\` as above.
+_js_ignore_case_ascii_cases: Array (String, Option (Array (I64, I64)));
+_js_ignore_case_ascii_cases = [
+${rowsOf(ignoreCaseAsciiCases, TEXT, "i")}
+];
+
+// Under the flag \`i\`, characters, each with every match JavaScript finds in
+// \`_js_ignore_case_text\`.
+_js_ignore_case_cases: Array (String, Option (Array (I64, I64)));
+_js_ignore_case_cases = [
+${rowsOf(ignoreCaseCases, CASE_TEXT, "i")}
+];
+
+_js_ignore_case_text: String;
+_js_ignore_case_text = ${literal(CASE_TEXT)};
 `;
 fs.writeFileSync("test_js_syntax_cases.fix", source);

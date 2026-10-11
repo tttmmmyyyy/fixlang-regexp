@@ -1,6 +1,7 @@
 // Character class and Pattern parser. This is internal module of `RegExp`.
 module RegExp._Internal.Pattern;
 
+import RegExp._Internal.CaseFold::same_case_units;
 import RegExp._Internal.SimpleParser::{
     Parser, 
     Parser::{
@@ -85,6 +86,17 @@ namespace CharClass {
             f: |c| f(c) || g(c)
         }
     );
+
+    // The class of the bytes that `cls` holds, together with the ASCII characters JavaScript's `i`
+    // flag takes for an ASCII character `cls` holds. A byte from 0x80 upward is part of a character
+    // of two or more bytes, and is kept as it is.
+    fold_case: CharClass -> CharClass;
+    fold_case = |cls| CharClass {
+        label: cls.@label,
+        f: |c| cls.contains(c) || c < 0x80_U8 && same_case_units(c.i64).to_iter.check_any(|unit|
+            unit < 0x80 && cls.contains(unit.u8)
+        )
+    };
 
     // Adds a character to the character class.
     add: U8 -> CharClass -> CharClass;
@@ -216,37 +228,40 @@ impl Pattern: ToString {
 
 namespace Pattern {
 
-    // Parses a pattern from specified string.
-    parse: String -> Result ErrMsg Pattern;
-    parse = |str| (
-        parse_pattern.run_parser_str(str).map(|(p,_)| p)
+    // Parses a pattern from specified string. Where `ignore_case` holds, a character matches every
+    // character JavaScript's `i` flag takes for it.
+    //
+    // The parsers below that take `ignore_case` pass it on in this meaning.
+    parse: Bool -> String -> Result ErrMsg Pattern;
+    parse = |ignore_case, str| (
+        parse_pattern(ignore_case).run_parser_str(str).map(|(p,_)| p)
     );
 
     // Parses a pattern from the stream.
-    parse_pattern: Parser Pattern;
-    parse_pattern = do {
-        let pat = *_parse_peither;
+    parse_pattern: Bool -> Parser Pattern;
+    parse_pattern = |ignore_case| do {
+        let pat = *_parse_peither(ignore_case);
         let _ = *match_end_of_stream;
         pure $ pat
     };
 
     // Parses either-pattern, ie. `X|Y`
-    _parse_peither: Parser Pattern;
-    _parse_peither = do {
-        let pat1 = *_parse_psequence;
+    _parse_peither: Bool -> Parser Pattern;
+    _parse_peither = |ignore_case| do {
+        let pat1 = *_parse_psequence(ignore_case);
         let bar = *match_char_if_exists('|');
         if bar.is_some {
-            let pat2 = *_parse_peither;
+            let pat2 = *_parse_peither(ignore_case);
             pure $ peither $ (pat1, pat2)
         };
         pure $ pat1
     };
 
     // Parses sequence of patterns, ie. `XYZ`
-    _parse_psequence: Parser Pattern;
-    _parse_psequence = do {
+    _parse_psequence: Bool -> Parser Pattern;
+    _parse_psequence = |ignore_case| do {
         pure $ psequence $ *zero_or_more(
-            _parse_passert.or_else(_parse_pquant)
+            _parse_passert.or_else(_parse_pquant(ignore_case))
         )
     };
 
@@ -266,9 +281,9 @@ namespace Pattern {
 
     // Parses Quantified Pattern, ie. `X?`, `X*`, `X+`, `X{n}`, `X{n,}`, `X{n,m}`, each of them
     // followed by `?` where it takes as few rounds as it can.
-    _parse_pquant: Parser Pattern;
-    _parse_pquant = do {
-        let pat = *_parse_quantifiable_item;
+    _parse_pquant: Bool -> Parser Pattern;
+    _parse_pquant = |ignore_case| do {
+        let pat = *_parse_quantifiable_item(ignore_case);
         let bounds = *_parse_quantifier.map(some).or_else(pure $ none());
         if bounds.is_none { pure $ pat };
         let (least, most) = bounds.as_some;
@@ -292,7 +307,8 @@ namespace Pattern {
     };
 
     // Parses the rest of `{n}`, `{n,}` or `{n,m}` after the `{`, as the fewest and the most rounds.
-    // Where the text after the `{` takes none of the three forms, nothing is parsed.
+    // Where the text after the `{` takes none of the three forms, nothing is parsed. `{n,m}` whose
+    // `n` exceeds `m` is reported as an error.
     _parse_braced_bounds: Parser (I64, I64);
     _parse_braced_bounds = do {
         let start_stream = *get_stream;
@@ -327,16 +343,16 @@ namespace Pattern {
     };
 
     // Parses quantifiable item.
-    _parse_quantifiable_item: Parser Pattern;
-    _parse_quantifiable_item = do {
-        _parse_pgroup.or_else(_parse_atom)
-    };
+    _parse_quantifiable_item: Bool -> Parser Pattern;
+    _parse_quantifiable_item = |ignore_case| (
+        _parse_pgroup(ignore_case).or_else(_parse_atom(ignore_case))
+    );
 
     // Parses Group Pattern, ie. `(X)`
-    _parse_pgroup: Parser Pattern;
-    _parse_pgroup = do {
+    _parse_pgroup: Bool -> Parser Pattern;
+    _parse_pgroup = |ignore_case| do {
         let lparen = *match_char('(');
-        let pat = *_parse_peither;
+        let pat = *_parse_peither(ignore_case);
         let rparen = *match_char(')').or_error("')' is missing");
         let group_idx = 0;  // have to assign group index later
         pure $ pgroup $ (group_idx, pat)
@@ -353,8 +369,8 @@ namespace Pattern {
     );
 
     // Parses an atom that reads characters: a character, `.`, a bracket expression or an escape.
-    _parse_atom: Parser Pattern;
-    _parse_atom = do {
+    _parse_atom: Bool -> Parser Pattern;
+    _parse_atom = |ignore_case| do {
         let c = *match_any_char;
         let braced = *if c == '{' {
             look_ahead(_parse_braced_bounds).map(|_| true).or_else(pure $ false)
@@ -365,26 +381,26 @@ namespace Pattern {
             error_parser $ "A quantifier `{...}` follows nothing it can repeat"
         };
         if _normal_chars.contains(c) {
-            _parse_char_pattern(*_parse_rest_of_char(c))
+            _parse_char_pattern(ignore_case, *_parse_rest_of_char(c))
         };
         if c == '.' {
             pure $ pclass(CharClass::cls_dot)
         };
         if c == '[' {
-            pure $ pclass(*_parse_pclass_bracket)
+            pure $ pclass(*_parse_pclass_bracket(ignore_case))
         };
         if c == '\\' {
-            _parse_escape
+            _parse_escape(ignore_case)
         };
         not_match
     };
 
     // Parses an escape outside a bracket expression. The backslash itself is parsed already.
-    _parse_escape: Parser Pattern;
-    _parse_escape = (
+    _parse_escape: Bool -> Parser Pattern;
+    _parse_escape = |ignore_case| (
         _parse_unsupported_escape
         .or_else(_parse_class_escape.map(pclass))
-        .or_else(_parse_escaped_char(false).bind(_parse_char_pattern))
+        .or_else(_parse_escaped_char(false).bind(_parse_char_pattern(ignore_case)))
     );
 
     // Reports the escapes outside a bracket expression that this library does not implement: `\b`
@@ -484,6 +500,13 @@ namespace Pattern {
         if 0xD800 <= unit && unit <= 0xDFFF {
             error_parser $ "An escape for a surrogate (U+D800..U+DFFF) is not supported"
         };
+        pure $ _utf8_of_unit(unit)
+    );
+
+    // The UTF-8 encoding of the character whose UTF-16 code unit is `unit`, a code unit outside the
+    // surrogates (U+D800..U+DFFF).
+    _utf8_of_unit: I64 -> Array U8;
+    _utf8_of_unit = |unit| (
         let bytes = if unit < 0x80 {
             [unit]
         } else if unit < 0x800 {
@@ -491,7 +514,23 @@ namespace Pattern {
         } else {
             [0xE0 + unit / 4096, 0x80 + unit / 64 % 64, 0x80 + unit % 64]
         };
-        pure $ bytes.to_iter.map(u8).to_array
+        bytes.to_iter.map(u8).to_array
+    );
+
+    // The UTF-16 code unit of the character whose UTF-8 bytes are `bytes`, or `-1` where they
+    // encode a character from U+10000 upward or are no UTF-8 encoding of one character.
+    _unit_of_utf8: Array U8 -> I64;
+    _unit_of_utf8 = |bytes| (
+        let continues = |i| 0x80_U8 <= bytes.@(i) && bytes.@(i) < 0xC0_U8;
+        let lead = bytes.@(0).i64;
+        if bytes.@size == 1 && lead < 0x80 { lead };
+        if bytes.@size == 2 && 0xC2 <= lead && lead < 0xE0 && continues(1) {
+            (lead - 0xC0) * 64 + (bytes.@(1).i64 - 0x80)
+        };
+        if bytes.@size != 3 || lead < 0xE0 || 0xF0 <= lead || !continues(1) || !continues(2) { -1 };
+        let unit = (lead - 0xE0) * 4096 + (bytes.@(1).i64 - 0x80) * 64 + (bytes.@(2).i64 - 0x80);
+        if unit < 0x800 || 0xD800 <= unit && unit <= 0xDFFF { -1 };
+        unit
     );
 
     // Parses the bytes that follow `first` within one UTF-8 character, and gives all of its bytes.
@@ -507,9 +546,10 @@ namespace Pattern {
     //
     // JavaScript reads a character from U+10000 upward as two UTF-16 code units, and a quantifier
     // after it repeats the second alone, which no sequence of whole bytes can match. Such a
-    // character followed by a quantifier is reported as an error.
-    _parse_char_pattern: Array U8 -> Parser Pattern;
-    _parse_char_pattern = |bytes| do {
+    // character followed by a quantifier is reported as an error. The `i` flag leaves such a
+    // character as it is, since no surrogate has a case.
+    _parse_char_pattern: Bool -> Array U8 -> Parser Pattern;
+    _parse_char_pattern = |ignore_case, bytes| do {
         let quantified = *if bytes.@size < 4 {
             pure $ false
         } else {
@@ -518,18 +558,40 @@ namespace Pattern {
         if quantified {
             error_parser $ "A quantifier after a character from U+10000 upward is not supported"
         };
-        if bytes.@size == 1 { pure $ pclass(CharClass::singleton(bytes.@(0))) };
-        pure $ psequence $ bytes.to_iter.map(|b| pclass(CharClass::singleton(b))).to_array
+        let units = if ignore_case { same_case_units(_unit_of_utf8(bytes)) } else { [] };
+        if units.@size < 2 { pure $ _pattern_of_bytes(bytes) };
+        if units.to_iter.check_any(|unit| unit >= 0x80) {
+            pure $ _either_of $ units.map(|unit| _pattern_of_bytes(_utf8_of_unit(unit)))
+        };
+        pure $ pclass $ units.to_iter.fold(CharClass::empty, |unit, cls| cls.add(unit.u8))
     };
+
+    // The pattern that matches what one of `pats` matches, trying them in order. `pats` is not
+    // empty.
+    _either_of: Array Pattern -> Pattern;
+    _either_of = |pats| (
+        let count = pats.@size;
+        Iterator::range(1, count).fold(pats.@(count - 1), |i, rest|
+            peither $ (pats.@(count - 1 - i), rest)
+        )
+    );
+
+    // The pattern that matches `bytes` in order.
+    _pattern_of_bytes: Array U8 -> Pattern;
+    _pattern_of_bytes = |bytes| (
+        if bytes.@size == 1 { pclass(CharClass::singleton(bytes.@(0))) };
+        psequence $ bytes.to_iter.map(|b| pclass(CharClass::singleton(b))).to_array
+    );
 
     // Parses a character class that begins with '['.
     // The `[` itself is parsed already.
-    _parse_pclass_bracket: Parser CharClass;
-    _parse_pclass_bracket = do {
+    _parse_pclass_bracket: Bool -> Parser CharClass;
+    _parse_pclass_bracket = |ignore_case| do {
         let circumflex = *match_char_if_exists('^');
         let components = *repeat(_parse_bracket_component);
         let _ = *match_char(']').or_error("']' is missing");
         let cls = components.to_iter.fold(CharClass::empty, union);
+        let cls = if ignore_case { cls.fold_case } else { cls };
         let cls = if circumflex.is_some { cls.negate } else { cls };
         pure $ cls.to_table
     };

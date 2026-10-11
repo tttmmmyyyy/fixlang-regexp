@@ -16,7 +16,8 @@ import RegExp._Internal.NFA::{
 import RegExp._Internal.Pattern::{bytes_union, no_bytes, ForcedRun, ForcedRun::{@back_class, @back_max, @bytes}};
 import Test.JsCases::_js_cases;
 import Test.JsSyntaxCases::{
-    _js_brace_cases, _js_brace_text, _js_non_ascii_cases, _js_non_ascii_text, _js_syntax_cases
+    _js_brace_cases, _js_brace_text, _js_ignore_case_ascii_cases, _js_ignore_case_cases, 
+    _js_ignore_case_text, _js_non_ascii_cases, _js_non_ascii_text, _js_syntax_cases
 };
 import RegExp._Internal.StdBytes::{find_byte, find_bytes, find_bytes_within};
 import Std::{
@@ -54,6 +55,12 @@ _match_cases = [
                 one: ["a"], all: [["a"], ["a"], ["a"]] },
     MatchCase { pattern: "a", flags: "g", target: "banana",
                 one: ["a", "a", "a"], all: [["a"], ["a"], ["a"]] },
+    MatchCase { pattern: "a", flags: "i", target: "bAnana",
+                one: ["A"], all: [["A"], ["a"], ["a"]] },
+    MatchCase { pattern: "a", flags: "gi", target: "bAnana",
+                one: ["A", "a", "a"], all: [["A"], ["a"], ["a"]] },
+    MatchCase { pattern: "a", flags: "ig", target: "bAnana",
+                one: ["A", "a", "a"], all: [["A"], ["a"], ["a"]] },
     MatchCase { pattern: "[a-c]+", flags: "g", target: "abcxabz",
                 one: ["abc", "ab"], all: [["abc"], ["ab"]] },
     MatchCase { pattern: "[^a-c]+", flags: "g", target: "abcxabz",
@@ -1071,14 +1078,14 @@ _test_find_positions = (
     )
 );
 
-// `compile` takes the flags `""` and `"g"`, and reports any other flag, or `g` given twice, as an
-// error.
+// `compile` takes the flags `g` and `i` in any order, and reports any other flag, or a flag given
+// twice, as an error.
 _test_flags: IO ();
 _test_flags = (
-    ["", "g"].to_iter.fold_m((), |flags, _|
+    ["", "g", "i", "gi", "ig"].to_iter.fold_m((), |flags, _|
         assert(|_| "flags \"" + flags + "\" are taken", RegExp::compile("a", flags).is_ok)
     );;
-    ["i", "gi", "ig", "gg", "y"].to_iter.fold_m((), |flags, _|
+    ["gg", "ii", "gig", "y", "gy", "u"].to_iter.fold_m((), |flags, _|
         assert(|_| "flags \"" + flags + "\" are refused", RegExp::compile("a", flags).is_err)
     )
 );
@@ -1088,10 +1095,10 @@ _test_flags = (
 // and strings drawn at random by `tools/js_cases.js`.
 _test_js_cases: IO ();
 _test_js_cases = (
-    _js_cases.to_iter.fold_m((), |(pattern, text, matches, from, first), _|
-        let result = RegExp::compile(pattern, "");
-        assert(|_| "/" + pattern + "/ compiles", result.is_ok);;
-        let name = _named(pattern, "", text);
+    _js_cases.to_iter.fold_m((), |(pattern, flags, text, matches, from, first), _|
+        let result = RegExp::compile(pattern, flags);
+        assert(|_| "/" + pattern + "/" + flags + " compiles", result.is_ok);;
+        let name = _named(pattern, flags, text);
         let regexp = result.as_ok;
         assert_eq(|_| name + " as JavaScript", regexp.find_all(text).to_array, matches);;
         let from_name = name + " from " + from.to_string;
@@ -1099,28 +1106,28 @@ _test_js_cases = (
     )
 );
 
-// Escapes, bracket expressions, braces and characters from U+0080 upward find what JavaScript
-// finds, and those JavaScript reports as errors, together with the forms this library does not
-// support, are reported as errors.
+// Escapes, bracket expressions, braces and characters from U+0080 upward, with and without the
+// flag `i`, find what JavaScript finds, and those JavaScript reports as errors, together with the
+// forms this library does not support, are reported as errors.
 _test_js_syntax_cases: IO ();
 _test_js_syntax_cases = (
     let ascii = Iterator::range(1, 128).fold("", |code, text| text + from_U8(code.u8));
     let ascii = ascii + "\\c1\\c";
-    let cases = _js_syntax_cases.to_iter.map(|(pattern, expected)| (pattern, ascii, expected));
-    let cases = cases.append(
-        _js_non_ascii_cases.to_iter.map(|(pattern, expected)| (pattern, _js_non_ascii_text, expected))
-    );
-    let cases = cases.append(
-        _js_brace_cases.to_iter.map(|(pattern, expected)| (pattern, _js_brace_text, expected))
-    );
-    let wrong = cases.fold([], |(pattern, text, expected), wrong|
-        let result = RegExp::compile(pattern, "");
+    let with_text = |text, flags, cases: Array (String, Option (Array (I64, I64)))|
+        cases.to_iter.map(|(pattern, expected)| (pattern, flags, text, expected));
+    let cases = with_text(ascii, "", _js_syntax_cases)
+        .append(with_text(_js_non_ascii_text, "", _js_non_ascii_cases))
+        .append(with_text(_js_brace_text, "", _js_brace_cases))
+        .append(with_text(ascii, "i", _js_ignore_case_ascii_cases))
+        .append(with_text(_js_ignore_case_text, "i", _js_ignore_case_cases));
+    let wrong = cases.fold([], |(pattern, flags, text, expected), wrong|
+        let result = RegExp::compile(pattern, flags);
         let found = if result.is_err {
             none()
         } else {
             some $ result.as_ok.find_all(text).map(|groups| groups.@(0)).to_array
         };
-        if found == expected { wrong } else { wrong.push_back("/" + pattern + "/") }
+        if found == expected { wrong } else { wrong.push_back("/" + pattern + "/" + flags) }
     );
     assert_eq(|_| "patterns read otherwise than JavaScript: " + wrong.to_iter.join(" "), wrong, [])
 );

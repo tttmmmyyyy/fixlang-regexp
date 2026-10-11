@@ -70,13 +70,23 @@ type RegExp = unbox struct {
 namespace RegExp {
 
     // `RegExp::compile(pattern, flags)` compiles `pattern` into a regular expression.
-    // `flags` change behavior of regular expression matching. The only flag is the global
-    // flag `g`, which `match_one` reads, so `flags` is `""` or `"g"`. Any other flag, or `g`
-    // given twice, is reported as an error.
+    // `flags` change behavior of regular expression matching. Each flag is a letter, given at
+    // most once and in any order:
+    // - `g`, the global flag, which `match_one` reads.
+    // - `i`, which makes a character match the characters JavaScript's `i` flag takes for it,
+    //   such as `a` and `A`, or `é` and `É`.
+    //
+    // Any other flag, or a flag given twice, is reported as an error.
+    //
+    // Example:
+    // ```fix
+    // let regexp = RegExp::compile("caf\u00e9", "i").as_ok;
+    // assert_eq(|_|"", regexp.match_one("CAFÉ"), some(["CAFÉ"]))
+    // ```
     compile: String -> String -> Result ErrMsg RegExp;
     compile = |pattern_str, flags| (
-        let global = *_read_flags(flags);
-        let pattern = *Pattern::parse(pattern_str);
+        let (global, ignore_case) = *_read_flags(flags);
+        let pattern = *Pattern::parse(ignore_case, pattern_str);
         let pattern = pgroup $ (0, pattern); // since whole pattern is group 0
         let nfa = NFA::compile(pattern);
         ok $ RegExp { _global: global, _nfa: nfa }
@@ -239,17 +249,17 @@ namespace RegExp {
     );
 }
 
-// Whether `flags` holds the global flag `g`, or an error where it holds another flag or `g` twice.
+// Whether `flags` holds the global flag `g` and the flag `i`, or an error where it holds another
+// flag or one of them twice.
 //
 // # Parameters
 // * `flags` - The flags given to `RegExp::compile`.
-_read_flags: String -> Result ErrMsg Bool;
+_read_flags: String -> Result ErrMsg (Bool, Bool);
 _read_flags = |flags| (
-    flags.get_bytes.pop_back.to_iter.fold_m(false, |flag, global|
-        if flag != 'g' || global {
-            err $ "Unsupported flags \"" + flags + "\": the only flag is `g`, given at most once"
-        };
-        ok $ true
+    flags.get_bytes.pop_back.to_iter.fold_m((false, false), |flag, (global, ignore_case)|
+        if flag == 'g' && !global { ok $ (true, ignore_case) };
+        if flag == 'i' && !ignore_case { ok $ (global, true) };
+        err $ "Unsupported flags \"" + flags + "\": the flags are `g` and `i`, each at most once"
     )
 );
 
