@@ -182,6 +182,13 @@ namespace Parser {
         s.error(msg)
     );
 
+    // Runs `p` and gives its result, leaving the stream where it was.
+    look_ahead: Parser a -> Parser a;
+    look_ahead = |p| parser $ |s| (
+        let (a, _) = *(p.run_parser(s));
+        pure $ (a, s)
+    );
+
     // Raises the specified string as an error.
     error_parser: String -> Parser a;
     error_parser = |msg| parser $ |s| (

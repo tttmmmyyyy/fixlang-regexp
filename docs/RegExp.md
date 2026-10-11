@@ -5,12 +5,20 @@ Defined in regexp@2.0.0
 Simple regular expression.
 
 Currently it only supports patterns below:
-- Character classes: `[xyz]`, `[^xyz]`, `.`, `\d`, `\D`, `\w`, `\W`, `\s`,
-  `\S`, `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `x|y`
+- Character classes: `[xyz]`, `[^xyz]`, `.`, `\d`, `\D`, `\w`, `\W`, `\s`, `\S`
+- Character escapes: `\t`, `\r`, `\n`, `\v`, `\f`, `[\b]`, `\0`, `\cX`, `\xhh`, `\uhhhh`, the
+  octal escapes such as `\012` (outside a bracket expression, those beginning with `\0`), and a
+  backslash before any other character, which stands for that character. `\c` followed by no
+  control letter stands for the backslash alone.
+- Alternatives: `x|y`
 - Assertions: `^`, `$`
 - Groups: `(x)`
 - Quantifiers: `x*`, `x+`, `x?`, `x{n}`, `x{n,}`, `x{n,m}`, and `x*?`, `x+?`, `x??`, `x{n}?`,
   `x{n,}?`, `x{n,m}?`, which take as few rounds as they can
+
+Outside a bracket expression, `\b`, `\B` and `\1`..`\9` are reported as errors. JavaScript reads
+them as word boundary assertions and backreferences, or `\1`..`\9` as octal escapes and digits
+where the pattern has fewer groups.
 
 A search finds the match JavaScript finds: the one beginning leftmost, and among those beginning
 there, the first JavaScript reaches, trying alternatives from the left and taking as many rounds
@@ -26,8 +34,10 @@ version may change them.
 
 LIMITATION:
 
-A character class holds single byte characters (U+0001..U+007F). UTF-8 writes a character from
-U+0080 upward as two or more bytes, and a Fix string holds no null character (U+0000).
+A character class, `.` included, matches one byte, so it holds the single byte characters
+(U+0001..U+007F). UTF-8 writes a character from U+0080 upward as two or more bytes, and a Fix
+string holds no null character (U+0000). In a bracket expression, an escape for a character from U+0080 upward is reported as an
+error. `\uhhhh` for a surrogate (U+D800..U+DFFF) is reported as an error.
 
 ## Values
 
